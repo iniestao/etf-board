@@ -11,6 +11,7 @@
 | KV 命名空间 | `etf-board-WATCH` / `433b04a19510470ca9e54a778cd2b598` |
 | 历史数据源 | GitHub `data` 分支（`raw.githubusercontent.com`，jsDelivr 兜底） |
 | R2 | 未启用 |
+| 访问控制 | **口令门禁**（`ACCESS_PASS` secret），除登录入口外全站需口令 |
 | Actions 定时 | 每天 16:35（北京时间），`update-data.yml` |
 
 ## 上线时的端到端验证
@@ -31,6 +32,45 @@ fetch handler，把每步结果写进同一个 KV，再通过 Cloudflare API 把
 ```
 
 验证完自检 Worker 与测试 key 已全部删除，KV 为空。
+
+## 访问口令（让网址不对外）
+
+`workers.dev` 地址是公开的，谁拿到链接都能打开。想锁住只有一条可靠路径：
+**在 Worker 里守门**。
+
+> 为什么不用 Cloudflare Access：Access 只能挂在**自定义域名 / 路由**上，
+> 对 `*.workers.dev` 默认域名完全不生效——开了也照样人人可进。
+> 除非先买域名绑上去，否则 Access 在这个部署里没有意义。
+
+机制：
+
+| 环节 | 实现 |
+|---|---|
+| 口令存放 | `ACCESS_PASS` secret（不进仓库；仓库是 public，写进代码等于没锁） |
+| 校验后 | 种 `HttpOnly; Secure; SameSite=Lax` Cookie，值 = `HMAC-SHA256(口令)`，有效期 1 年 |
+| 服务端会话 | **不需要**。口令一变，HMAC 全变，所有旧 Cookie 立即作废 |
+| 未登录 · 页面 | 401 + 口令输入框（`noindex`，不含任何行情数据） |
+| 未登录 · 接口 | `/api/*` 401 JSON；`/api/status` 只回 `{ok,locked}` 便于探测存活 |
+| 爆破防护 | 同一 IP 10 分钟内错 6 次 → 锁 10 分钟；每次失败固定拖 600ms |
+| 未配置口令 | 整站 503 并显示设置说明页（宁可锁死也不裸奔） |
+
+设置口令（**必做**，否则站点打不开）：
+
+```bash
+cd worker
+npx wrangler secret put ACCESS_PASS      # 交互输入，终端不回显
+```
+
+或 Dashboard：Workers → `etf-board` → **Settings** → **Variables and Secrets**
+→ **Add** → Name `ACCESS_PASS`，类型选 **Secret**，Value 填口令 → **Save and deploy**。
+
+口令建议 12 位以上、字母+数字，别用生日/手机号——这是唯一一道锁。
+
+**换口令 / 怀疑泄露**：重设一次 `ACCESS_PASS` 即可，所有已登录设备立刻掉线。
+
+**忘了口令**：Dashboard 里覆盖 `ACCESS_PASS`，然后用新口令登录。
+
+**退出登录**：访问 `/__out`（清 Cookie，跳回登录页）。
 
 ## 部署踩过的坑
 
@@ -63,8 +103,10 @@ npx wrangler tail etf-board --format pretty
 **验证线上**：
 
 ```bash
-node tools/verify.mjs https://etf-board.171098509.workers.dev
+ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.workers.dev
 ```
+
+不带 `ACCESS_PASS` 只能跑到「首页 401 站点上锁」，后面接口全是 401。
 
 ## 可选升级
 
@@ -84,6 +126,7 @@ node tools/verify.mjs https://etf-board.171098509.workers.dev
 | 因子研究改成独立页 | `/research` | 不再弹窗；`/?panel=rs` 会自动跳转过去 |
 | 因子数据每天更新 | Actions + `/api/research` | 新增 `select_factors.py`（33 秒）与 `gen_research.mjs`，结果推到 `data` 分支的 `research.json` |
 | 自选按设备隔离 | `/api/watch?u=` | 别人打开你的网址不会再看到或覆盖你的自选 |
+| **全站口令访问** | Worker 门禁 | 没口令看不到任何页面和数据，见上一节「访问口令」 |
 
 **部署**（两条路选一条）：
 
@@ -96,6 +139,16 @@ cd worker && npx wrangler deploy
 **B. 没 Token**：Dashboard → Workers → `etf-board` → **Edit code** →
 全选删掉 → 粘贴 `/workspace/worker.js` → **Deploy**。
 
-部署完 `node tools/verify.mjs <域名>` 应该看到 8 项全过，其中新增一项
-`/api/research 因子数据`——第一次部署时它可能提示 `NOT_FOUND`，
-那是因为 `data` 分支还没跑过新流水线，页面会自动用内嵌的那份，不影响打开。
+**第三件事（必做）**：设 `ACCESS_PASS`，否则新版本上线后整站 503 打不开。
+Dashboard → Workers → `etf-board` → Settings → Variables and Secrets → Add，
+名字 `ACCESS_PASS`、类型 Secret、值填你的口令，保存。设完再访问网址，
+看到口令框、输进去能进，就说明门禁通了。
+
+最后自检（**带上口令**）：
+
+```bash
+ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.workers.dev
+```
+
+应该看到 10 项全过。其中 `/api/research 因子数据` 第一次可能提示 `NOT_FOUND`，
+那是因为 `data` 分支还没跑过新流水线，页面会自动用内嵌那份，不影响打开。

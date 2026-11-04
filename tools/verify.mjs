@@ -33,9 +33,13 @@ function soft(label, detail, hint) {
   if (hint) notes.push(hint);
 }
 
+let COOKIE = '';
+
 async function hit(base, path, init = {}) {
   const t0 = Date.now();
-  const r = await fetch(base + path, { ...init, signal: AbortSignal.timeout(TIMEOUT) });
+  const headers = { ...(init.headers || {}) };
+  if (COOKIE) headers.Cookie = COOKIE;
+  const r = await fetch(base + path, { ...init, headers, signal: AbortSignal.timeout(TIMEOUT) });
   return { r, ms: Date.now() - t0 };
 }
 
@@ -59,13 +63,38 @@ async function main() {
   const base = arg.replace(/\/+$/, '');
   console.log(`\n${bold('线上自检')} ${dim(base)}\n`);
 
+  // ---- 0. 访问口令 ----
+  // 站点默认上锁。有口令就先换 Cookie，否则后面每一项都会撞 401，
+  // 报出来的都是一堆「失败」，看不出真正原因。
+  const PASS = process.env.ACCESS_PASS || '';
+  if (PASS) {
+    try {
+      const r = await fetch(base + '/__auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'p=' + encodeURIComponent(PASS) + '&next=/',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(TIMEOUT),
+      });
+      const sc = r.headers.get('set-cookie') || '';
+      COOKIE = sc.split(';')[0];
+      if (COOKIE) ok('访问口令', `通过，Cookie ${COOKIE.length} 字节`);
+      else bad('访问口令', `返回 ${r.status} 但没发 Cookie`, '口令不对，或 Worker 还是旧版本（没有门禁）');
+    } catch (e) {
+      bad('访问口令', e.message, '连不上，先确认域名');
+    }
+  }
+
   // ---- 1. 首页 ----
   try {
     const { r, ms } = await hit(base, '/');
     const html = await r.text();
     const kb = (html.length / 1024).toFixed(1);
     const looksRight = html.includes('<!DOCTYPE') && html.length > 20000;
-    if (r.ok && looksRight) ok('首页 HTML', `${r.status}  ${ms}ms  ${kb}KB`);
+    if (r.status === 401 || r.status === 503) {
+      bad('首页 HTML', `${r.status} 站点上锁（未带口令）`,
+        `ACCESS_PASS=你的口令 node tools/verify.mjs ${base}  —— 带上口令才能验后面那些接口`);
+    } else if (r.ok && looksRight) ok('首页 HTML', `${r.status}  ${ms}ms  ${kb}KB`);
     else bad('首页 HTML', `${r.status}  ${ms}ms  ${kb}KB`, '首页不是完整页面，确认部署的是 worker/dist/worker.js 或 src/index.js');
   } catch (e) {
     bad('首页 HTML', e.name === 'TimeoutError' ? '超时' : e.message, '域名拼错了？或 Worker 还没部署成功（wrangler deploy 是否报错）');

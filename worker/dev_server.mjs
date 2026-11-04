@@ -51,6 +51,11 @@ const WATCH = {
 
 const env = { BUCKET, WATCH };
 
+// 线上口令来自 secret，本地没有；给个默认值，否则门禁会把整站锁死，
+// 打开只有一张「未配置口令」说明页，看着像坏了。
+const DEV_PASS = process.env.ACCESS_PASS || 'devtest';
+env.ACCESS_PASS = DEV_PASS;
+
 http.createServer(async (req, res) => {
   try {
     // 必须把请求体读出来传给 Request，否则 POST /api/watch 的 body 是空的，
@@ -76,4 +81,5 @@ http.createServer(async (req, res) => {
   console.log('dev server on http://127.0.0.1:' + PORT);
   console.log('  R2 mock →', DIST);
   console.log('  KV mock → 内存');
+  console.log('  口令    →', DEV_PASS, '(ACCESS_PASS 环境变量可覆盖)');
 });

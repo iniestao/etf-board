@@ -15,7 +15,9 @@
  *   并发发起，先返回且条数有效的胜出，败者静默丢弃。
  *
  * 路由：
- *   GET  /                    前端页面（带 ETag）
+ *   GET  /                    前端页面（带 ETag，需口令）
+ *   POST /__auth              口令登录，成功后种 Cookie（唯一免口令的入口）
+ *   GET  /__out               退出登录，清 Cookie
  *   GET  /api/all             全市场原始数据（透传）
  *   GET  /api/quote?codes=    自选批量（东财 ulist，失败返回 ok:false）
  *   GET  /api/probe           多源自检
@@ -23,6 +25,9 @@
  *   GET  /api/watch           读云端自选（需绑定 KV）
  *   POST /api/watch           写云端自选，body {"list":["510300",...]}
  *   GET  /api/status          部署自检：R2/KV 绑定状态、历史数据日期
+ *
+ * 【访问控制】除 /__auth 外全部需要口令（env.ACCESS_PASS），
+ * 细节见下方「访问门禁」一节。没配 ACCESS_PASS 时整站拒绝服务，宁可不给也不裸奔。
  */
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -501,6 +506,241 @@ async function serveStatus(env) {
   return json(out);
 }
 
+// ---------------------------------------------------------------- 访问门禁
+// 为什么做在 Worker 里而不是 Cloudflare Access：
+// Access 只能挂在「自定义域名 / 路由」上，对 *.workers.dev 这个默认域名
+// 一律不生效——也就是说开了 Access 也照样谁都能打开 workers.dev 地址。
+// 想用 Access 就得先有域名并绑上去。没有域名时，唯一可靠的做法是自己守住门口。
+//
+// 机制：口令存 env.ACCESS_PASS（wrangler secret / Dashboard 变量），
+// 绝不写进代码——仓库是 public 的，写进去等于没锁。
+// 校验通过后种一个 HttpOnly Cookie，值是 HMAC(口令)，无法伪造；
+// 服务端不存会话，所以不需要 KV，也不必担心重启丢失。
+// 没登录的人拿不到 HTML，也拿不到任何 /api/* 数据。
+
+const CK = 'etfb';
+const CK_SALT = 'etf-board::gate::v1';
+const CK_AGE = 60 * 60 * 24 * 365;
+
+const TEE = new TextEncoder();
+
+function b64url(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Cookie 值由口令单向推导：口令换了，所有人的旧 Cookie 立刻失效。
+async function gateToken(pass) {
+  const key = await crypto.subtle.importKey(
+    'raw', TEE.encode(pass), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, TEE.encode(CK_SALT));
+  return b64url(sig).slice(0, 43);
+}
+
+// 定长比较，避免按字符提前返回造成的时序侧信道
+function safeEq(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
+function readCookie(header, name) {
+  if (!header) return '';
+  for (const raw of header.split(';')) {
+    const s = raw.trim();
+    const i = s.indexOf('=');
+    if (i > 0 && s.slice(0, i) === name) return s.slice(i + 1);
+  }
+  return '';
+}
+
+// 只接受站内相对路径，挡住 /__auth?next=https://evil.com 这类开放重定向
+function safeNext(n) {
+  if (!n || typeof n !== 'string' || n[0] !== '/' || n[1] === '/') return '/';
+  if (n.startsWith('/__')) return '/';
+  return n.slice(0, 200);
+}
+
+// 单 isolate 内的失败计数：挡脚本爆破，够用且零成本。
+// isolate 之间不共享，但爆破请求会落到多个 isolate 上，同样会被各拦一道。
+const _fail = new Map();
+const FAIL_MAX = 6;
+const FAIL_WIN = 10 * 60 * 1000;
+const FAIL_LOCK = 10 * 60 * 1000;
+
+function ipOf(request) {
+  return request.headers.get('CF-Connecting-IP') || 'anon';
+}
+
+function gateLocked(ip) {
+  const rec = _fail.get(ip);
+  if (!rec) return 0;
+  const now = Date.now();
+  if (rec.until && rec.until > now) return Math.ceil((rec.until - now) / 1000);
+  if (now - rec.t > FAIL_WIN) { _fail.delete(ip); return 0; }
+  return 0;
+}
+
+function gateFail(ip) {
+  if (_fail.size > 5000) _fail.clear();
+  const now = Date.now();
+  const rec = _fail.get(ip) || { n: 0, t: now, until: 0 };
+  if (now - rec.t > FAIL_WIN) { rec.n = 0; rec.t = now; }
+  rec.n++;
+  if (rec.n >= FAIL_MAX) { rec.until = now + FAIL_LOCK; rec.n = 0; }
+  _fail.set(ip, rec);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function gatePage(next, err) {
+  const e = err === 'bad' ? '口令不对，再试一次' : err === 'lock' ? '尝试次数过多，请 10 分钟后再来' : '';
+  return `<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="color-scheme" content="dark">
+<title>需要口令</title>
+<style>
+:root{--bg:#0f1115;--bg2:#161a21;--line:#262c37;--txt:#e6e9ef;--txt2:#9aa4b2;--txt3:#5f6b7d;--acc:#3b82f6}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:radial-gradient(1000px 600px at 50% -10%,#182030 0%,var(--bg) 55%);
+color:var(--txt);display:flex;align-items:center;justify-content:center;padding:20px;
+font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+-webkit-font-smoothing:antialiased}
+.box{width:100%;max-width:340px;background:var(--bg2);border:1px solid var(--line);
+border-radius:14px;padding:28px 24px 22px;box-shadow:0 20px 50px -20px #000}
+.brand{font-size:15px;font-weight:600;letter-spacing:.5px;margin-bottom:6px}
+.brand i{font-style:normal;color:var(--acc)}
+.sub{color:var(--txt2);font-size:12.5px;margin-bottom:20px}
+input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+padding:11px 13px;color:var(--txt);font-size:14px;outline:none;transition:.15s}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgb(59 130 246 / 15%)}
+button{width:100%;margin-top:12px;background:var(--acc);border:0;border-radius:8px;
+padding:11px;color:#fff;font-size:13.5px;font-weight:500;cursor:pointer;transition:.15s}
+button:hover{background:#2f74e0}
+button:active{transform:translateY(1px)}
+.err{color:#f87171;font-size:12px;margin-top:10px;min-height:16px}
+.tip{color:var(--txt3);font-size:11px;margin-top:14px;line-height:1.5}
+</style></head><body>
+<form class="box" method="POST" action="/__auth">
+  <div class="brand">ETF<i> · BOARD</i></div>
+  <div class="sub">私有面板，请输入访问口令</div>
+  <input name="p" type="password" autocomplete="current-password" placeholder="访问口令"
+         autofocus required ${err === 'lock' ? 'disabled' : ''}>
+  <input type="hidden" name="next" value="${esc(next)}">
+  <button type="submit" ${err === 'lock' ? 'disabled' : ''}>进入</button>
+  <div class="err">${esc(e)}</div>
+  <div class="tip">通过后这台浏览器会记住一年，不必每次输入。</div>
+</form></body></html>`;
+}
+
+// 口令没配置时既不能放行（等于没锁），也不能只丢一个 500（用户不知道该干嘛）。
+// 给一张说明页：不泄露任何行情数据，只告诉你下一步怎么做。
+const NO_PASS_PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>未配置口令</title>
+<style>body{background:#0f1115;color:#e6e9ef;font:14px/1.8 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:24px}
+.b{max-width:460px;background:#161a21;border:1px solid #262c37;border-radius:12px;padding:26px 26px 20px}
+h1{font-size:15px;margin:0 0 10px}p{color:#9aa4b2;font-size:13px;margin:0 0 10px}
+code{background:#0f1115;border:1px solid #262c37;border-radius:5px;padding:2px 6px;color:#7dd3fc;font-size:12.5px}
+</style></head><body><div class="b">
+<h1>站点已上锁，但还没设口令</h1>
+<p>为防止公开访问，Worker 在没有 <code>ACCESS_PASS</code> 时会拒绝一切请求——包括你自己。</p>
+<p>去 Cloudflare Dashboard → Workers → <b>etf-board</b> → Settings → Variables，
+新增变量 <code>ACCESS_PASS</code>，值填一串只有你知道的口令，保存后再刷新本页。</p>
+<p>命令行等价操作：<code>npx wrangler secret put ACCESS_PASS</code></p>
+</div></body></html>`;
+
+const htmlNoStore = {
+  'Content-Type': 'text/html; charset=utf-8',
+  'Cache-Control': 'no-store, must-revalidate',
+  'X-Robots-Tag': 'noindex, nofollow, noarchive',
+};
+
+async function gateCheck(request, env, url) {
+  const p = url.pathname;
+
+  // 静态噪音直接吞掉，不必过门禁
+  if (p === '/favicon.ico' || p === '/robots.txt') {
+    return new Response(null, { status: 204, headers: { 'X-Robots-Tag': 'noindex' } });
+  }
+
+  const pass = (env && env.ACCESS_PASS) || '';
+
+  // 退出登录：清 Cookie 回门口
+  if (p === '/__out') {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: '/',
+        'Set-Cookie': `${CK}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+      },
+    });
+  }
+
+  if (p === '/__auth') {
+    if (!pass) return new Response(NO_PASS_PAGE, { status: 503, headers: htmlNoStore });
+    const ip = ipOf(request);
+    const left = gateLocked(ip);
+    if (left) return new Response(gatePage('/', 'lock'), { status: 429, headers: htmlNoStore });
+
+    let form;
+    try {
+      form = new URLSearchParams(await request.text());
+    } catch (e) {
+      form = new URLSearchParams();
+    }
+    const next = safeNext(form.get('next') || '/');
+
+    if (safeEq(form.get('p') || '', pass)) {
+      _fail.delete(ip);
+      const tok = await gateToken(pass);
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: next,
+          'Set-Cookie': `${CK}=${tok}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${CK_AGE}`,
+        },
+      });
+    }
+    gateFail(ip);
+    // 失败故意慢半拍，把撞库速度压下来（sleep 只耗墙钟，不耗 10ms CPU 预算）
+    await new Promise((r) => setTimeout(r, 600));
+    return new Response(gatePage(next, 'bad'), { status: 401, headers: htmlNoStore });
+  }
+
+  if (!pass) {
+    const h = { ...CORS, 'Cache-Control': 'no-store' };
+    return p.startsWith('/api/')
+      ? new Response(JSON.stringify({ ok: false, error: 'access_pass_not_configured' }), { status: 503, headers: h })
+      : new Response(NO_PASS_PAGE, { status: 503, headers: htmlNoStore });
+  }
+
+  const ck = readCookie(request.headers.get('Cookie') || '', CK);
+  if (ck && safeEq(ck, await gateToken(pass))) return null;   // 放行
+
+  // 未登录：接口给 JSON，页面给登录框
+  if (p.startsWith('/api/')) {
+    const h = { ...CORS, 'Cache-Control': 'no-store' };
+    // 状态探针留一个不含数据的存活回执，方便外部监控判断「服务活着但在锁着」
+    if (p === '/api/status') {
+      return new Response(JSON.stringify({ ok: true, locked: true }), { status: 200, headers: h });
+    }
+    return new Response(JSON.stringify({ ok: false, error: 'unauthorized', locked: true }),
+      { status: 401, headers: h });
+  }
+  return new Response(gatePage(url.pathname + url.search, ''), { status: 401, headers: htmlNoStore });
+}
+
 // ---------------------------------------------------------------- 路由
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -537,19 +777,27 @@ export default {
     const p = url.pathname;
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
+    // 门禁先行：没通过口令的人，下面所有分支都到不了
+    const gate = await gateCheck(request, env, url);
+    if (gate) return gate;
+
     // /research 与首页共用同一个 HTML：前端按 pathname 决定是整页因子面板
     // 还是盯盘首页。一份模板，样式和渲染代码不会两边走偏。
     if (p === '/' || p === '/index.html'
         || p === '/research' || p === '/research/' || p === '/r' || p === '/r/') {
       const etag = htmlEtag();
       if (request.headers.get('If-None-Match') === etag) {
-        return new Response(null, { status: 304, headers: { ETag: etag } });
+        return new Response(null, { status: 304, headers: { ETag: etag, Vary: 'Cookie', 'Cache-Control': 'private, no-cache' } });
       }
       return new Response(HTML, {
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-cache',
+          // private + Vary:Cookie —— 防止任何中间缓存把「已登录才有的页面」
+          // 回放给没登录的人，把门禁绕过去
+          'Cache-Control': 'private, no-cache, must-revalidate',
+          Vary: 'Cookie',
           ETag: etag,
+          'X-Robots-Tag': 'noindex, nofollow, noarchive',
         },
       });
     }

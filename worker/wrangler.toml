@@ -21,6 +21,23 @@ compatibility_date = "2024-11-01"
 [vars]
 HIST_BASE = "https://raw.githubusercontent.com/iniestao/etf-board/data"
 
+# ---------------------------------------------------------------- 访问口令（必填）
+# 站点默认是「公开可访问」的，任何拿到 workers.dev 地址的人都能打开。
+# 想在公开网络上锁住，必须设一个 ACCESS_PASS：
+#
+#   npx wrangler secret put ACCESS_PASS          # 命令行，交互输入，最推荐
+#   或 Dashboard → Workers → etf-board → Settings → Variables → 添加 ACCESS_PASS
+#
+# 设好之后，未登录访问只会看到一个口令输入框，HTML 和 /api/* 全部拿不到。
+# 口令通过后浏览器记一年（HttpOnly Cookie，值为 HMAC，不可伪造）。
+#
+# 注意：**不要**把这个口令写到本文件的 [vars] 里。仓库是公开的，
+# 写在这里等于把密码连同代码一起发布出去。secret 不会出现在仓库中。
+# 没设 ACCESS_PASS 时整站拒绝服务（返回一张设置说明页），这是有意为之。
+#
+# 想让口令立即失效（换口令 / 怀疑泄露）：重设一次 ACCESS_PASS 即可，
+# 所有旧 Cookie 由新口令重新推导，立刻全部作废。
+
 # 可选：私有仓库才需要。用 wrangler secret put GITHUB_TOKEN 设置，
 # 不要写在这个文件里（会被提交进仓库）。
 # [vars]
