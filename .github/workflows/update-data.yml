@@ -21,7 +21,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       - name: 检出代码
@@ -61,10 +61,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          # 必须指定依赖文件，否则 setup-python 算不出 cache key 会直接失败
           cache: pip
+          cache-dependency-path: alpha/requirements.txt
 
       - name: 安装依赖
-        run: pip install pandas numpy pyarrow
+        run: pip install -r alpha/requirements.txt
 
       - name: 计算 56 指标 + 101 因子（约 4 分钟）
         working-directory: alpha

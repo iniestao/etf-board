@@ -1,0 +1,5 @@
+# alpha/compute.py 的运行时依赖
+# 版本给下限而不是钉死，避免 Actions 上拿不到预编译 wheel
+pandas>=2.0
+numpy>=1.24
+pyarrow>=14.0
