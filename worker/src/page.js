@@ -1,5 +1,6 @@
 import { IDX_GROUPS } from './idx_data.js';
 import { RESEARCH } from './research_data.js';
+import { ALPHA_META } from './alpha_meta.js';
 
 // 注入到 HTML 里的紧凑映射：{ "沪深300": ["510300", ...], ... }
 // 18KB 一次随页面下发，比再开一个 /api 接口划算——省一次 RTT，也省 Worker 的 CPU 配额。
@@ -9,6 +10,11 @@ const IDX_JS = JSON.stringify(IDX_GROUPS);
 // 因子研究的全部数据（101 个 IC、7 条回测、8 个入选组合），约 5KB。
 // 同样在构建时固化，点开面板不需要额外请求。
 const RESEARCH_JS = JSON.stringify(RESEARCH);
+
+// 101 个因子的中文名、一句话解读和公式，约 20KB。
+// 公式由 tools/gen_alpha_meta.py 从 alpha101.py 的 AST 生成，
+// 所以页面上写的和实际在算的永远是同一份。
+const ALPHA_META_JS = JSON.stringify(ALPHA_META);
 
 export const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -202,6 +208,22 @@ font-family:var(--mono);text-align:right;white-space:nowrap}
 border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 .rsnote b{color:var(--txt)}
 .rsnote .warn{border-left-color:var(--up)}
+/* ---- 因子明细：点一行展开构造方式 ---- */
+.fxtbl tr.fxr{cursor:pointer}
+.fxtbl tr.fxr.on td{background:rgba(59,130,246,.10)}
+.fxtbl tr.fxx{display:none}
+.fxtbl td.fxnm{text-align:left;color:var(--txt2);font-family:inherit;white-space:normal}
+.fxdet td{padding:0 0 7px!important;border-bottom:1px solid var(--line)!important;
+text-align:left!important;white-space:normal!important;font-family:inherit!important;background:transparent!important}
+.fxd{background:var(--bg);border-left:2px solid var(--accent);border-radius:0 7px 7px 0;padding:10px 13px}
+.fxdn{font-size:11.5px;color:var(--txt2);margin-bottom:5px}
+.fxdn b{color:#7dd3fc;font-family:var(--mono);font-weight:600;margin-right:7px}
+.fxds{font-size:11.5px;color:var(--txt2);line-height:1.7;margin-bottom:8px}
+.fxf{font-family:var(--mono);font-size:10.8px;color:#c3cfe0;background:var(--bg3);
+border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:0;
+white-space:pre-wrap;word-break:break-word;line-height:1.75}
+.rsmore{margin-top:9px;text-align:center}
+.rsmore button{font-size:11.5px;padding:5px 14px;border-radius:6px}
 .rssrc{font-size:10px;color:var(--txt3);margin-top:10px;text-align:right}
 /* /research 是独立页面：复用同一份 DOM，把遮罩层改成文档流里的整页布局。
    好处是因子面板只有一套 HTML 和一套渲染代码，不会出现「弹窗里对、页面上错」。 */
@@ -355,6 +377,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 'use strict';
 var IDX_GROUPS = ${IDX_JS};
 var RESEARCH = ${RESEARCH_JS};
+var ALPHA_META = ${ALPHA_META_JS};
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -484,6 +507,12 @@ function fpc(v){ if(v==null||!isFinite(v)) return '-'; return (v>0?'+':'')+Numbe
 function famt(v){ if(!v||!isFinite(v)) return '-'; if(v>=1e8) return (v/1e8).toFixed(2)+' 亿';
   if(v>=1e4) return (v/1e4).toFixed(0)+' 万'; return String(Math.round(v)); }
 function cc(v){ return v>0?'up':(v<0?'down':'flat'); }
+/* 因子公式里有 < > 这类符号，直接塞进 innerHTML 会被当成标签咬掉半截 */
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;';
+  });
+}
 function pbadge(p){
   if(p==null||!isFinite(p)) return '<span class="pm na">-</span>';
   var a=Math.abs(p), c='lo';
@@ -799,8 +828,171 @@ function fnum(v, d){
   return Number(v).toFixed(d == null ? 3 : d);
 }
 
+/* ================= 当日补丁：把今天接成最后一根 K 线 =================
+   .bin 由 Actions 每天 16:35 生成，盘中打开时最后一根永远是昨天——
+   盯盘最需要看的「今天」反而没有，副图指标也停在昨天。
+   这里把实时快照接成最后一根，指标从完整序列重算到该点。
+
+   算法必须与 alpha/indicators.py 严格对齐，否则接出来的今天会和
+   明天 Actions 跑完的值对不上，图上看起来就是最后一根莫名跳一下：
+     · EMA：pandas ewm(adjust=False)，alpha = 2/(n+1)，首个有效值即起点
+     · RSI / ATR：Wilder 平滑，alpha = 1/n
+     · 布林带：样本标准差（ddof=1），与 pandas rolling.std() 默认一致
+     · 均线/量比/波动率：rolling 窗口，min_periods = 窗口长度
+*/
+
+function hMeanEnd(a, end, n){
+  var from = end - n + 1;
+  if (from < 0) return NaN;
+  var s = 0;
+  for (var i = from; i <= end; i++){
+    if (!isFinite(a[i])) return NaN;   // min_periods=n：窗口内有一个 NaN 就整体 NaN
+    s += a[i];
+  }
+  return s / n;
+}
+
+function hStdEnd(a, end, n){
+  var m = hMeanEnd(a, end, n);
+  if (!isFinite(m)) return NaN;
+  var s = 0, from = end - n + 1;
+  for (var i = from; i <= end; i++){ var d = a[i] - m; s += d * d; }
+  return Math.sqrt(s / (n - 1));
+}
+
+/* adjust=False 的 EMA 全序列。NaN 位置沿用前值，与 pandas 行为一致。 */
+function hEmaArr(a, n){
+  var al = 2 / (n + 1), e = NaN, out = new Float64Array(a.length);
+  for (var i = 0; i < a.length; i++){
+    var v = a[i];
+    if (isFinite(v)) e = isFinite(e) ? al * v + (1 - al) * e : v;
+    out[i] = e;
+  }
+  return out;
+}
+
+/* Wilder 平滑的末值（alpha = 1/n）。RSI 的 up/dn 两路、ATR 的 TR 都用它。 */
+function hWilderLast(a, n){
+  var al = 1 / n, e = NaN;
+  for (var i = 0; i < a.length; i++){
+    var v = a[i];
+    if (!isFinite(v)) continue;
+    e = isFinite(e) ? al * v + (1 - al) * e : v;
+  }
+  return e;
+}
+
+function hCalcLast(d, it){
+  var n = d.n, N = n + 1, i, p = it.p;
+  var C = new Float64Array(N), Hh = new Float64Array(N),
+      Ll = new Float64Array(N), V = new Float64Array(N);
+  for (i = 0; i < n; i++){
+    C[i] = d.col.close[i]; Hh[i] = d.col.high[i];
+    Ll[i] = d.col.low[i];  V[i] = d.col.volume[i];
+  }
+  C[n] = p;
+  Hh[n] = (it.hi > 0) ? it.hi : p;
+  Ll[n] = (it.lo > 0) ? it.lo : p;
+
+  /* 成交额/均价近似成交量。东财的 f5 是「手」、新浪的 volume 是「份」，
+     两个源单位不一致，直接用会让柱子差 100 倍；成交额两边都是元，
+     除一个当日均价就统一到「份」，误差 0.2% 以内。 */
+  var vwap = (it.hi > 0 && it.lo > 0) ? (it.hi + it.lo + p) / 3 : p;
+  V[n] = (it.amt > 0 && vwap > 0) ? it.amt / vwap : NaN;
+
+  var row = {
+    open: (it.op > 0) ? it.op : p, high: Hh[n], low: Ll[n], close: p,
+    volume: V[n], amount: it.amt, adj_ratio: 1,
+  };
+
+  row.ma20 = hMeanEnd(C, n, 20);
+  row.ma60 = hMeanEnd(C, n, 60);
+
+  var sd = hStdEnd(C, n, 20);
+  row.boll_up = isFinite(sd) ? row.ma20 + 2 * sd : NaN;
+  row.boll_low = isFinite(sd) ? row.ma20 - 2 * sd : NaN;
+
+  // RSI14：pandas 的 diff 首行是 NaN，所以从 1 开始
+  var up = new Float64Array(N), dn = new Float64Array(N);
+  for (i = 1; i < N; i++){
+    var df = C[i] - C[i - 1];
+    up[i] = df > 0 ? df : 0;
+    dn[i] = df < 0 ? -df : 0;
+  }
+  var au = hWilderLast(up, 14), ad = hWilderLast(dn, 14);
+  row.rsi14 = (au + ad > 0) ? 100 * au / (au + ad) : NaN;
+
+  // MACD：DIF = EMA12 − EMA26，DEA = EMA9(DIF)，柱 = 2×(DIF−DEA)（国内惯例）
+  var e12 = hEmaArr(C, 12), e26 = hEmaArr(C, 26);
+  var dif = new Float64Array(N);
+  for (i = 0; i < N; i++) dif[i] = e12[i] - e26[i];
+  var dea = hEmaArr(dif, 9);
+  row.macd_dif = dif[n];
+  row.macd_dea = dea[n];
+
+  // ATR14
+  var tr = new Float64Array(N);
+  for (i = 0; i < N; i++){
+    tr[i] = Hh[i] - Ll[i];
+    if (i > 0 && isFinite(C[i - 1])){
+      var d1 = Math.abs(Hh[i] - C[i - 1]), d2 = Math.abs(Ll[i] - C[i - 1]);
+      if (d1 > tr[i]) tr[i] = d1;
+      if (d2 > tr[i]) tr[i] = d2;
+    }
+  }
+  row.atr14 = hWilderLast(tr, 14);
+
+  // 年化历史波动率（%）
+  var r = new Float64Array(N);
+  for (i = 1; i < N; i++) r[i] = (C[i - 1] > 0) ? C[i] / C[i - 1] - 1 : NaN;
+  var rsd = hStdEnd(r, n, 20);
+  row.hvol20 = isFinite(rsd) ? 100 * rsd * Math.sqrt(244) : NaN;
+
+  var vm = hMeanEnd(V, n, 5);
+  row.vol_ratio5 = (isFinite(vm) && vm > 0) ? V[n] / vm : NaN;
+
+  return row;
+}
+
+function hYmd(dt){
+  return dt.getFullYear() * 10000 + (dt.getMonth() + 1) * 100 + dt.getDate();
+}
+
+function hDayDiff(a, b){
+  var da = Date.UTC(Math.floor(a / 10000), Math.floor(a / 100) % 100 - 1, a % 100);
+  var db = Date.UTC(Math.floor(b / 10000), Math.floor(b / 100) % 100 - 1, b % 100);
+  return Math.round((db - da) / 86400000);
+}
+
+function hPatchToday(d, it){
+  if (!d || !d.n) return null;
+  var dt = new Date(), today = hYmd(dt);
+  var last = d.dates[d.n - 1];
+  if (today <= last) return null;                     // 历史里已经有今天
+  if (!it || !(it.p > 0) || !(it.amt > 0)) return null; // 未开盘 / 停牌 / 休市
+  var dow = dt.getDay();
+  if (dow === 0 || dow === 6) return null;            // 周末兜底（休市时成交额为 0 已挡住）
+  if (hDayDiff(last, today) > 10) return null;        // 数据太久没更新，硬接会留下大段空洞
+
+  var row = hCalcLast(d, it);
+  var n = d.n + 1, k;
+  var dates = new Int32Array(n);
+  dates.set(d.dates, 0);
+  dates[n - 1] = today;
+
+  var col = {};
+  for (k in d.col){
+    var src = d.col[k], a = new Float32Array(n);
+    a.set(src, 0);
+    var v = row[k];
+    a[n - 1] = (v != null && isFinite(v)) ? v : NaN;
+    col[k] = a;
+  }
+  return { code: d.code, n: n, dates: dates, col: col, ext: 1 };
+}
+
 function openHist(code, name){
-  H.code = code; H.name = name || code; H.d = null; H.hover = -1; H.ok = false;
+  H.code = code; H.name = name || code; H.d = null; H.hover = -1; H.ok = false; H.ext = false;
   document.getElementById('hName').textContent = H.name;
   document.getElementById('hCode').textContent = code;
   document.getElementById('hPx').textContent = '-';
@@ -824,11 +1016,20 @@ function openHist(code, name){
     return r.arrayBuffer();
   }).then(function(buf){
     if (H.code !== code) return;          // 加载期间用户已经换了标的
-    H.d = parseHist(buf);
+    var raw = parseHist(buf);
+    // 历史里没有今天就把实时快照接上去，盘中也能看到当天走势
+    var ext = hPatchToday(raw, findItem(code));
+    H.d = ext || raw;
+    H.ext = !!ext;
     H.ok = true;
     hDraw();
     hLegend(-1);
-    document.getElementById('hNote').textContent = hAdjNote();
+    var note = hAdjNote();
+    if (ext){
+      note = (note ? note + ' ' : '')
+        + '最后一根为今日行情（盘中会随实时价跳动），技术指标已按今日价格重算。';
+    }
+    document.getElementById('hNote').textContent = note;
   }).catch(function(e){
     if (H.code !== code) return;
     var msg = e.message || String(e);
@@ -1371,28 +1572,38 @@ function renderRs(){
   }
   h += '</tbody></table></div>';
 
-  // ---- IC 排行 ----
+  // ---- 全部因子 ----
+  // 原来只列 IC 最大的 12 个，看着像「就算出这么几个」。实际算了 101 个，
+  // 全部摊开、每行都能点开看构造方式，才回答得了「这因子到底在算什么」。
   var rows = R.ic.rows.slice().sort(function(a, b){
     return Math.abs(b[1] || 0) - Math.abs(a[1] || 0);
-  }).slice(0, 12);
-  h += '<div class="rssec"><h4>IC 绝对值最大的 12 个因子（全样本 '
-    + R.train_days + '+' + R.test_days + ' 天）</h4>';
-  h += '<table class="rstbl"><thead><tr><th>因子</th><th>IC 均值</th><th>IR</th>'
-    + '<th>t 值</th><th>胜率</th><th>有效天数</th></tr></thead><tbody>';
+  });
+  var LIMIT = 20;
+  h += '<div class="rssec"><h4>全部 ' + rows.length + ' 个因子 · 点任一行看它怎么算'
+    + '（按 |IC| 排序）</h4>';
+  h += '<table class="rstbl fxtbl" id="rsAll"><thead><tr><th>因子</th><th>含义</th>'
+    + '<th>IC 均值</th><th>IR</th><th>t 值</th><th>胜率</th><th>有效天数</th></tr></thead><tbody>';
   for (var m = 0; m < rows.length; m++){
-    var x = rows[m];
-    h += '<tr><td>' + x[0] + '</td>'
+    var x = rows[m], mi = ALPHA_META[x[0]] || {};
+    h += '<tr class="fxr' + (m >= LIMIT ? ' fxx' : '') + '" data-f="' + x[0] + '">'
+      + '<td><b>' + x[0] + '</b></td>'
+      + '<td class="fxnm">' + esc(mi.nm || '—') + '</td>'
       + '<td class="' + cc(x[1]) + '">' + (x[1] == null ? '-' : x[1].toFixed(4)) + '</td>'
       + '<td>' + (x[2] == null ? '-' : x[2].toFixed(3)) + '</td>'
       + '<td>' + (x[3] == null ? '-' : x[3].toFixed(2)) + '</td>'
       + '<td>' + (x[4] == null ? '-' : (x[4] * 100).toFixed(1) + '%') + '</td>'
       + '<td>' + (x[5] == null ? '-' : x[5]) + '</td></tr>';
   }
-  h += '</tbody></table>'
-    + '<div class="rsnote" style="margin-top:8px">IC 均值到 0.03 就算「强」了，'
+  h += '</tbody></table>';
+  if (rows.length > LIMIT){
+    h += '<div class="rsmore"><button id="rsMore" data-open="0" data-n="'
+      + rows.length + '">展开全部 ' + rows.length + ' 个</button></div>';
+  }
+  h += '<div class="rsnote" style="margin-top:8px">IC 均值到 0.03 就算「强」了，'
     + '这里最大的只有 ' + (rows[0] ? Math.abs(rows[0][1]).toFixed(3) : '-')
     + '；而 t 值超过 2 只能说明「不是零」，不代表能赚钱——'
-    + '2671 天的样本下，t=2 的因子随手就能找到一堆。</div></div>';
+    + '2671 天的样本下，t=2 的因子随手就能找到一堆。'
+    + 'IC 为负说明因子和收益方向相反，反着用才有意义。</div></div>';
 
   // ---- 入选组合 ----
   h += '<div class="rssec"><h4>相关性去重后入选的 ' + R.picks.length + ' 个因子</h4>';
@@ -1455,6 +1666,62 @@ function renderRs(){
     + '</div><div class="rssrc">完整推导见仓库 docs/FACTORS.md（620 行）</div></div>';
 
   document.getElementById('rsBody').innerHTML = h;
+  rsBind();
+}
+
+/* 因子详情行。数据来自 ALPHA_META——构建时由 tools/gen_alpha_meta.py
+   从 alpha101.py 的 AST 生成，所以这里显示的就是代码里真正在跑的那条式子，
+   不是另写一份文档等着过期。 */
+function rsDetailRow(id){
+  var m = ALPHA_META[id];
+  var body = m
+    ? '<div class="fxdn"><b>' + esc(id) + '</b>' + esc(m.nm) + '</div>'
+      + '<div class="fxds">' + esc(m.ds) + '</div>'
+      + '<pre class="fxf">' + esc(m.f) + '</pre>'
+    : '<div class="fxdn"><b>' + esc(id) + '</b></div>'
+      + '<div class="fxds">这个因子没有录入说明。</div>';
+  return '<tr class="fxdet"><td colspan="7"><div class="fxd">' + body + '</div></td></tr>';
+}
+
+function rsBind(){
+  var tbl = document.getElementById('rsAll');
+  if (tbl){
+    tbl.onclick = function(e){
+      var tr = e.target;
+      while (tr && tr.tagName !== 'TR') tr = tr.parentNode;
+      if (!tr || !tr.className || tr.className.indexOf('fxdet') >= 0) return;
+      var id = tr.getAttribute('data-f');
+      if (!id) return;
+      var nx = tr.nextElementSibling;
+      if (nx && nx.className.indexOf('fxdet') >= 0){   // 再点一次收起
+        nx.parentNode.removeChild(nx);
+        tr.classList.remove('on');
+        return;
+      }
+      tr.insertAdjacentHTML('afterend', rsDetailRow(id));
+      tr.classList.add('on');
+    };
+  }
+  var more = document.getElementById('rsMore');
+  if (more){
+    more.onclick = function(){
+      var open = this.getAttribute('data-open') === '1';
+      var next = !open;
+      var all = tbl.getElementsByTagName('tr');
+      for (var i = 0; i < all.length; i++){
+        if (all[i].className.indexOf('fxx') >= 0){
+          all[i].style.display = next ? 'table-row' : 'none';
+        }
+      }
+      // 展开时把详情行一起露出，否则点开的构造方式还藏在 display:none 里
+      for (var j = 0; j < all.length; j++){
+        if (all[j].className.indexOf('fxdet') >= 0) all[j].style.display = next ? 'table-row' : '';
+      }
+      this.setAttribute('data-open', next ? '1' : '0');
+      this.textContent = next ? '收起，只看前 20 个'
+        : ('展开全部 ' + (this.getAttribute('data-n') || '全部') + ' 个');
+    };
+  }
 }
 
 /* 内嵌的那份是部署时的快照，先画出来（0ms，断网也有）；再向服务端要当天的。
