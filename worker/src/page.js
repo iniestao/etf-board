@@ -185,8 +185,11 @@ align-items:center;justify-content:center;padding:18px}
 max-width:900px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;
 box-shadow:0 24px 64px rgba(0,0,0,.55)}
 .rshd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
-.rshd b{font-size:14.5px}
-.rshd .sub{font-size:11px;color:var(--txt3);font-family:var(--mono)}
+/* 标题不许被压缩换行：以前「因子研究」在 390px 屏上会折成「因子/研究」两行，
+   还把日期挤到旁边，看着像排版坏了。标题固定宽度，元信息自己换行。 */
+.rshd b{font-size:14.5px;white-space:nowrap;flex:0 0 auto}
+.rshd .sub{font-size:11px;color:var(--txt3);font-family:var(--mono);
+min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rsbody{overflow-y:auto;padding:14px}
 .rssec{margin-bottom:18px}
 .rssec h4{font-size:12px;color:var(--txt2);font-weight:600;margin-bottom:8px;
@@ -198,6 +201,15 @@ letter-spacing:.3px;display:flex;align-items:center;gap:7px}
 .rsk .i .v{font-size:17px;font-family:var(--mono);font-weight:600}
 .rsk .i .s{font-size:10px;color:var(--txt3);margin-top:2px}
 .rstbl{width:100%;border-collapse:collapse;font-size:11.5px}
+/* 这几张表列多，手机上宽度不够时**宁可横向滚动**也不能把数字裁掉。
+   之前直接裁在容器里，"最大回撤"和后面几列在 390px 宽的屏上完全看不见，
+   但页面不报错、也不溢出，属于最难发现的一类排版 bug。 */
+.rstwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.rstwrap::-webkit-scrollbar{height:4px}
+.rstwrap::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+/* 指标说明表是整段说明文字，该换行而不是横向滚。
+   权重必须写成 .rstbl.indtbl，否则会被下面 .rstbl td 的 nowrap 盖掉。 */
+.rstbl.indtbl td{white-space:normal}
 .rstbl th{text-align:right;font-weight:500;color:var(--txt3);padding:5px 7px;
 border-bottom:1px solid var(--line);font-size:10.5px;white-space:nowrap}
 .rstbl th:first-child,.rstbl td:first-child{text-align:left}
@@ -244,8 +256,21 @@ body.rsmode .rshd .hx{display:none}
 body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 @media(max-width:700px){
   .rsbody{padding:10px}
+  /* 窄屏：标题和返回按钮占一行，日期/样本区间整体降到第二行 */
+  .rshd{flex-wrap:wrap;gap:4px 8px;padding:9px 12px}
+  .rshd .sub{flex:1 1 100%;order:9;white-space:normal;line-height:1.5}
   .rstbl{font-size:10.5px}
   .rstbl th,.rstbl td{padding:3px 4px}
+  /* 列多的表给个宽度下限：窄屏下让它横向滚动，而不是把数字挤成省略或直接裁掉。
+     指标说明表是整段文字，折行更好读，所以单独放开。 */
+  .rstwrap>.rstbl{min-width:480px}
+  .rstwrap>.btbl{min-width:620px}
+  .rstwrap>.fxtbl{min-width:540px}
+  .rstwrap>.indtbl{min-width:0}
+  /* 表格右侧被裁一半的样子容易被当成本站坏了，标一句「能滑」。
+     只对会横向滚动的那几张表显示，指标说明表换了行不需要。 */
+  .rssec:has(.rstwrap>table:not(.indtbl)) > h4::after{
+    content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:10px}
 }
 </style>
 </head>
@@ -1576,7 +1601,7 @@ function renderRs(){
   // ---- 样本外回测 ----
   h += '<div class="rssec"><h4>样本外回测 · ' + R.test[0] + ' ~ ' + R.test[1]
     + '（' + R.test_days + ' 个交易日，持有 ' + R.horizon + ' 日）</h4>';
-  h += '<table class="rstbl"><thead><tr><th>策略</th><th>天数</th><th>年化</th>'
+  h += '<div class="rstwrap"><table class="rstbl btbl"><thead><tr><th>策略</th><th>天数</th><th>年化</th>'
     + '<th>年化波动</th><th>夏普</th><th>最大回撤</th><th>胜率</th>'
     + '<th>IC 均值</th><th>IR</th></tr></thead><tbody>';
   for (var k = 0; k < R.bt.length; k++){
@@ -1592,7 +1617,7 @@ function renderRs(){
       + '<td>' + (r[7] == null ? '-' : r[7].toFixed(4)) + '</td>'
       + '<td>' + (r[8] == null ? '-' : r[8].toFixed(3)) + '</td></tr>';
   }
-  h += '</tbody></table></div>';
+  h += '</tbody></table></div></div>';
 
   // ---- 全部因子 ----
   // 原来只列 IC 最大的 12 个，看着像「就算出这么几个」。实际算了 101 个，
@@ -1603,7 +1628,7 @@ function renderRs(){
   var LIMIT = 20;
   h += '<div class="rssec"><h4>全部 ' + rows.length + ' 个因子 · 点任一行看它怎么算'
     + '（按 |IC| 排序）</h4>';
-  h += '<table class="rstbl fxtbl" id="rsAll"><thead><tr><th>因子</th><th>含义</th>'
+  h += '<div class="rstwrap"><table class="rstbl fxtbl" id="rsAll"><thead><tr><th>因子</th><th>含义</th>'
     + '<th>IC 均值</th><th>IR</th><th>t 值</th><th>胜率</th><th>有效天数</th></tr></thead><tbody>';
   for (var m = 0; m < rows.length; m++){
     var x = rows[m], mi = ALPHA_META[x[0]] || {};
@@ -1616,7 +1641,7 @@ function renderRs(){
       + '<td>' + (x[4] == null ? '-' : (x[4] * 100).toFixed(1) + '%') + '</td>'
       + '<td>' + (x[5] == null ? '-' : x[5]) + '</td></tr>';
   }
-  h += '</tbody></table>';
+  h += '</tbody></table></div>';
   if (rows.length > LIMIT){
     h += '<div class="rsmore"><button id="rsMore" data-open="0" data-n="'
       + rows.length + '">展开全部 ' + rows.length + ' 个</button></div>';
@@ -1629,7 +1654,7 @@ function renderRs(){
 
   // ---- 入选组合 ----
   h += '<div class="rssec"><h4>相关性去重后入选的 ' + R.picks.length + ' 个因子</h4>';
-  h += '<table class="rstbl"><thead><tr><th>因子</th><th>IC 均值</th><th>IR</th>'
+  h += '<div class="rstwrap"><table class="rstbl"><thead><tr><th>因子</th><th>IC 均值</th><th>IR</th>'
     + '<th>t 值</th><th>胜率</th><th>所属簇</th></tr></thead><tbody>';
   for (var p = 0; p < R.picks.length; p++){
     var q = R.picks[p];
@@ -1640,7 +1665,7 @@ function renderRs(){
       + '<td>' + (q[4] * 100).toFixed(1) + '%</td>'
       + '<td>' + q[5] + '</td></tr>';
   }
-  h += '</tbody></table></div>';
+  h += '</tbody></table></div></div>';
 
   // ---- 指标说明 ----
   var IND = [
@@ -1655,14 +1680,14 @@ function renderRs(){
     ['量比5', '当日成交量 / 5 日均量', '>1.5 放量，>3 异动，<0.6 缩量']
   ];
   h += '<div class="rssec"><h4>K 线里那 9 个指标怎么看</h4>'
-    + '<table class="rstbl"><thead><tr><th>指标</th><th style="text-align:left">含义</th>'
+    + '<div class="rstwrap"><table class="rstbl indtbl"><thead><tr><th>指标</th><th style="text-align:left">含义</th>'
     + '<th style="text-align:left">怎么读</th></tr></thead><tbody>';
   for (var n2 = 0; n2 < IND.length; n2++){
     h += '<tr><td>' + IND[n2][0] + '</td>'
       + '<td style="text-align:left;font-family:inherit">' + IND[n2][1] + '</td>'
       + '<td style="text-align:left;font-family:inherit;color:var(--txt2)">' + IND[n2][2] + '</td></tr>';
   }
-  h += '</tbody></table>'
+  h += '</tbody></table></div>'
     + '<div class="rsnote" style="margin-top:8px">'
     + '这 9 个是盯盘时真正看得上眼的。完整算了 <b>56 个指标 + 101 个 Alpha 因子</b>，'
     + '全量存在 Parquet 里给回测用，页面上摊开反而干扰判断。'

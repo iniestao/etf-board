@@ -117,9 +117,9 @@ ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.worke
 | 仓库想改回私有 | `wrangler secret put GITHUB_TOKEN`，填一个只读 `data` 分支的 fine-grained PAT；代码已支持 |
 | 想用自定义域名 | Cloudflare Dashboard → Workers → etf-board → Settings → Domains & Routes |
 
-## 本轮更新（2026-11-04）
+## 第二轮改动（已随门禁版本上线）
 
-线上跑的是旧版本，下面这几项要重新部署 `worker` 才会生效：
+下面这几项在 `8fa15306` 那一版里已经生效：
 
 | 改动 | 位置 | 说明 |
 |---|---|---|
@@ -151,8 +151,39 @@ Dashboard → Workers → `etf-board` → Settings → Variables and Secrets →
 ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.workers.dev
 ```
 
-应该看到 10 项全过。其中 `/api/research 因子数据` 第一次可能提示 `NOT_FOUND`，
-那是因为 `data` 分支还没跑过新流水线，页面会自动用内嵌那份，不影响打开。
+应该看到 9 项全过（本地实测 9/9）。
+
+## 第三轮改动（待部署）
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| K 线接上当天 | `page.js` | 历史最后一天不是今天时，用实时快照补一根，指标按完整序列重算到该点 |
+| 单只行情兜底 | `page.js` | 盘后 `/api/all` 常只回 900 条，缺失标的单独问 `/api/quote` |
+| 因子可点开看构造 | `/research` | 101 个全部列出，点任意行展开中文名、一句话解读、AST 生成的公式 |
+| push 即部署 | `.github/workflows/deploy-worker.yml` | 配一次 secret，以后改代码不用再贴 Token |
+
+### 部署这条路：配一次，以后免 Token
+
+因为每次改代码都要「生成 Token → 贴过去 → 销毁」实在太烦，改成了：
+
+```
+GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret
+  CLOUDFLARE_API_TOKEN   权限：Workers Scripts:Edit + Workers KV Storage:Edit + Account Settings:Read
+  CLOUDFLARE_ACCOUNT_ID  d4661207d82c2945cc023c3cd208362c
+```
+
+配完之后 push 到 `main` 且改动命中 `worker/**`，就会自动构建 + 部署，日志在 Actions 页。
+`ACCESS_PASS` 是 Cloudflare 侧的 secret，重新部署**不会**覆盖它，口令不用重设。
+
+> 当前该 workflow 处于 **disabled** 状态：secret 还没配，先禁掉避免每次 push 都报红。
+> 配好 secret 后在 Actions 页面点 **Enable workflow**，或直接 Run workflow 手动跑一次。
+
+### 不用 Token 的兜底：网页粘贴
+
+Dashboard → Workers → `etf-board` → **Edit code** → 全选删掉 →
+粘贴 `/workspace/worker.js`（183KB，与 `worker/dist/worker.js` 同一份）→ **Deploy**。
+
+约 3 分钟，缺点是以后每次改代码都要重来一次。
 
 ## 门禁上线记录（2026-11-04）
 
