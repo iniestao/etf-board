@@ -1016,6 +1016,46 @@ function hPatchToday(d, it){
   return { code: d.code, n: n, dates: dates, col: col, ext: 1 };
 }
 
+/* 今日那根的说明文案。刷新节奏写进文案里，免得看的人猜它到底会不会动。 */
+function hExtNote(){
+  return '最后一根为今日行情（交易时段每 60 秒跟随最新快照重算），'
+    + '技术指标已按今日价格重算。';
+}
+
+/* 弹窗打开期间跟随行情刷新
+   ---------------------------------------------------------------
+   原来只在 openHist 里补一次今天，页面每 60 秒刷的是列表和卡片，
+   弹窗里那根 K 线就停在打开那一刻——文案却写着「会随实时价跳动」。
+   这里基于 H.raw（打开时取到的原始历史）重算，所以刷多少次都只有一根今天：
+   每次都是从同一份 500 根重来，不会累积成 502、503 根。
+
+   快照暂时补不上时（东财限流导致缺成交额、或停牌）保持原图不动——
+   宁可显示上一次的值，也不要让已经画上的今天忽隐忽现。 */
+function hRefresh(){
+  var mask = document.getElementById('histMask');
+  if (!mask || !mask.classList.contains('on')) return;   // 弹窗没开，白算
+  if (!H.raw || !H.code || !H.ok) return;
+
+  var it = findItem(H.code);
+  if (!it || !(it.p > 0)) return;
+
+  var ext = hPatchToday(H.raw, it);
+  if (!ext && H.ext) return;          // 这一轮补不上，保留上一轮的今日 K 线
+  H.d = ext || H.raw;
+  H.ext = !!ext;
+
+  var px = document.getElementById('hPx');
+  if (px) px.textContent = fnum(it.p, 3);
+  var ch = document.getElementById('hChg');
+  if (ch){ ch.textContent = fpc(it.chg); ch.className = 'ch ' + cc(it.chg); }
+
+  hDraw();
+  hLegend(H.hover);
+  var note = hAdjNote();
+  if (ext) note = (note ? note + ' ' : '') + hExtNote();
+  document.getElementById('hNote').textContent = note;
+}
+
 function openHist(code, name){
   H.code = code; H.name = name || code; H.d = null; H.hover = -1; H.ok = false; H.ext = false;
   document.getElementById('hName').textContent = H.name;
@@ -1045,6 +1085,8 @@ function openHist(code, name){
 
     function finish(it){
       if (H.code !== code) return;
+      // 存下原始历史：定时刷新要基于这同一份重算，否则每刷一次就多接一根今天
+      H.raw = raw;
       // 历史里没有今天就把实时快照接上去，盘中也能看到当天走势
       var ext = hPatchToday(raw, it);
       H.d = ext || raw;
@@ -1054,8 +1096,7 @@ function openHist(code, name){
       hLegend(-1);
       var note = hAdjNote();
       if (ext){
-        note = (note ? note + ' ' : '')
-          + '最后一根为今日行情（盘中会随实时价跳动），技术指标已按今日价格重算。';
+        note = (note ? note + ' ' : '') + hExtNote();
       }
       document.getElementById('hNote').textContent = note;
     }
@@ -1911,6 +1952,7 @@ function loadFull(){
     void hasPm;
 
     renderCards(); renderList(); renderWatch();
+    hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
   }).catch(function(e){
     document.getElementById('fErr').textContent = '行情失败: ' + e.message;
     if (!DATA.length) document.getElementById('listBody').innerHTML =
@@ -1957,6 +1999,7 @@ function loadTXQuotes(){
     if (Object.keys(out).length){
       LIVE = out;
       renderWatch();
+      hRefresh();                    // 自选 5 秒一刷，弹窗里那只也一起动
       var tip = document.getElementById('quoteTip');
       if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒')
         + '刷新 · ' + new Date().toLocaleTimeString('zh-CN');
