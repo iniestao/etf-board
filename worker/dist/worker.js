@@ -30,7 +30,9 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const TTL = 5;              // 边缘缓存秒数
 const EM_TIMEOUT = 2800;    // 东财竞速超时
 const SINA_PAGES = 20;      // 1717 只约需 18 页
-const MIN_ROWS = 100;       // 认定某源有效的最少条数
+const MIN_ROWS = 100;       // 认定某源有效的最少条数（防止半页空响应被当成成功）
+const GOOD_ROWS = 1500;     // 超过这个数才算「完整快照」，先到可以直接采信
+const WAIT_TOTAL = 6000;    // 先到者不完整时，等另一个源的上限
 
 // ---------------------------------------------------------------- 东财全量
 async function emPage(pn) {
@@ -128,35 +130,25 @@ async function loadAll() {
   const now = Date.now();
   if (L1.body && now - L1.ts < TTL * 1000) return L1.body;
 
-  const emP = fetchEM();
-  const snP = fetchSina();
+  // 两个源同时打，不串行——串行会让首屏白等一个源的往返
+  const emP = fetchEM().catch(() => null);
+  const snP = fetchSina().catch(() => null);
+
+  // 先到者只有在「看起来是完整快照」时才直接采信。
+  //
+  // 之前只要 >= MIN_ROWS 就先到先赢，结果东财被限流、只回了 600 条时
+  // 也能秒杀新浪的 1717 条，页面直接少三分之二标的。机房 IP 下几乎必现。
+  // 现在改成：不完整就继续等另一个源，最后取条数多的；都等不到才退而求其次。
+  const early = await withTimeout(Promise.race([emP, snP]), EM_TIMEOUT);
 
   let body = null;
-  try {
-    const emRace = emP.then((b) => {
-      const j = safeParse(b);
-      if (j && j.n >= MIN_ROWS) return b;
-      return Promise.reject(new Error('em-invalid'));
-    });
-    const snRace = snP.then((b) => {
-      const j = safeParse(b);
-      if (j && j.n >= MIN_ROWS) return b;
-      return Promise.reject(new Error('sina-invalid'));
-    });
-    body = await Promise.race([
-      emRace,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('em-timeout')), EM_TIMEOUT)),
-      snRace,
-    ]);
-  } catch (e) {
-    const settled = await Promise.allSettled([emP, snP]);
-    for (const s of settled) {
-      if (s.status === 'fulfilled' && s.value) {
-        const j = safeParse(s.value);
-        if (j && j.n >= MIN_ROWS) { body = s.value; break; }
-      }
-    }
+  if (early && rowsOf(early) >= GOOD_ROWS) {
+    body = early;
+  } else {
+    const both = await withTimeout(Promise.all([emP, snP]), WAIT_TOTAL);
+    body = pickBest(both) || (rowsOf(early) >= MIN_ROWS ? early : null);
   }
+
   if (!body) throw new Error('所有行情源均不可用');
   L1 = { ts: now, body };
   return body;
@@ -167,6 +159,35 @@ function safeParse(b) {
   if (typeof b !== 'string') return null;
   const m = b.match(/^\{"src":"(\w+)","n":(\d+),"raw":\[/);
   return m ? { src: m[1], n: parseInt(m[2], 10) } : null;
+}
+
+/** 给 promise 套一个上限；超时返回 fallback 而不是抛错（这里超时不算异常，只算「没等到」）*/
+async function withTimeout(p, ms, fallback = null) {
+  let t;
+  try {
+    return await Promise.race([
+      p,
+      new Promise((res) => { t = setTimeout(() => res(fallback), ms); }),
+    ]);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** 只看条数，不建对象 */
+function rowsOf(b) {
+  const j = b ? safeParse(b) : null;
+  return j ? j.n : 0;
+}
+
+/** 多源候选里挑条数最多的；不足 MIN_ROWS 的一律丢弃 */
+function pickBest(list) {
+  let best = null, bestN = 0;
+  for (const b of list || []) {
+    const n = rowsOf(b);
+    if (n >= MIN_ROWS && n > bestN) { best = b; bestN = n; }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------- 自选批量（东财 ulist）
