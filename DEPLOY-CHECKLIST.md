@@ -82,6 +82,7 @@ npx wrangler secret put ACCESS_PASS      # 交互输入，终端不回显
 | `curl -F` 上传报 `No such module` | multipart 的 filename 取自本地文件名，与 `main_module` 不一致 | 加 `filename=xxx.js` 显式指定 |
 | Actions 首次失败 | `setup-python` 配了 `cache: pip`，但仓库没有 `requirements.txt` 可算缓存 key | 补 `alpha/requirements.txt` |
 | `git push` 偶发 TLS 中断 | 网络对大流量 HTTPS 的干扰 | `-c http.version=HTTP/1.1`，仍失败就走 Contents API 上传 |
+| Actions 第 9 步 `ModuleNotFoundError: No module named 'scipy'` | `select_factors.py` 用 `scipy.cluster.hierarchy` 做因子相关性聚类，但 `requirements.txt` 里只有 pandas/numpy/pyarrow。本地沙箱早装了 scipy，所以本地怎么跑都正常，只有干净环境才暴露 | 补 `scipy>=1.10`。**教训**：新脚本引入的每一个第三方库都要登记，本地能跑 ≠ CI 能跑 |
 
 ## 日常运维
 
