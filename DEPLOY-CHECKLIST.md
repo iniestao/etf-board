@@ -12,6 +12,7 @@
 | 历史数据源 | GitHub `data` 分支（`raw.githubusercontent.com`，jsDelivr 兜底） |
 | R2 | 未启用 |
 | 访问控制 | **口令门禁**（`ACCESS_PASS` secret），除登录入口外全站需口令 |
+| 当前版本 | `8fa15306-4dc5-499b-9d7b-910e73529a54` |
 | Actions 定时 | 每天 16:35（北京时间），`update-data.yml` |
 
 ## 上线时的端到端验证
@@ -152,3 +153,36 @@ ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.worke
 
 应该看到 10 项全过。其中 `/api/research 因子数据` 第一次可能提示 `NOT_FOUND`，
 那是因为 `data` 分支还没跑过新流水线，页面会自动用内嵌那份，不影响打开。
+
+## 门禁上线记录（2026-11-04）
+
+口令门禁已随本次部署上线，Worker 版本 `8fa15306-4dc5-499b-9d7b-910e73529a54`，
+`ACCESS_PASS` 已写入 secret。
+
+沙箱无法直连 `workers.dev`（出站被墙），所以仍用「临时 Worker + service binding」
+在真实运行时里验证，验完把临时 Worker 与测试 KV key 全部删除：
+
+| 用例 | 结果 |
+|---|---|
+| 匿名访问 `/`、`/research` | **401**，只有口令页，不含任何行情字段 |
+| 匿名访问 `/api/all`、`/api/hist` | **401** `{"error":"unauthorized"}` |
+| 匿名访问 `/api/status` | 200 `{"ok":true,"locked":true}`（不含绑定信息） |
+| 伪造 Cookie | **401** |
+| 正确口令 | **302** → `Location: /research`，Cookie 带 HttpOnly + Secure + SameSite=Lax |
+| 登录后 `/` | 200，94432 字节 |
+| 登录后 `/api/status` | 200，历史源 gh，1717 只 / 2026-11-03 |
+| 登录后 `/api/hist?code=510300` | 200，36228 字节，magic=ETH1 |
+| `/__out` | 302，`Max-Age=0` 清 Cookie |
+
+部署过程中踩到一个只在线上暴露的坑，记在这里：
+
+> **service binding 的 fetch 默认 `redirect: 'follow'`**。测登录时拿到 401，
+> 一度以为是口令写错，实际是 `/__auth` 返回的 302 被自动跟随到 `/`，
+> 而那一刻 Cookie 还没落到后续请求里，于是拿到「未登录」的 401。
+> 测这类返回 302 的接口一律要加 `redirect: 'manual'`。
+> `tools/verify.mjs` 和临时自检 Worker 都已按这个改。
+
+另：验证时 `/api/all` 偶发只返回 900 条（东财被限流）或直接报「所有行情源均不可用」
+（新浪响应 19~40 秒，超过 6 秒等待上限）。这是既有竞速逻辑与上游限流叠加的结果，
+与门禁无关；盘后时段更容易出现，交易时段通常 3~4 秒正常返回 1717 只。
+
