@@ -1017,19 +1017,41 @@ function openHist(code, name){
   }).then(function(buf){
     if (H.code !== code) return;          // 加载期间用户已经换了标的
     var raw = parseHist(buf);
-    // 历史里没有今天就把实时快照接上去，盘中也能看到当天走势
-    var ext = hPatchToday(raw, findItem(code));
-    H.d = ext || raw;
-    H.ext = !!ext;
-    H.ok = true;
-    hDraw();
-    hLegend(-1);
-    var note = hAdjNote();
-    if (ext){
-      note = (note ? note + ' ' : '')
-        + '最后一根为今日行情（盘中会随实时价跳动），技术指标已按今日价格重算。';
+
+    function finish(it){
+      if (H.code !== code) return;
+      // 历史里没有今天就把实时快照接上去，盘中也能看到当天走势
+      var ext = hPatchToday(raw, it);
+      H.d = ext || raw;
+      H.ext = !!ext;
+      H.ok = true;
+      hDraw();
+      hLegend(-1);
+      var note = hAdjNote();
+      if (ext){
+        note = (note ? note + ' ' : '')
+          + '最后一根为今日行情（盘中会随实时价跳动），技术指标已按今日价格重算。';
+      }
+      document.getElementById('hNote').textContent = note;
     }
-    document.getElementById('hNote').textContent = note;
+
+    /* 全市场快照里找不到这只、或者拿到的快照没有高低价/成交额（东财限流时
+       会只回一半标的），就单独问一次 /api/quote——单只接口走的是另一条通道，
+       命中率高得多。拿不到就按原样画，不因为一个补丁把整张图卡住。 */
+    var it = findItem(code);
+    if (it && it.amt > 0 && it.hi > 0){ finish(it); return; }
+
+    fetch('/api/quote?codes=' + encodeURIComponent(code))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (H.code !== code) return;
+        var x = (j && j.ok && j.raw && j.raw[0]) ? j.raw[0] : null;
+        var p = x ? +x.f2 : 0;
+        finish(p > 0 ? {
+          p: p, hi: +x.f15 || 0, lo: +x.f16 || 0, op: +x.f17 || 0, amt: +x.f6 || 0,
+        } : it);
+      })
+      .catch(function(){ finish(it); });
   }).catch(function(e){
     if (H.code !== code) return;
     var msg = e.message || String(e);
