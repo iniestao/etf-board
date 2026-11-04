@@ -77,24 +77,31 @@ async function main() {
     const { r, ms } = await hit(base, '/api/status');
     status = await r.json();
     const b = status.bindings || {};
-    if (b.r2 && b.kv) ok('/api/status', `${r.status}  ${ms}ms  r2=true kv=true`);
-    else if (b.r2 && !b.kv) soft('/api/status', `${r.status}  r2=true kv=${b.kv}`, 'KV 没绑上：自选仍然是本地存储，换浏览器会丢。加 [[kv_namespaces]] 后重新 deploy');
-    else if (!b.r2 && b.kv) soft('/api/status', `${r.status}  r2=${b.r2} kv=true`, 'R2 没绑上：K 线面板会提示「未启用」。加 [[r2_buckets]] 后重新 deploy');
-    else bad('/api/status', `${r.status}  r2=${b.r2} kv=${b.kv}`, 'R2 和 KV 都没绑上：wrangler.toml 里两段还是注释状态，去掉注释再 deploy');
+    const hasHist = b.r2 || b.gh;
+    const srcLabel = b.r2 ? 'r2' : b.gh ? 'github' : '无';
+    if (hasHist && b.kv) ok('/api/status', `${r.status}  ${ms}ms  历史源=${srcLabel}  kv=true`);
+    else if (hasHist && !b.kv) soft('/api/status', `${r.status}  历史源=${srcLabel}  kv=${b.kv}`,
+      'KV 没绑：自选只存本地，换浏览器会丢。加 [[kv_namespaces]] 后重新 deploy');
+    else if (!hasHist && b.kv) soft('/api/status', `${r.status}  历史源=无  kv=true`,
+      '没有历史数据源：K 线面板会提示「未启用」。绑 R2，或在 Worker 里设 HIST_BASE 指向 data 分支');
+    else bad('/api/status', `${r.status}  历史源=无  kv=${b.kv}`,
+      '历史源和 KV 都没有：K 线不可用、自选只存本地。盯盘表本身不受影响');
   } catch (e) {
     bad('/api/status', e.message, '/api/status 都打不开，说明部署的不是这个 Worker 版本');
   }
 
-  // ---- 3. 历史数据是否已进 R2 ----
+  // ---- 3. 历史数据是否已就位 ----
   const hist = status && status.hist;
   if (!hist) {
-    if (status && status.bindings && status.bindings.r2) {
-      soft('R2 历史数据', '空', 'R2 已绑定但还没有数据：去 GitHub Actions 点 Run workflow 跑一次全量');
+    if (status && status.bindings && (status.bindings.r2 || status.bindings.gh)) {
+      soft('历史数据', '空', '数据源已通但还没有数据：去 GitHub Actions 点 Run workflow 跑一次全量');
     } else {
-      soft('R2 历史数据', '未启用', '先解决上一条 R2 绑定');
+      soft('历史数据', '未启用', '先解决上一条：绑 R2 或设置 HIST_BASE');
     }
+  } else if (hist.error) {
+    soft('历史数据', hist.error, '数据源通了但缺 manifest.json，Actions 是否跑成功？');
   } else {
-    ok('R2 历史数据', `${hist.last_trade_date}  ${hist.codes} 只  ${hist.format}  ${hist.cols} 列`);
+    ok('历史数据', `${hist.last_trade_date}  ${hist.codes} 只  ${hist.format}  ${hist.cols} 列  (${hist.source || '?'})`);
   }
 
   // ---- 4. /api/all 全市场行情 ----
@@ -115,9 +122,9 @@ async function main() {
     const ct = r.headers.get('content-type') || '';
     if (ct.includes('json')) {
       const j = await r.json();
-      bad('/api/hist 单只', `JSON: ${j.code || ''} ${j.error || ''}`, j.code === 'NO_R2'
-        ? 'R2 未绑定'
-        : j.code === 'NOT_FOUND' ? 'R2 里没有这个 key，Actions 是否跑成功？' : '读 R2 出错，检查 bucket 名与 binding 名');
+      bad('/api/hist 单只', `JSON: ${j.code || ''} ${j.error || ''}`, j.code === 'NO_HIST'
+        ? '没有配置历史源：绑 R2 或设 HIST_BASE'
+        : j.code === 'NOT_FOUND' ? '数据源里没有这个 key，Actions 是否跑成功？' : '读取历史数据出错');
     } else {
       const buf = Buffer.from(await r.arrayBuffer());
       const hdr = readHistHeader(buf);
@@ -133,7 +140,8 @@ async function main() {
     const { r, ms } = await hit(base, '/api/watch');
     const j = await r.json();
     if (j.ok) ok('/api/watch 自选', `${r.status}  ${ms}ms  exists=${j.exists}  云端 ${(j.list || []).length} 只`);
-    else bad('/api/watch 自选', `${r.status}  ${j.code || ''} ${j.error || ''}`, j.code === 'NO_KV' ? 'KV 未绑定' : '读写 KV 出错');
+    else if (j.code === 'NO_KV') soft('/api/watch 自选', '未绑定 KV，仅本地存储', '换浏览器自选会丢，其余功能不受影响');
+    else bad('/api/watch 自选', `${r.status}  ${j.code || ''} ${j.error || ''}`, '读写 KV 出错');
   } catch (e) {
     bad('/api/watch 自选', e.message, 'KV 未绑定或 key 不对');
   }

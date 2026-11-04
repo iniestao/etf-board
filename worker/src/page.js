@@ -695,10 +695,12 @@ function openHist(code, name){
   }).catch(function(e){
     if (H.code !== code) return;
     var msg = e.message || String(e);
-    var hint = /NO_R2|未绑定/.test(msg)
-      ? '历史数据未启用。在 <code>wrangler.toml</code> 里绑定 R2 后重新部署，'
-        + '并确保 Actions 已把 <code>dist/hist/</code> 同步上去。'
-      : msg;
+    var hint = /NO_HIST|未配置/.test(msg)
+      ? '历史数据未启用：Worker 没有绑定 R2，也没有设置 <code>HIST_BASE</code>。'
+      : /NOT_FOUND|无此标的/.test(msg)
+        ? '历史数据还没生成。去 GitHub Actions 手动跑一次「更新 ETF 数据」，'
+          + '跑完会自动推到 <code>data</code> 分支。'
+        : msg;
     document.getElementById('hLeg').innerHTML = '';
     document.getElementById('hNote').innerHTML = hint;
     var g = H.cv.getContext('2d');

@@ -4,21 +4,31 @@ compatibility_date = "2024-11-01"
 
 # 免费版即可运行：10 万请求/天，无休眠
 # 部署：npx wrangler deploy
-
-# ---------------------------------------------------------------- 可选绑定
-# 下面两段默认注释掉，为的是「首次部署开箱即用」——没建存储也能先把页面跑起来，
-# 页面会自己降级（历史面板提示未启用、自选退回 localStorage）。
-# 要用完整功能，先建资源，去掉注释，再 deploy 一次。
 #
-# 【R2：历史 K 线】
+# 注意：Workers 和 KV 都**不需要绑卡**。整份配置里唯一要绑卡的是 R2，
+# 而 R2 在这里是可选的——历史数据默认走 GitHub 的 data 分支。
+
+# ---------------------------------------------------------------- 历史数据源
+# 【二选一】
+#
+# 方案 1（默认，推荐）：GitHub 仓库的 data 分支
+#   不绑卡、不配 secret。Actions 每天跑完把 dist/hist + manifest.json 推上去，
+#   Worker 从这里读，边缘缓存 6 小时。
+#   把用户名/仓库名换成你自己的，然后去掉下面两行注释。
+#
+# [vars]
+# HIST_BASE = "https://raw.githubusercontent.com/你的用户名/etf-board/data"
+#
+# 方案 2（可选，更快）：R2
+#   需要绑卡开通（额度内不扣费）。绑了 R2 就优先用 R2，HIST_BASE 自动失效。
 #   npx wrangler r2 bucket create etf-data
-#   bucket 名可以改，但要和 GitHub Actions 的 R2_BUCKET secret 保持一致
 #
 # [[r2_buckets]]
 # binding = "BUCKET"
 # bucket_name = "etf-data"
-#
-# 【KV：自选跨设备】
+
+# ---------------------------------------------------------------- 自选跨设备
+# KV 免费、不用绑卡，建议开。不开就退回 localStorage，换浏览器会丢自选。
 #   npx wrangler kv namespace create WATCH
 #   命令会打印 id = "xxxxxxxx"，填到下面
 #

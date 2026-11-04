@@ -14,6 +14,10 @@ concurrency:
   group: etf-update           # 防止上次没跑完又触发新的
   cancel-in-progress: false
 
+# 往 data 分支 push 需要写权限；不声明的话默认只读，push 会 403
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -98,9 +102,36 @@ jobs:
               print('::warning::覆盖度低于 90%，重跑 pipeline/fetch_index_map.mjs 并重新部署 Worker')
           PY
 
-      # ---------- 3. 上传 R2 ----------
-      # R2 完全兼容 S3 协议，region 必须写 auto
-      - name: 同步到 Cloudflare R2
+      # ---------- 3. 发布历史数据 ----------
+      # 默认走 GitHub 自己的 data 分支：不需要 R2、不需要绑卡、不需要配 secret。
+      # 每次都是「孤儿单提交 + force push」，所以仓库不会一天涨 62MB。
+      # Worker 用 HIST_BASE 指向这个分支的 raw 地址即可。
+      - name: 发布到 data 分支
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          PUB=/tmp/pub
+          mkdir -p "$PUB"
+          cp -r dist/hist "$PUB/"
+          cp dist/manifest.json "$PUB/"
+          cd "$PUB"
+          git init -q
+          git config user.name "etf-board-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "data $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git branch -M data
+          git push -q --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+          echo "data 分支 $(git rev-parse --short HEAD)，$(du -sh "$PUB" | cut -f1)，" \
+               "$(ls "$PUB"/hist | wc -l) 个 hist"
+
+      # ---------- 4. 可选：同步到 R2 ----------
+      # 只有在仓库变量 USE_R2=true（且配了那 4 个 secret）时才跑。
+      # R2 比 GitHub raw 快，但开通要绑卡——不绑卡就跳过，不影响任何功能。
+      - name: 同步到 Cloudflare R2（可选）
+        if: ${{ vars.USE_R2 == 'true' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -112,11 +143,6 @@ jobs:
             --endpoint-url "$R2_ENDPOINT" \
             --no-progress \
             --exclude "*.pyc"
-          echo "已上传 $(find dist -name '*.parquet' | wc -l) 个 parquet / $(find dist/hist -name '*.bin' | wc -l) 个 hist"
-          # 想省掉每天 1GB 的全量重传，把上面改成同时带：
-          #   --exclude "etf/*" --exclude "*.parquet"
-          # 代价是 R2 上没有全历史 Parquet，只有 hist/ 和 snapshot.parquet。
-          # 页面不需要 Parquet，只有在别的机器上拉数据做回测时才用得上。
 
       - name: 汇总
         if: always()

@@ -5,14 +5,14 @@
 
 ```
 worker/
-├── src/index.js        后端：多源竞速 + 透传 + R2 历史 + KV 自选
+├── src/index.js        后端：多源竞速 + 透传 + 历史数据（R2 或 GitHub）+ KV 自选
 ├── src/page.js         前端：解析/分类/排序/去重/K 线面板 + 腾讯直连
 ├── src/idx_data.js     指数映射（由 pipeline/gen_idx_data.mjs 生成，勿手改）
 ├── dist/worker.js      单文件版（可直接粘贴部署）
 ├── deno/main.ts        Deno Deploy 入口
 ├── build.mjs           打包脚本
 ├── dev_server.mjs      本地调试（带 R2 / KV 的 mock）
-└── wrangler.toml       可选绑定：R2、KV
+└── wrangler.toml       可选绑定：R2（加速，需绑卡）、KV
 ```
 
 ---
@@ -24,7 +24,7 @@ worker/
 | 全市场 1717 只榜单 | 新浪 `etf_hq_fund` | Worker 代理（透传，不解码） | 60s / 非交易 300s |
 | **自选盯盘** | **腾讯 `qt.gtimg.cn`** | **浏览器 `<script>` 直连** | **5s / 非交易 30s** |
 | 溢价率 / IOPV | 东财 `push2delay` | Worker（东财可用时） | 跟随全市场 |
-| 历史日线 + 指标 | 本地 R2 | Worker 透传 → 浏览器解析 | 日更（Actions） |
+| 历史日线 + 指标 | GitHub `data` 分支（或 R2） | Worker 透传 → 浏览器解析 | 日更（Actions） |
 
 ### 为什么自选走浏览器直连腾讯
 
@@ -118,8 +118,8 @@ GitHub Actions（每日 16:35）
   ├ 拉 1717 只全历史 → SQLite → 复权 → 56 指标 + 101 因子
   ├ dist/etf/{code}.parquet   全历史 × 165 字段，给回测用（993MB）
   └ dist/hist/{code}.bin      近 500 天 × 17 字段，给页面用（46MB）
-        ↓ aws s3 sync
-      Cloudflare R2
+        ↓ git push --force（孤儿单提交，仓库不膨胀）
+      GitHub data 分支
         ↓ Worker 原样透传（不解压、不解析）
       浏览器 DataView → Float32Array → canvas
 ```
@@ -170,10 +170,13 @@ dates      4B×n  int32，YYYYMMDD
 两者差异超过 0.5% 时会额外提示"本区间内有分红或份额折算"——
 159922 就是典型，原始价算出来 −56%，复权后其实是 +10.9%。
 
-### 3.4 没有 R2 会怎样
+### 3.4 两种数据源
 
-面板提示"历史数据未启用"，其余功能完全不受影响。
-`/api/status` 会直接告诉你绑定状态和数据的最后交易日。
+`histSource()` 按优先级选源：绑了 R2 就用 R2，否则读 `HIST_BASE` 指向的 GitHub
+`data` 分支，两者都没有就在面板提示"历史数据未启用"，其余功能完全不受影响。
+
+R2 快，但开通要绑卡；GitHub 零配置零成本，回源慢一点（首次约 200ms，
+之后走边缘缓存 6 小时）。`/api/status` 会告诉你当前用哪个源、数据截止哪天。
 
 ---
 
@@ -208,13 +211,15 @@ dates      4B×n  int32，YYYYMMDD
 
 ### 5.1 第一步：跑起来
 
-**A. 网页粘贴（最快，但只能用基础功能）**
+**A. 网页粘贴（最快，不装任何东西）**
 
 1. https://dash.cloudflare.com → **Workers & Pages** → **Create** → Hello World → Deploy
 2. **Edit code** → 全选删除 → 粘贴 `dist/worker.js` 全部内容 → **Deploy**
 3. 访问 `https://<名字>.<子域>.workers.dev`
 
-**B. 命令行（推荐，后面开 R2/KV 必须走这条）**
+变量和 KV 也能在控制台加（见 5.2 末尾），所以这条路能走完全部功能。
+
+**B. 命令行（推荐，配置写进 wrangler.toml，改起来有记录）**
 
 ```bash
 cd worker
@@ -225,20 +230,50 @@ wrangler deploy
 
 ### 5.2 第二步：开历史 K 线和自选同步
 
-**建资源**
+**历史数据：默认不用 R2**
+
+Worker 支持两种数据源，`histSource()` 决定优先级：
+
+```js
+function histSource(env) {
+  if (env.BUCKET) return 'r2';        // 绑了 R2 就用 R2
+  if (env.HIST_BASE) return 'gh';     // 否则读 GitHub 的 data 分支
+  return null;                        // 都没有 → 历史面板标记未启用
+}
+```
+
+默认走 GitHub：Actions 每天把 `dist/hist/` + `manifest.json` 推到仓库的 `data` 分支
+（每次都是孤儿单提交 + `--force`，所以仓库体积稳定在 62MB，不会一天涨一份）。
+Worker 只需一个变量指过去：
+
+```toml
+[vars]
+HIST_BASE = "https://raw.githubusercontent.com/你的用户名/etf-board/data"
+```
+
+想改回 R2（更快，但要绑卡开通）：
 
 ```bash
 npx wrangler r2 bucket create etf-data
-npx wrangler kv namespace create WATCH
 ```
-
-KV 命令会打印一段配置，把 `id` 抄下来。然后去掉 `wrangler.toml` 里对应两段的注释：
 
 ```toml
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "etf-data"
+```
 
+绑了 R2 之后 `HIST_BASE` 自动失效，不用删。
+
+**自选：KV（免费，不用绑卡）**
+
+```bash
+npx wrangler kv namespace create WATCH
+```
+
+命令会打印 `id = "xxxx"`，填进 `wrangler.toml`：
+
+```toml
 [[kv_namespaces]]
 binding = "WATCH"
 id = "上一步打印的 id"
@@ -252,30 +287,36 @@ npx wrangler deploy
 
 **验证**
 
-访问 `https://<你的域名>/api/status`，应该看到：
+访问 `https://<你的域名>/api/status`：
 
 ```json
-{"ok":true,"bindings":{"r2":true,"kv":true},
- "hist":{"last_trade_date":"2026-11-03","codes":1717,"format":"ETH1","cols":17}}
+{"ok":true,
+ "bindings":{"r2":false,"kv":true,"gh":true},
+ "hist":{"source":"gh","last_trade_date":"2026-11-04","codes":1717,"format":"ETH1","cols":17}}
 ```
 
-`hist` 为 null 或报错，说明 R2 里还没有数据——去跑一次 Actions。
+`hist` 为 null 说明两种源都没配；`hist.error` 说明配了但没数据，去跑一次 Actions。
 
-> 用网页粘贴部署的话，也可以在 Workers 控制台的 **Settings → Bindings** 里手动加
-> R2 bucket 和 KV namespace，效果一样。
+> 用网页粘贴部署的话，变量在 **Settings → Variables and Secrets** 加，
+> KV 在 **Settings → Bindings** 加，效果一样。
 
-### 5.3 GitHub Actions 配四个 secret
+### 5.3 GitHub Actions：不需要任何 secret
 
-仓库 **Settings → Secrets and variables → Actions**：
+只有一件事要开：仓库 **Settings → Actions → General → Workflow permissions**
+选 **Read and write permissions**。
 
-| Secret | 从哪来 |
-|---|---|
-| `R2_ACCOUNT_ID` | Cloudflare 控制台右侧的 Account ID |
-| `R2_ACCESS_KEY_ID` | R2 → **Manage R2 API Tokens** → Create token（权限 Object Read & Write，限定 `etf-data`） |
-| `R2_SECRET_ACCESS_KEY` | 同上，创建时只显示一次 |
-| `R2_BUCKET` | `etf-data` |
+因为发布数据用的是 Actions 内置的 `GITHUB_TOKEN`，往自己的 `data` 分支 push，
+workflow 里已经声明了 `permissions: contents: write`。
 
-配好后在 Actions 页面点 **Run workflow** 手动跑一次。
+然后 Actions 页面点 **Run workflow** 手动跑一次，约 15 分钟。
+
+跑完仓库会多一个 `data` 分支，里面是：
+
+```
+data/
+├── hist/510300.bin     1717 个，每个约 36KB
+└── manifest.json       字段清单 + 最新交易日
+```
 
 ### 5.4 Deno Deploy（没有 10ms 限制，但没有历史面板）
 
@@ -316,12 +357,12 @@ node build.mjs && node dev_server.mjs     # → http://127.0.0.1:8899
 
 **本项目的实际 CPU 消耗**：冷拉全量约 190ms，60 秒一次 → 约 **2.3 CPU 小时/月**。
 
-- Deno 的 15 小时 → 富余 6 倍，但拿不到 R2
+- Deno 的 15 小时 → 富余 6 倍，但拿不到 R2 / KV 绑定
 - Workers 的 10ms/请求 → 单请求卡死，只能靠「缓存命中 2.2ms」绕
-- **R2 出站流量全免**——这是选 Cloudflare 的唯一决定性理由。1717 只的 K 线
-  每天可能被拉几百次，换成按流量计费的存储，账单会失控
+- 历史数据不占 Worker 的 CPU：62MB 的 bin 放 GitHub 或 R2，Worker 只做透传
 
-**结论：要历史数据就选 Cloudflare Workers + R2；只要实时榜单，Deno 更宽裕。**
+**结论：选 Cloudflare Workers。历史数据默认放 GitHub（不绑卡），
+想要更快再开 R2——只是存储位置不同，Worker 代码不用改。**
 
 ---
 
@@ -395,22 +436,20 @@ timerFast = setInterval(loadTXQuotes, open ? 5000 : 30000); // 自选（浏览�
 | 实时行情 `L1` | Worker 进程内存 | 5 秒 | ❌ | ❌ |
 | `/api/all` 响应 | Web Cache API | 5 秒 | ✅ | ✅ 同 region |
 | **自选列表** | **Workers KV**（一个 key） | 永久 | ✅ | ✅ |
-| **历史日线** | **R2**（3434 个对象，1.04GB） | 永久 | ✅ | ✅ |
+| **历史日线** | **GitHub `data` 分支**（1717 个 bin，62MB），或 R2 | 永久 | ✅ | ✅ |
 
 自选在 KV 之外还有一份 localStorage 副本：先把本地那份画出来，再用云端覆盖。
 网络慢的时候不至于盯着空白表格等。
 
-### R2 的成本
+### 存储成本
 
-免费额度：**10GB 存储 / 100 万 Class A / 1000 万 Class B 每月 / 出站流量全免**。
+**默认方案（GitHub）**：`data` 分支放 1717 个 bin + manifest，共 62MB。
+每次 Actions 都是新的孤儿提交 + force push，旧提交不可达，仓库体积稳定。
+完整 Parquet（993MB）只留在 Actions 的临时目录里，不回传——回测要在本地重跑
+`alpha/compute.py`，不依赖线上那份。
 
-| 项 | 用量 | 占比 |
-|---|---|---|
-| 存储 | 1.04 GB（993MB parquet + 46MB bin） | 10% |
-| 写入（每日全量 sync） | 3434 × 21 ≈ 7.2 万/月 | 7% |
-| 读取 | K 线面板每次 1 次，边缘缓存后极少回源 | < 1% |
-| 出站 | 46MB × N 次 | **免费** |
+**可选方案（R2）**：免费额度 10GB 存储 / 100 万 Class A / 1000 万 Class B 每月 /
+出站全免。开起来后 `HIST_BASE` 自动失效，优先读 R2。
 
-**每天全量重传 1GB 是唯一浪费**：Parquet 是整文件格式，改一个字段就得重写整个文件。
-但 7% 的配额占用不值当去优化成增量。真要省，把 `etf/` 从 sync 里排除，
-只传 `hist/` + `snapshot.parquet` + `manifest.json`（48MB，快 20 倍）。
+为什么不把 1GB Parquet 也传上去：Parquet 是整文件格式，改一个字段就得重写整个文件，
+每天全量重传是纯浪费。页面只需要 `hist/`，回测只需要本地跑一次。

@@ -74,13 +74,23 @@ async function sinaPage(p) {
   const url = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
     + 'Market_Center.getHQNodeData?page=' + p
     + '&num=100&sort=symbol&asc=1&node=etf_hq_fund&symbol=&_s_r_a=page';
-  const r = await fetch(url, {
-    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
-  });
-  if (!r.ok) throw new Error('SINA HTTP ' + r.status);
-  const t = (await r.text()).trim();
-  if (!t || t === 'null' || t === '[]') return '';
-  return t.slice(1, -1);   // 去掉外层 []
+  // 单页偶发失败会让总数少 100 只（1717 → 1617），而 1617 仍高于完整性阈值，
+  // 于是残缺结果被当成完整快照、静默上线。重试一次的成本远低于此，所以在这里堵住。
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+      });
+      if (!r.ok) throw new Error('SINA HTTP ' + r.status);
+      const t = (await r.text()).trim();
+      // 空页是正常的（末页之后），不重试
+      if (!t || t === 'null' || t === '[]') return '';
+      return t.slice(1, -1);   // 去掉外层 []
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      await new Promise((res) => setTimeout(res, 120));
+    }
+  }
 }
 
 async function fetchSina() {
@@ -208,20 +218,52 @@ async function fetchQuote(codes) {
   return diff;
 }
 
-// ---------------------------------------------------------------- 历史数据（R2）
+// ---------------------------------------------------------------- 历史数据源
+/**
+ * 历史数据有两个落脚点，优先级 R2 > GitHub 仓库：
+ *
+ *   R2     ：快，但开通要绑卡验身份（额度内不扣费，只是这道门槛）
+ *   GitHub ：Actions 把 dist/hist 推到 data 分支，Worker 从 raw 读。
+ *            完全免费、零配置，代价是回源慢一点，靠边缘缓存兜住
+ *
+ * 两者都没有时返回 null，页面把历史面板标成「未启用」，其余功能不受影响。
+ */
+function histSource(env) {
+  if (env && env.BUCKET) return 'r2';
+  if (env && env.HIST_BASE) return 'gh';
+  return null;
+}
+
+/** 抹平 R2Object 与 fetch Response 的差异，只暴露 body / text / etag */
+async function readAsset(env, key) {
+  if (env && env.BUCKET) {
+    const o = await env.BUCKET.get(key);
+    if (!o) return null;
+    return { body: o.body, text: () => o.text(), etag: o.httpEtag || null };
+  }
+  const base = String(env.HIST_BASE).replace(/\/+$/, '');
+  const r = await fetch(base + '/' + key, {
+    // 让 Cloudflare 边缘再兜一层，减少对 GitHub raw 的依赖
+    cf: { cacheTtl: 1800, cacheEverything: true },
+  });
+  if (!r.ok) return null;
+  return { body: r.body, text: () => r.text(), etag: r.headers.get('etag') };
+}
+
+// ---------------------------------------------------------------- 历史数据
 /**
  * 取单只 ETF 的精简历史二进制。
  *
  * 为什么不在 Worker 里解 Parquet：单只 2.27MB / 165 列，zstd 解压这一步
  * 就会吃掉几百毫秒，而免费版只有 10ms CPU。所以 Actions 侧另导了一份
- * 定长二进制（近 500 天 × 17 字段，约 12KB），Worker 只做原样透传，
+ * 定长二进制（近 500 天 × 17 字段，约 36KB），Worker 只做原样透传，
  * 解析交给浏览器——那边没有 CPU 配额。
  *
- * 缓存 6 小时：历史数据一天只变一次，没必要每次回源 R2。
+ * 缓存 6 小时：历史数据一天只变一次，没必要每次回源。
  */
 async function serveHist(code, env, ctx) {
-  if (!env || !env.BUCKET) {
-    return json({ ok: false, code: 'NO_R2', error: '未绑定 R2 存储，历史数据不可用' });
+  if (!histSource(env)) {
+    return json({ ok: false, code: 'NO_HIST', error: '未配置历史数据源' });
   }
 
   const KEY = 'hist-v1/' + code;
@@ -235,15 +277,14 @@ async function serveHist(code, env, ctx) {
 
   let obj;
   try {
-    obj = await env.BUCKET.get('hist/' + code + '.bin');
+    obj = await readAsset(env, 'hist/' + code + '.bin');
   } catch (e) {
-    return json({ ok: false, code: 'R2_ERR', error: '读 R2 失败: ' + (e.message || e) });
+    return json({ ok: false, code: 'HIST_ERR', error: '读取历史数据失败: ' + (e.message || e) });
   }
   if (!obj) return json({ ok: false, code: 'NOT_FOUND', error: '无此标的的历史数据' });
 
-  // 透传 R2 的元信息（ETag / Last-Modified），浏览器二次访问可走 304
   const h = new Headers();
-  obj.writeHttpMetadata(h);
+  if (obj.etag) h.set('ETag', obj.etag);
   h.set('Content-Type', 'application/octet-stream');
   h.set('Cache-Control', 'public, max-age=21600');
   h.set('Access-Control-Allow-Origin', '*');
@@ -312,19 +353,21 @@ async function serveWatch(request, env) {
  * 历史数据是哪天的」一次说清，省得去翻日志猜。
  */
 async function serveStatus(env) {
+  const src = histSource(env);
   const out = {
     ok: true,
-    bindings: { r2: !!(env && env.BUCKET), kv: !!(env && env.WATCH) },
+    bindings: { r2: src === 'r2', kv: !!(env && env.WATCH), gh: src === 'gh' },
     hist: null,
     watch_n: null,
     quote: null,
   };
-  if (env && env.BUCKET) {
+  if (src) {
     try {
-      const m = await env.BUCKET.get('manifest.json');
+      const m = await readAsset(env, 'manifest.json');
       if (m) {
         const j = JSON.parse(await m.text());
         out.hist = {
+          source: src,
           last_trade_date: j.last_trade_date,
           codes: j.codes,
           format: j.hist && j.hist.format,
@@ -332,7 +375,11 @@ async function serveStatus(env) {
           bytes: j.hist && j.hist.bytes,
         };
       } else {
-        out.hist = { error: 'R2 里没有 manifest.json，Actions 还没跑过？' };
+        out.hist = {
+          error: src === 'r2'
+            ? 'R2 里没有 manifest.json，Actions 还没跑过？'
+            : 'data 分支里没有 manifest.json，Actions 还没跑过？',
+        };
       }
     } catch (e) {
       out.hist = { error: String(e.message || e) };
@@ -1169,10 +1216,12 @@ function openHist(code, name){
   }).catch(function(e){
     if (H.code !== code) return;
     var msg = e.message || String(e);
-    var hint = /NO_R2|未绑定/.test(msg)
-      ? '历史数据未启用。在 <code>wrangler.toml</code> 里绑定 R2 后重新部署，'
-        + '并确保 Actions 已把 <code>dist/hist/</code> 同步上去。'
-      : msg;
+    var hint = /NO_HIST|未配置/.test(msg)
+      ? '历史数据未启用：Worker 没有绑定 R2，也没有设置 <code>HIST_BASE</code>。'
+      : /NOT_FOUND|无此标的/.test(msg)
+        ? '历史数据还没生成。去 GitHub Actions 手动跑一次「更新 ETF 数据」，'
+          + '跑完会自动推到 <code>data</code> 分支。'
+        : msg;
     document.getElementById('hLeg').innerHTML = '';
     document.getElementById('hNote').innerHTML = hint;
     var g = H.cv.getContext('2d');
