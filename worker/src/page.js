@@ -45,6 +45,11 @@ text-decoration:none;
 background:var(--bg3)}
 #btnRs:hover{color:var(--txt);border-color:var(--accent)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(142px,1fr));gap:9px;margin-bottom:12px}
+/* 上游故障时的横幅：贴在卡片下面，一进页面就能看见。
+   放在 footer 里等于没有——100 行的表格把 footer 顶到 4600px 之外。 */
+.stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12px;line-height:1.5;
+  background:rgba(255,176,32,.09);border:1px solid rgba(255,176,32,.32);color:#ffb020}
+.stalebar.bad{background:rgba(255,77,79,.09);border-color:rgba(255,77,79,.32);color:#ff4d4f}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
 .card .k{font-size:11px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
 .card .v{font-size:18px;font-weight:600;font-family:var(--mono)}
@@ -290,6 +295,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </div>
 
 <div class="sec">
+  <div id="staleBar" class="stalebar" style="display:none"></div>
   <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
     <span class="sync" id="btnSync" title="复制一条带同步码的链接，在别的设备打开就是这份自选">同步</span></div>
   <div class="bar">
@@ -412,7 +418,7 @@ var STATS = null;
 var LIVE = {};                 // 自选高频覆盖 {code: item}
 var g = 'all', sortKey = 'amt', limit = 100, kw = '';
 var DATA_SRC = '', DATA_TS = 0;
-var lastP = {}, timerSlow = null, timerFast = null;
+var lastP = {}, timerSlow = null, timerFast = null, retryTimer = null;
 
 /* ---------- 分类（浏览器端，带缓存；Worker 端做会吃掉 10ms CPU 预算） ---------- */
 var GROUP_CACHE = new Map();
@@ -1924,6 +1930,14 @@ window.addEventListener('resize', function(){
 });
 
 /* ---------- 数据加载 ---------- */
+function setStale(msg, bad){
+  var el = document.getElementById('staleBar');
+  if (!msg){ el.style.display = 'none'; el.textContent = ''; el.className = 'stalebar'; return; }
+  el.style.display = 'block';
+  el.className = 'stalebar' + (bad ? ' bad' : '');
+  el.textContent = msg;
+}
+
 function loadFull(){
   return fetch('/api/all').then(function(r){ return r.json(); }).then(function(j){
     if (!j.raw){ throw new Error(j.error || '无数据'); }
@@ -1933,7 +1947,11 @@ function loadFull(){
     // 价格变动闪烁依赖前后对比，保留 lastP
     DATA = items;
     STATS = computeStats(items);
-    DATA_TS = Date.now();
+    // 时间以服务端为准：这是「数据本身」的时刻，不是「浏览器收到」的时刻。
+    // 上游挂了的时候后端会把旧快照原样发回来并打上 stale，这里必须照实标出来，
+    // 而不是盖一个「更新 17:52」让人以为是最新的。
+    DATA_TS = j.ts || Date.now();
+    if (retryTimer){ clearTimeout(retryTimer); retryTimer = null; }
 
     var nPre = 0;
     for (var z=0;z<items.length;z++) if (items[z].pre) nPre++;
@@ -1945,8 +1963,14 @@ function loadFull(){
     document.getElementById('fSrc').textContent = '数据源: '
       + (j.src === 'eastmoney' ? '东方财富（含 IOPV）' : '新浪财经')
       + ' · ' + items.length + ' 只' + preNote;
-    document.getElementById('fTs').textContent = '更新 ' + new Date().toLocaleTimeString('zh-CN');
+    document.getElementById('fTs').textContent = (j.stale ? '旧数据 ' : '更新 ')
+      + new Date(DATA_TS).toLocaleTimeString('zh-CN');
     document.getElementById('fErr').textContent = '';
+    // 横幅贴在卡片下面：表格很长，footer 里的提示根本看不见
+    setStale(j.stale
+      ? '行情源暂时不可用，正在显示 ' + Math.max(1, Math.round((Date.now() - DATA_TS) / 60000))
+        + ' 分钟前的快照，后台自动重试中（自选行情不受影响，走腾讯直连）'
+      : '', false);
 
     var hasPm = items.some(function(x){ return x.pm != null; });
     void hasPm;
@@ -1954,9 +1978,13 @@ function loadFull(){
     renderCards(); renderList(); renderWatch();
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
   }).catch(function(e){
-    document.getElementById('fErr').textContent = '行情失败: ' + e.message;
+    setStale('行情源暂时不可用（' + e.message + '），15 秒后自动重试；自选行情走腾讯直连，不受影响', true);
+    document.getElementById('fErr').textContent = '';
     if (!DATA.length) document.getElementById('listBody').innerHTML =
-      '<tr><td colspan="11" class="empty">加载失败：' + e.message + '</td></tr>';
+      '<tr><td colspan="11" class="empty">行情源暂时不可用，正在自动重试…<br>'
+      + '<span style="opacity:.55;font-size:12px">' + e.message + '</span></td></tr>';
+    // 15 秒后自己再试一次，别干等下一个 60 秒周期
+    if (!retryTimer) retryTimer = setTimeout(function(){ retryTimer = null; loadFull(); }, 15000);
   });
 }
 

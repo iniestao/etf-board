@@ -39,6 +39,21 @@ const MIN_ROWS = 100;       // 认定某源有效的最少条数（防止半页�
 const GOOD_ROWS = 1500;     // 超过这个数才算「完整快照」，先到可以直接采信
 const WAIT_TOTAL = 6000;    // 先到者不完整时，等另一个源的上限
 
+// ---- 全市场快照的三层缓存 ----
+// 起因：东财对机房 IP 直接 502，全部压力落到新浪；而新浪 20 页从 Cloudflare
+// 出口打过去实测要 43 秒（沙箱侧只要 2 秒），任何「一次请求内拉完」的写法都
+// 必然撞超时，页面就整块空白。现在改成：只用缓存回答，刷新放后台。
+const ALL_TTL = 60;                 // 边缘缓存有效期（秒）
+const ALL_FRESH_MS = 180000;        // KV 快照多久算「新鲜」
+// 为什么是 3 分钟而不是 60 秒：16:00 那次线上自检，新浪 20 页 6 秒内就回来了；
+// 17:50 再测要 43 秒。中间唯一的变量就是新加的 60 秒轮询把请求量放大了一个量级，
+// 撞上游限流。既然自选已经走腾讯 5 秒实时，全市场 3 分钟够用，先把压力降下来。
+const ALL_BUDGET = 22000;           // 冷启动时同步等上游的硬上限
+const ALL_KV = 'all-last-v1';       // KV 里最近一次成功快照
+const ALL_KV_GAP = 2 * 60 * 1000;   // KV 最少间隔 2 分钟写一次（免费额度 1000 写/天，720 次留足余量）
+const SINA_ABORT = 9000;            // 新浪单页超时
+const SINA_CONC = 6;                // 新浪并发页数（20 个并发会被对端限速）
+
 // ---------------------------------------------------------------- 东财全量
 async function emPage(pn) {
   const qs = new URLSearchParams({
@@ -85,6 +100,9 @@ async function sinaPage(p) {
     try {
       const r = await fetch(url, {
         headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+        // 单页必须有超时：没有它，一页卡住会把整次刷新拖到 40 秒以上，
+        // 而 Worker 的请求是有墙钟上限的，超了连兜底逻辑都跑不到。
+        signal: AbortSignal.timeout(SINA_ABORT),
       });
       if (!r.ok) throw new Error('SINA HTTP ' + r.status);
       const t = (await r.text()).trim();
@@ -92,16 +110,30 @@ async function sinaPage(p) {
       if (!t || t === 'null' || t === '[]') return '';
       return t.slice(1, -1);   // 去掉外层 []
     } catch (e) {
-      if (attempt >= 1) throw e;
-      await new Promise((res) => setTimeout(res, 120));
+      if (attempt >= 2) throw e;   // 最多 3 次，退避 120/300ms
+      await new Promise((res) => setTimeout(res, attempt === 0 ? 120 : 300));
     }
   }
 }
 
+/** 并发上限 worker pool：20 页一次性打出去会被对端当成攻击，反而更慢 */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const k = next++;
+      if (k >= items.length) return;
+      out[k] = await fn(items[k]).catch(() => '');
+    }
+  });
+  await Promise.all(runners);
+  return out;
+}
+
 async function fetchSina() {
-  const parts = await Promise.all(
-    Array.from({ length: SINA_PAGES }, (_, i) => sinaPage(i + 1).catch(() => ''))
-  );
+  const pages = Array.from({ length: SINA_PAGES }, (_, i) => i + 1);
+  const parts = await mapLimit(pages, SINA_CONC, sinaPage);
   const inner = parts.filter(Boolean).join(',');
   if (!inner) throw new Error('SINA empty');
   // 关键：不做 JSON.parse，直接拼成 {src,...,raw:[...]} 的文本
@@ -167,6 +199,101 @@ async function loadAll() {
   if (!body) throw new Error('所有行情源均不可用');
   L1 = { ts: now, body };
   return body;
+}
+
+// ---------------------------------------------------------------- 全市场：缓存优先
+// 快照外层加 ts（毫秒），前端据此显示「数据时间」并判断是不是旧数据。
+// 用字符串拼接而不是 JSON.parse：600KB 解析在 Worker 里是实打实的 CPU 开销。
+function withMeta(body, ts, stale) {
+  return '{' + '"ts":' + ts + (stale ? ',"stale":1' : '') + ',' + body.slice(1);
+}
+function tsOf(body) {
+  const m = /^\{"ts":(\d+)/.exec(body || '');
+  return m ? +m[1] : 0;
+}
+
+const ALL_CACHE_KEY = 'https://etf.internal/all-v1';
+
+async function kvGetAll(env) {
+  try {
+    if (!env || !env.WATCH) return null;
+    return await env.WATCH.get(ALL_KV);
+  } catch (e) { return null; }
+}
+async function kvPutAll(env, body) {
+  try {
+    if (env && env.WATCH) await env.WATCH.put(ALL_KV, body);
+  } catch (e) { /* KV 写失败不影响本次响应 */ }
+}
+
+function allResp(body, stale) {
+  return new Response(body, {
+    headers: {
+      ...CORS,
+      'X-All-Stale': stale ? '1' : '0',
+      'Cache-Control': 'public, max-age=' + (stale ? 5 : ALL_TTL),
+    },
+  });
+}
+
+/** 后台刷新：拉一次全量，写 KV（限频）和边缘缓存。失败时静默，旧的继续用 */
+async function refreshAll(env, cache) {
+  const body = await loadAll();
+  const ts = Date.now();
+  const out = withMeta(body, ts, false);
+  const prev = await kvGetAll(env);
+  if (!prev || ts - tsOf(prev) > ALL_KV_GAP) await kvPutAll(env, out);
+  if (cache) {
+    try {
+      await cache.put(ALL_CACHE_KEY, new Response(out, {
+        headers: { ...CORS, 'Cache-Control': 'public, max-age=' + ALL_TTL },
+      }));
+    } catch (e) { /* 缓存写入失败不影响主流程 */ }
+  }
+  return out;
+}
+
+async function serveAll(env, ctx) {
+  const cache = await getCache();
+  const now = Date.now();
+
+  // 1. 边缘缓存：60 秒内的请求直接命中，不打上游
+  if (cache) {
+    try {
+      const hit = await cache.match(ALL_CACHE_KEY);
+      if (hit) return hit;
+    } catch (e) { /* 缓存不可用时降级 */ }
+  }
+
+  // 2. KV 里最近一次成功快照（跨 isolate、跨实例，冷启动也有货）
+  const last = await kvGetAll(env);
+  const age = last ? now - tsOf(last) : Infinity;
+
+  if (last && age < ALL_FRESH_MS) return allResp(last, false);
+
+  // 3. 有旧数据但过期：先给后台刷新 5 秒的机会，抢到新的就直接给新的；
+  //    抢不到（上游慢/挂）立刻回落旧的，绝不让用户为一个 43 秒的上游干等。
+  if (last) {
+    const job = refreshAll(env, cache).catch(() => null);
+    const fresh = await Promise.race([
+      job,
+      new Promise((res) => setTimeout(() => res(null), 5000)),
+    ]);
+    if (fresh) return allResp(fresh, false);
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(job);
+    else await job;
+    return allResp(withMeta(last, tsOf(last), true), true);
+  }
+
+  // 4. 一份都没有（全新部署/首次访问）：只能同步等，但要设上限
+  try {
+    const body = await withTimeout(refreshAll(env, cache), ALL_BUDGET);
+    if (!body) throw new Error('行情源响应超时');
+    return allResp(body, false);
+  } catch (e) {
+    // retry:1 让前端知道「过一会儿重试」比「数据有问题」更准确
+    return json({ ok: false, error: String(e.message || e), retry: 1 });
+  }
 }
 
 // 只解析头部元信息，不解析 raw（避免 CPU 开销）
@@ -824,33 +951,8 @@ export default {
     }
 
     if (p === '/api/all') {
-      // 边缘缓存：跨 isolate/实例共享，把冷启动拉全量的 CPU 成本摊到一个 TTL 周期内
-      const CACHE_KEY = 'https://etf.internal/all-v1';
-      const cache = await getCache();
-      if (cache) {
-        try {
-          const hit = await cache.match(CACHE_KEY);
-          if (hit) return hit;
-        } catch (e) { /* 缓存不可用时降级 */ }
-      }
-      try {
-        const body = await loadAll();
-        const resp = new Response(body, {
-          headers: { ...CORS, 'Cache-Control': 'public, max-age=' + TTL },
-        });
-        if (cache) {
-          try {
-            const p = cache.put(CACHE_KEY, resp.clone());
-            // Cloudflare 有 waitUntil（延长生命周期到响应之后）；
-            // Deno Deploy 没有这个 API，必须当场 await，否则写入可能悬空丢失。
-            if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(p);
-            else await p;
-          } catch (e) { /* 缓存写入失败不影响主流程 */ }
-        }
-        return resp;
-      } catch (e) {
-        return json({ ok: false, error: String(e.message || e) });
-      }
+      // 三层：边缘缓存 → KV 最近一次成功 → 现场拉（只在前两者都没有时才等上游）
+      return serveAll(env, ctx);
     }
 
     if (p === '/api/quote') {
@@ -917,6 +1019,11 @@ text-decoration:none;
 background:var(--bg3)}
 #btnRs:hover{color:var(--txt);border-color:var(--accent)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(142px,1fr));gap:9px;margin-bottom:12px}
+/* 上游故障时的横幅：贴在卡片下面，一进页面就能看见。
+   放在 footer 里等于没有——100 行的表格把 footer 顶到 4600px 之外。 */
+.stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12px;line-height:1.5;
+  background:rgba(255,176,32,.09);border:1px solid rgba(255,176,32,.32);color:#ffb020}
+.stalebar.bad{background:rgba(255,77,79,.09);border-color:rgba(255,77,79,.32);color:#ff4d4f}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
 .card .k{font-size:11px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
 .card .v{font-size:18px;font-weight:600;font-family:var(--mono)}
@@ -1162,6 +1269,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </div>
 
 <div class="sec">
+  <div id="staleBar" class="stalebar" style="display:none"></div>
   <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
     <span class="sync" id="btnSync" title="复制一条带同步码的链接，在别的设备打开就是这份自选">同步</span></div>
   <div class="bar">
@@ -1284,7 +1392,7 @@ var STATS = null;
 var LIVE = {};                 // 自选高频覆盖 {code: item}
 var g = 'all', sortKey = 'amt', limit = 100, kw = '';
 var DATA_SRC = '', DATA_TS = 0;
-var lastP = {}, timerSlow = null, timerFast = null;
+var lastP = {}, timerSlow = null, timerFast = null, retryTimer = null;
 
 /* ---------- 分类（浏览器端，带缓存；Worker 端做会吃掉 10ms CPU 预算） ---------- */
 var GROUP_CACHE = new Map();
@@ -2796,6 +2904,14 @@ window.addEventListener('resize', function(){
 });
 
 /* ---------- 数据加载 ---------- */
+function setStale(msg, bad){
+  var el = document.getElementById('staleBar');
+  if (!msg){ el.style.display = 'none'; el.textContent = ''; el.className = 'stalebar'; return; }
+  el.style.display = 'block';
+  el.className = 'stalebar' + (bad ? ' bad' : '');
+  el.textContent = msg;
+}
+
 function loadFull(){
   return fetch('/api/all').then(function(r){ return r.json(); }).then(function(j){
     if (!j.raw){ throw new Error(j.error || '无数据'); }
@@ -2805,7 +2921,11 @@ function loadFull(){
     // 价格变动闪烁依赖前后对比，保留 lastP
     DATA = items;
     STATS = computeStats(items);
-    DATA_TS = Date.now();
+    // 时间以服务端为准：这是「数据本身」的时刻，不是「浏览器收到」的时刻。
+    // 上游挂了的时候后端会把旧快照原样发回来并打上 stale，这里必须照实标出来，
+    // 而不是盖一个「更新 17:52」让人以为是最新的。
+    DATA_TS = j.ts || Date.now();
+    if (retryTimer){ clearTimeout(retryTimer); retryTimer = null; }
 
     var nPre = 0;
     for (var z=0;z<items.length;z++) if (items[z].pre) nPre++;
@@ -2817,8 +2937,14 @@ function loadFull(){
     document.getElementById('fSrc').textContent = '数据源: '
       + (j.src === 'eastmoney' ? '东方财富（含 IOPV）' : '新浪财经')
       + ' · ' + items.length + ' 只' + preNote;
-    document.getElementById('fTs').textContent = '更新 ' + new Date().toLocaleTimeString('zh-CN');
+    document.getElementById('fTs').textContent = (j.stale ? '旧数据 ' : '更新 ')
+      + new Date(DATA_TS).toLocaleTimeString('zh-CN');
     document.getElementById('fErr').textContent = '';
+    // 横幅贴在卡片下面：表格很长，footer 里的提示根本看不见
+    setStale(j.stale
+      ? '行情源暂时不可用，正在显示 ' + Math.max(1, Math.round((Date.now() - DATA_TS) / 60000))
+        + ' 分钟前的快照，后台自动重试中（自选行情不受影响，走腾讯直连）'
+      : '', false);
 
     var hasPm = items.some(function(x){ return x.pm != null; });
     void hasPm;
@@ -2826,9 +2952,13 @@ function loadFull(){
     renderCards(); renderList(); renderWatch();
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
   }).catch(function(e){
-    document.getElementById('fErr').textContent = '行情失败: ' + e.message;
+    setStale('行情源暂时不可用（' + e.message + '），15 秒后自动重试；自选行情走腾讯直连，不受影响', true);
+    document.getElementById('fErr').textContent = '';
     if (!DATA.length) document.getElementById('listBody').innerHTML =
-      '<tr><td colspan="11" class="empty">加载失败：' + e.message + '</td></tr>';
+      '<tr><td colspan="11" class="empty">行情源暂时不可用，正在自动重试…<br>'
+      + '<span style="opacity:.55;font-size:12px">' + e.message + '</span></td></tr>';
+    // 15 秒后自己再试一次，别干等下一个 60 秒周期
+    if (!retryTimer) retryTimer = setTimeout(function(){ retryTimer = null; loadFull(); }, 15000);
   });
 }
 
