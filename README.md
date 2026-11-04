@@ -16,6 +16,7 @@ etf_board/
 ├── data/              SQLite 全量日线（153 万条）+ 拉取器 + 复权
 ├── alpha/             56 个技术指标 + 101 个 Alpha 因子 + 回测
 ├── dist/              Parquet 分片（1717 只）+ 快照 + 历史二进制 + IC 报告
+├── tools/verify.mjs   部署后自检：7 个端点一次验完
 ├── docs/FACTORS.md    **因子手册：每个指标/因子怎么算、怎么读、会不会失效**
 └── .github/           Actions：每日 16:35 拉数据 → 算指标 → 传 R2
 ```
@@ -94,5 +95,9 @@ etf_board/
 
 ## 六、部署
 
-见 `worker/README.md`。需要两个免费账号：GitHub（跑 Actions）+ Cloudflare（Workers + R2）。
-都不需要信用卡。
+**照着 `DEPLOY-CHECKLIST.md` 走**，是一次性清单，含每步的预期输出和报错对照。
+细节参考 `worker/README.md`。
+
+需要两个免费账号：GitHub（跑 Actions）+ Cloudflare（Workers + R2）。都不需要信用卡。
+
+部署完用 `node tools/verify.mjs https://<域名>` 自检，会把 7 个关键点一次验完。
