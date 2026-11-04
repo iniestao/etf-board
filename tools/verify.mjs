@@ -146,6 +146,23 @@ async function main() {
     bad('/api/watch 自选', e.message, 'KV 未绑定或 key 不对');
   }
 
+  // ---- 6.5 因子研究数据 ----
+  try {
+    const { r, ms } = await hit(base, '/api/research');
+    const j = await r.json();
+    if (j && j.ok === false) {
+      soft('/api/research 因子数据', j.code || j.error || '取不到',
+        '页面会用构建时内嵌的那份，不影响打开；想每天更新就重跑 Actions');
+    } else if (j && j.ic && j.bt) {
+      const d = String(j.generated_at || '').replace('T', ' ').slice(0, 16);
+      ok('/api/research 因子数据', `生成 ${d}  ${j.ic.n} 个因子  ${j.bt.length} 条回测`);
+    } else {
+      bad('/api/research 因子数据', '结构异常', '返回的不是 research.json，检查 data 分支里的文件');
+    }
+  } catch (e) {
+    soft('/api/research 因子数据', e.message, '接口挂了不影响页面，只是拿不到当天数据');
+  }
+
   // ---- 7. 首页 ETag 与 304（改版后应自动失效）----
   try {
     const a = await hit(base, '/');

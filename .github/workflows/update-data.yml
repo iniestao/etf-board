@@ -72,6 +72,16 @@ jobs:
         working-directory: alpha
         run: python -u compute.py --db ../data/etf.db --out ../dist
 
+      # 因子值每天重算：compute.py 已经把 101 个因子在 1717 只上全部重算过一遍。
+      # 但「因子研究」页面的 IC 检验和样本外回测还要再跑这一步——
+      # 它读 dist/etf/*.parquet 做横截面相关聚类，产出入选组合与回测表。
+      - name: 因子聚类与样本外回测
+        working-directory: alpha
+        run: python -u select_factors.py --dist ../dist
+
+      - name: 生成页面用的研究数据（5KB）
+        run: node tools/gen_research.mjs
+
       - name: 输出体积检查
         run: |
           du -sh dist dist/etf dist/hist
@@ -117,6 +127,7 @@ jobs:
           mkdir -p "$PUB"
           cp -r dist/hist "$PUB/"
           cp dist/manifest.json "$PUB/"
+          cp dist/research.json "$PUB/"
           cd "$PUB"
           git init -q
           git config user.name "etf-board-bot"
@@ -128,6 +139,7 @@ jobs:
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
           echo "data 分支 $(git rev-parse --short HEAD)，$(du -sh "$PUB" | cut -f1)，" \
                "$(ls "$PUB"/hist | wc -l) 个 hist"
+          python3 -c "import json;d=json.load(open('$PUB/research.json'));print('因子研究数据:',d['generated_at'],'因子',d['ic']['n'],'个')"
 
       # ---------- 4. 可选：同步到 R2 ----------
       # 只有在仓库变量 USE_R2=true（且配了那 4 个 secret）时才跑。

@@ -34,7 +34,8 @@ background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--
 .dot.up i{background:var(--down);box-shadow:0 0 7px var(--down)}
 .dot.down i{background:var(--up);box-shadow:0 0 7px var(--up)}
 .dot.down{color:var(--up)}
-#btnRs{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);
+#btnRs{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);display:inline-block;
+text-decoration:none;
 background:var(--bg3)}
 #btnRs:hover{color:var(--txt);border-color:var(--accent)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(142px,1fr));gap:9px;margin-bottom:12px}
@@ -59,6 +60,9 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
 .sechd{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;color:var(--txt2)}
 .sechd b{color:var(--txt);font-size:13.5px;font-weight:600}
 .sechd .n{color:var(--txt3);font-size:11.5px}
+.sechd .sync{margin-left:auto;font-size:10.5px;color:var(--txt3);border:1px solid var(--line);
+border-radius:5px;padding:1px 7px;cursor:pointer;user-select:none}
+.sechd .sync:hover{color:var(--txt);border-color:var(--accent)}
 .tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
 table{width:100%;border-collapse:collapse}
 thead th{background:var(--bg3);font-size:10.5px;font-weight:500;color:var(--txt2);
@@ -125,7 +129,17 @@ cursor:pointer;border:1px solid transparent;user-select:none}
 .hx{width:26px;height:26px;border-radius:6px;border:1px solid var(--line);background:transparent;
 color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
 .hx:hover{color:var(--txt);background:var(--bg3)}
-#histCv{display:block;width:100%;height:460px;cursor:crosshair;min-width:0;max-width:100%}
+#histCv{display:block;width:100%;height:clamp(300px,62vh,430px);flex:0 0 auto;cursor:crosshair;min-width:0;max-width:100%}
+/* 副图 / 叠加选择条：一行 chip，切换只重绘画布，不重新拉数据 */
+.hsbar{display:flex;align-items:center;gap:4px;padding:8px 14px 2px;flex-wrap:wrap}
+.hsbar .lb{font-size:10.5px;color:var(--txt3);margin-right:2px}
+.hsbar .lb+.sg+.lb{margin-left:8px}
+.hsbar .sg{display:flex;gap:3px;flex-wrap:wrap;min-width:0}
+.hsbar b{padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:11px;
+font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-select:none}
+.hsbar b:hover{color:var(--txt)}
+.hsbar b.on{background:var(--bg3);color:var(--txt);border-color:#3a4a63}
+.hind .i.on{border-color:#3a4a63;background:var(--bg3)}
 .hleg{display:flex;gap:16px;padding:7px 14px 0;font-size:11.5px;color:var(--txt2);flex-wrap:wrap}
 .hleg i{display:inline-block;width:8px;height:2px;vertical-align:3px;margin-right:4px}
 .hnote{padding:5px 14px 12px;font-size:10.5px;color:var(--txt3);line-height:1.7}
@@ -140,9 +154,19 @@ color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
   overflow:hidden;text-overflow:ellipsis}
 .hload{padding:70px 0;text-align:center;color:var(--txt2);font-size:12.5px;line-height:2}
 @media(max-width:700px){
-  #histCv{height:300px}
+  /* 顶部一行装不下：名称/代码/价格/涨幅 + 4 个周期 + 关闭。
+     不换行就会把面板撑得比屏幕还宽，连带右边价格轴一起被裁。 */
+  .hhd{flex-wrap:wrap;gap:5px 8px;padding:9px 10px}
+  .hhd .cd{display:none}
   .hhd .nm{font-size:13px}
+  .htabs{margin-left:0;order:9}
   .htabs span{padding:2px 7px}
+  .hx{margin-left:auto;order:10}
+  .hsbar{padding:7px 10px 2px;gap:3px;overflow:hidden}
+  .hsbar .lb{font-size:10px}
+  .hsbar .lb+.sg+.lb{margin-left:5px}
+  .hsbar b{padding:2px 5px;font-size:10px}
+  #histCv{height:300px}
   /* 小屏固定 3 列：auto-fit 在 400px 里会算出 4 列 96px，
      但 canvas 的固有宽度参与 flex 计算会把面板撑宽，导致第 4 列被裁掉 */
   .hind{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -179,6 +203,23 @@ border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 .rsnote b{color:var(--txt)}
 .rsnote .warn{border-left-color:var(--up)}
 .rssrc{font-size:10px;color:var(--txt3);margin-top:10px;text-align:right}
+/* /research 是独立页面：复用同一份 DOM，把遮罩层改成文档流里的整页布局。
+   好处是因子面板只有一套 HTML 和一套渲染代码，不会出现「弹窗里对、页面上错」。 */
+.rback{display:none;font-size:11.5px;color:var(--txt2);text-decoration:none;padding:2px 8px;
+border:1px solid var(--line);border-radius:5px;white-space:nowrap}
+.rback:hover{color:var(--txt)}
+body.rsmode{overflow:auto}
+body.rsmode .wrap{display:none}
+body.rsmode #rsMask{position:static;inset:auto;display:block;background:none;padding:0;
+max-width:1120px;margin:0 auto}
+body.rsmode .rspanel{max-width:none;max-height:none;border:0;border-radius:0;
+background:transparent;box-shadow:none;overflow:visible}
+body.rsmode .rshd{position:sticky;top:0;z-index:5;background:var(--bg);
+border-bottom:1px solid var(--line);padding:12px 20px}
+body.rsmode .rshd b{font-size:15px}
+body.rsmode .rback{display:inline-block;margin-right:2px}
+body.rsmode .rshd .hx{display:none}
+body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 @media(max-width:700px){
   .rsbody{padding:10px}
   .rstbl{font-size:10.5px}
@@ -192,7 +233,7 @@ border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
   <h1>ETF 全市场盯盘 <em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
   <span class="dot" id="d-src"><i></i><span id="srcName">连接中</span></span>
-  <button id="btnRs" title="101 个 Alpha 因子的 IC 检验与样本外回测结果">因子研究</button>
+  <a id="btnRs" href="/research" title="101 个 Alpha 因子的 IC 检验与样本外回测结果">因子研究</a>
 </header>
 
 <div class="cards">
@@ -202,7 +243,8 @@ border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 </div>
 
 <div class="sec">
-  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span></div>
+  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
+    <span class="sync" id="btnSync" title="复制一条带同步码的链接，在别的设备打开就是这份自选">同步</span></div>
   <div class="bar">
     <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
     <button class="pri" id="btnAdd">添加</button>
@@ -280,6 +322,16 @@ border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
       </div>
       <button class="hx" id="hClose" title="关闭 (Esc)">×</button>
     </div>
+    <div class="hsbar">
+      <span class="lb">副图</span>
+      <span class="sg" id="hSubs">
+        <b data-s="rsi" class="on">RSI</b><b data-s="macd">MACD</b><b data-s="vr">量比</b><b data-s="hvol">波动率</b><b data-s="atr">ATR</b><b data-s="pb">BOLL%B</b>
+      </span>
+      <span class="lb">叠加</span>
+      <span class="sg" id="hOv">
+        <b data-o="ma" class="on">均线</b><b data-o="boll">布林</b>
+      </span>
+    </div>
     <canvas id="histCv"></canvas>
     <div class="hleg" id="hLeg"></div>
     <div class="hind" id="hInd"></div>
@@ -290,6 +342,7 @@ border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 <div id="rsMask">
   <div class="rspanel">
     <div class="rshd">
+      <a class="rback" href="/">← 盯盘</a>
       <b>因子研究</b>
       <span class="sub" id="rsSub"></span>
       <button class="hx" id="rsClose" title="关闭 (Esc)" style="margin-left:auto">×</button>
@@ -353,6 +406,28 @@ function loadWatch(){
 var WATCH_CLOUD = false;
 var pushTimer = null;
 
+/* 自选分桶用的匿名编号。
+   不同的人打开同一个网址，各自有一份，互不覆盖——共用一份的话，
+   陌生人一按「+」就把别人的自选改掉了。
+   想跨设备带过去：复制页面上「同步」给出的链接（带 ?u=）在另一台打开。 */
+var WATCH_UID = (function(){
+  var LSK = 'etfUid';
+  var u = '';
+  try { u = localStorage.getItem(LSK) || ''; } catch (e) {}
+  var fromUrl = qs('u');
+  if (fromUrl) u = fromUrl;
+  u = String(u).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
+  if (u.length < 6){
+    u = 'u' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-3);
+  }
+  try { localStorage.setItem(LSK, u); } catch (e) {}
+  return u;
+})();
+
+function watchUrl(){
+  return '/api/watch?u=' + encodeURIComponent(WATCH_UID);
+}
+
 function saveWatch(){
   try{ localStorage.setItem(LS, JSON.stringify(watch)); }catch(e){}
   pushWatch();
@@ -362,7 +437,7 @@ function pushWatch(){
   if (!WATCH_CLOUD) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(function(){
-    fetch('/api/watch', {
+    fetch(watchUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ list: watch })
@@ -379,7 +454,7 @@ function refreshWatchUI(){
 
 function pullWatch(){
   if (!window.fetch) return Promise.resolve();
-  return fetch('/api/watch').then(function(r){ return r.json(); }).then(function(j){
+  return fetch(watchUrl()).then(function(r){ return r.json(); }).then(function(j){
     if (!j.ok){ WATCH_CLOUD = false; refreshWatchUI(); return; }
     WATCH_CLOUD = true;
 
@@ -684,11 +759,13 @@ function renderList(){
 
 var HC = {
   up:'#ff4d4f', dn:'#00c48c', ma20:'#e8a33d', ma60:'#4c8dff',
-  grid:'#202632', axis:'#5a6373', cross:'#7a8699', vol:'#2c3444', rsi:'#b07cff'
+  grid:'#202632', axis:'#5a6373', cross:'#7a8699', vol:'#2c3444', rsi:'#b07cff',
+  boll:'#5b6b82'
 };
 
 var H = {
   code:'', name:'', d:null, range:250, hover:-1, ok:false,
+  sub:'rsi', ov:{ ma:true, boll:false },
   cv:null, ctx:null, off:null, octx:null,
   W:0, Ht:0, dpr:1, geo:null
 };
@@ -800,6 +877,135 @@ function hSize(){
   H.octx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+/* 折线：遇 NaN 必须断线，否则停牌日的缺口会被连成一条直穿过去的线 */
+function hLine(ctx, arr, i0, n, xOf, yFn, color, lw){
+  ctx.strokeStyle = color; ctx.lineWidth = lw || 1.3; ctx.beginPath();
+  var started = false;
+  for (var j = i0; j < n; j++){
+    if (!isFinite(arr[j])){ started = false; continue; }
+    var X = xOf(j), Y = yFn(arr[j]);
+    if (!started){ ctx.moveTo(X, Y); started = true; } else ctx.lineTo(X, Y);
+  }
+  ctx.stroke();
+}
+
+/* 副图定义表。有的指标必须固定量程才读得出来（RSI 的 30/70、%B 的 0~100），
+   有的必须跟着数据自适应（ATR 的绝对值在 0.02~2 之间都有，固定量程等于没画）。 */
+var SUB_DEF = {
+  rsi:  { nm:'RSI14',  col:'#b07cff', fixed:[0,100], refs:[30,70],
+          arr:function(c){ return c.rsi14; }, fmt:function(v){ return v.toFixed(0); } },
+  vr:   { nm:'量比5',  col:'#e8a33d', refs:[1],
+          arr:function(c){ return c.vol_ratio5; }, fmt:function(v){ return v.toFixed(2); } },
+  hvol: { nm:'波动率', col:'#4c8dff',
+          arr:function(c){ return c.hvol20; }, fmt:function(v){ return v.toFixed(1) + '%'; } },
+  atr:  { nm:'ATR14',  col:'#00c48c',
+          arr:function(c){ return c.atr14; }, fmt:function(v){ return v.toFixed(3); } },
+  pb:   { nm:'BOLL%B', col:'#e8a33d', fixed:[0,100], refs:[0,50,100], arr:null,
+          fmt:function(v){ return v.toFixed(0); } }
+};
+
+/* %B 不在二进制里，用 (收盘-下轨)/(上轨-下轨) 现算，比单独存一列省 4 字节/天 */
+function pbArr(c){
+  var n = c.close.length, a = new Float32Array(n);
+  var bu = c.boll_up, bl = c.boll_low, cl = c.close;
+  for (var i = 0; i < n; i++){
+    a[i] = (isFinite(bu[i]) && isFinite(bl[i]) && bu[i] > bl[i])
+      ? (cl[i] - bl[i]) / (bu[i] - bl[i]) * 100 : NaN;
+  }
+  return a;
+}
+
+function drawSub(ctx, c, i0, n, xOf, padL, plotW, yR, hR){
+  var kind = H.sub || 'rsi';
+  ctx.font = '9px ui-monospace,Menlo,monospace';
+  ctx.lineWidth = 1;
+
+  /* MACD 是双线加柱，量程必须以 0 为轴左右对称，否则金叉死叉看着像在同一个位置 */
+  if (kind === 'macd'){
+    var dif = c.macd_dif, dea = c.macd_dea, i, mx = 1e-9;
+    for (i = i0; i < n; i++){
+      if (isFinite(dif[i]) && Math.abs(dif[i]) > mx) mx = Math.abs(dif[i]);
+      if (isFinite(dea[i]) && Math.abs(dea[i]) > mx) mx = Math.abs(dea[i]);
+      if (isFinite(dif[i]) && isFinite(dea[i]) && Math.abs(dif[i] - dea[i]) > mx) mx = Math.abs(dif[i] - dea[i]);
+    }
+    mx *= 1.12;
+    var y0 = yR + hR / 2;
+    var yM = function(v){ return y0 - (v / mx) * (hR / 2); };
+
+    ctx.strokeStyle = '#39435460'; ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(padL, Math.round(y0) + 0.5);
+    ctx.lineTo(padL + plotW, Math.round(y0) + 0.5); ctx.stroke();
+    ctx.setLineDash([]);
+
+    var bw = Math.max(1, plotW / (n - i0) * 0.6);
+    for (i = i0; i < n; i++){
+      if (!isFinite(dif[i]) || !isFinite(dea[i])) continue;
+      var hv = dif[i] - dea[i], X = xOf(i);
+      ctx.fillStyle = hv >= 0 ? 'rgba(255,77,79,.6)' : 'rgba(0,196,140,.6)';
+      ctx.fillRect(X - bw / 2, Math.min(yM(hv), y0), bw, Math.max(1, Math.abs(yM(hv) - y0)));
+    }
+    hLine(ctx, dif, i0, n, xOf, yM, '#e8a33d', 1.1);
+    hLine(ctx, dea, i0, n, xOf, yM, '#4c8dff', 1.1);
+
+    ctx.fillStyle = HC.axis; ctx.textAlign = 'left';
+    ctx.textBaseline = 'top'; ctx.fillText(mx.toFixed(2), padL + plotW + 5, yR + 1);
+    ctx.textBaseline = 'bottom'; ctx.fillText('-' + mx.toFixed(2), padL + plotW + 5, yR + hR);
+    subName(ctx, 'MACD', padL, yR, '#8a94a6');
+    return;
+  }
+
+  var def = SUB_DEF[kind] || SUB_DEF.rsi;
+  var arr = (kind === 'pb') ? pbArr(c) : def.arr(c);
+  var lo, hi, i, v;
+  if (def.fixed){
+    lo = def.fixed[0]; hi = def.fixed[1];
+  } else {
+    lo = Infinity; hi = -Infinity;
+    for (i = i0; i < n; i++){
+      v = arr[i];
+      if (isFinite(v)){ if (v < lo) lo = v; if (v > hi) hi = v; }
+    }
+    if (!isFinite(lo)){ lo = 0; hi = 1; }
+    // 量比、ATR 这类正数指标从 0 起画才看得出「放大了几倍」
+    if (lo > 0) lo = 0;
+    if (hi <= lo) hi = lo + 1;
+    hi += (hi - lo) * 0.12;
+  }
+  var yS = function(v){ return yR + hR * (hi - v) / (hi - lo); };
+
+  if (def.refs){
+    ctx.strokeStyle = '#39435460'; ctx.setLineDash([3,4]);
+    for (i = 0; i < def.refs.length; i++){
+      var lv = def.refs[i];
+      if (lv < lo || lv > hi) continue;
+      var yy = Math.round(yS(lv)) + 0.5;
+      ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
+      if (kind === 'rsi' && hR >= 74){
+        ctx.fillStyle = '#4a5464'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(String(lv), padL + plotW + 5, yy);
+      }
+    }
+    ctx.setLineDash([]);
+  }
+  hLine(ctx, arr, i0, n, xOf, yS, def.col, 1.2);
+
+  ctx.fillStyle = HC.axis; ctx.textAlign = 'left';
+  ctx.textBaseline = 'top'; ctx.fillText(def.fmt(hi), padL + plotW + 5, yR + 1);
+  ctx.textBaseline = 'bottom'; ctx.fillText(def.fmt(lo), padL + plotW + 5, yR + hR);
+  subName(ctx, def.nm, padL, yR, def.col);
+}
+
+/* 指标名画在图内左上角。放右侧会和上下两个刻度值抢位置——
+   副图只有 60px 高时三行标签会叠成一团。 */
+function subName(ctx, name, padL, yR, col){
+  ctx.save();
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.font = '9px ui-monospace,Menlo,monospace';
+  ctx.fillStyle = col; ctx.globalAlpha = 0.75;
+  ctx.fillText(name, padL + 3, yR + 1);
+  ctx.restore();
+}
+
 function hDraw(){
   var d = H.d;
   if (!d || !H.W) return;
@@ -819,14 +1025,14 @@ function hDraw(){
   var padL = 2, padR = 56, padT = 8, padB = 15;
   var plotW = W - padL - padR;
   var bodyH = Ht - padT - padB;
-  var hP = Math.round(bodyH * 0.60);
-  var hV = Math.round(bodyH * 0.17);
-  var hR = bodyH - hP - hV - 12;
-  var yP = padT, yV = padT + hP + 6, yR = yV + hV + 6;
+  var hP = Math.round(bodyH * 0.58);
+  var hV = Math.round(bodyH * 0.14);
+  var hR = bodyH - hP - hV - 14;
+  var yP = padT, yV = padT + hP + 6, yR = yV + hV + 8;
 
   var c = d.col;
   var o = c.open, hi = c.high, lo = c.low, cl = c.close, vol = c.volume;
-  var m20 = c.ma20, m60 = c.ma60, rsi = c.rsi14;
+  var m20 = c.ma20, m60 = c.ma60, bu = c.boll_up, bl = c.boll_low;
 
   var pmin = Infinity, pmax = -Infinity, vmax = 0, i, vv;
   for (i = i0; i < n; i++){
@@ -834,6 +1040,10 @@ function hDraw(){
     if (isFinite(hi[i]) && hi[i] > pmax) pmax = hi[i];
     if (isFinite(m20[i])){ if (m20[i] < pmin) pmin = m20[i]; if (m20[i] > pmax) pmax = m20[i]; }
     if (isFinite(m60[i])){ if (m60[i] < pmin) pmin = m60[i]; if (m60[i] > pmax) pmax = m60[i]; }
+    if (H.ov.boll && isFinite(bu[i]) && isFinite(bl[i])){
+      if (bu[i] < pmin) pmin = bu[i];
+      if (bl[i] > pmax) pmax = bl[i];
+    }
     if (isFinite(vol[i]) && vol[i] > vmax) vmax = vol[i];
   }
   if (!isFinite(pmin) || !isFinite(pmax) || pmax <= pmin){ pmin = 0; pmax = 1; }
@@ -846,7 +1056,6 @@ function hDraw(){
   function xOf(i){ return padL + (i - i0 + 0.5) * bw; }
   function yPx(p){ return yP + hP * (pmax - p) / (pmax - pmin); }
   function yVx(v){ return yV + hV * (1 - v / vmax); }
-  function yRx(v){ return yR + hR * (1 - Math.max(0, Math.min(100, v)) / 100); }
 
   /* --- 网格与价格刻度 --- */
   ctx.strokeStyle = HC.grid; ctx.lineWidth = 1;
@@ -889,35 +1098,20 @@ function hDraw(){
     ctx.fillRect(xc - ew / 2, y1, ew, bh);
   }
 
-  /* --- 均线 / RSI 折线 ---
+  /* --- 均线 / 布林带 ---
      必须传入各自的纵轴映射：早期版本把 RSI 也用 yPx 画，结果
      28~65 的数值被映射到价格刻度之外，整条线飞到画布上方看不见。 */
-  function line(arr, color, yFn, lw){
-    ctx.strokeStyle = color; ctx.lineWidth = lw || 1.3; ctx.beginPath();
-    var started = false;
-    for (var j = i0; j < n; j++){
-      if (!isFinite(arr[j])){ started = false; continue; }
-      var X = xOf(j), Y = yFn(arr[j]);
-      if (!started){ ctx.moveTo(X, Y); started = true; } else ctx.lineTo(X, Y);
-    }
-    ctx.stroke();
+  if (H.ov.ma){
+    hLine(ctx, m60, i0, n, xOf, yPx, HC.ma60, 1.3);
+    hLine(ctx, m20, i0, n, xOf, yPx, HC.ma20, 1.3);
   }
-  line(m60, HC.ma60, yPx);
-  line(m20, HC.ma20, yPx);
+  if (H.ov.boll){
+    hLine(ctx, bu, i0, n, xOf, yPx, HC.boll, 1);
+    hLine(ctx, bl, i0, n, xOf, yPx, HC.boll, 1);
+  }
 
-  /* --- RSI 副图 --- */
-  ctx.strokeStyle = '#39435460'; ctx.lineWidth = 1; ctx.setLineDash([3,4]);
-  [30, 70].forEach(function(lv){
-    var yy = Math.round(yRx(lv)) + 0.5;
-    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
-    ctx.fillStyle = '#4a5464'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.font = '9px ui-monospace,Menlo,monospace';
-    ctx.fillText(String(lv), padL + plotW + 5, yy);
-  });
-  ctx.setLineDash([]);
-  line(rsi, HC.rsi, yRx, 1.2);
-  ctx.fillStyle = HC.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText('RSI', padL + plotW + 5, yR + 1);
+  /* --- 副图：可切换，映射与主图完全独立 --- */
+  drawSub(ctx, c, i0, n, xOf, padL, plotW, yR, hR);
 
   /* --- 时间轴 --- */
   ctx.fillStyle = HC.axis; ctx.textBaseline = 'top';
@@ -1041,8 +1235,10 @@ function hInd(idx){
   var i = (idx >= 0 && idx < n) ? idx : n - 1;
   var px = c.close[i];
 
-  function cell(k, v, s, cls){
-    return '<div class="i"><div class="k">' + k + '</div>'
+  /* key 用来标记「当前副图画的就是这张卡」，切换副图时跟着高亮 */
+  function cell(k, v, s, cls, key){
+    var on = key && (key === H.sub || (H.sub === 'macd' && key === 'dea'));
+    return '<div class="i' + (on ? ' on' : '') + '"><div class="k">' + k + '</div>'
       + '<div class="v' + (cls ? ' ' + cls : '') + '">' + v + '</div>'
       + (s ? '<div class="s">' + s + '</div>' : '') + '</div>';
   }
@@ -1052,17 +1248,17 @@ function hInd(idx){
   var m20 = c.ma20 ? c.ma20[i] : NaN, m60 = c.ma60 ? c.ma60[i] : NaN;
   out += cell('MA20', fnum(m20, 3),
     isFinite(m20) && m20 > 0 ? fpc((px / m20 - 1) * 100) : '-',
-    isFinite(m20) && m20 > 0 ? cc(px - m20) : '');
+    isFinite(m20) && m20 > 0 ? cc(px - m20) : '', 'ma20');
   out += cell('MA60', fnum(m60, 3),
     isFinite(m60) && m60 > 0 ? fpc((px / m60 - 1) * 100) : '-',
-    isFinite(m60) && m60 > 0 ? cc(px - m60) : '');
+    isFinite(m60) && m60 > 0 ? cc(px - m60) : '', 'ma60');
 
   // RSI：70 以上超买、30 以下超卖，中间给中性描述
   var r = c.rsi14 ? c.rsi14[i] : NaN;
   var rTag = '-';
   if (isFinite(r)) rTag = r >= 70 ? '超买' : (r <= 30 ? '超卖' : (r >= 55 ? '偏强' : (r <= 45 ? '偏弱' : '中性')));
   out += cell('RSI14', fnum(r, 1), rTag,
-    isFinite(r) ? (r >= 70 ? 'up' : (r <= 30 ? 'down' : '')) : '');
+    isFinite(r) ? (r >= 70 ? 'up' : (r <= 30 ? 'down' : '')) : '', 'rsi');
 
   // MACD：DIF 与 DEA 的差决定金叉/死叉（这里用的是已算好的两条线）
   var dif = c.macd_dif ? c.macd_dif[i] : NaN;
@@ -1070,9 +1266,9 @@ function hInd(idx){
   var cross = '-';
   if (isFinite(dif) && isFinite(dea)) cross = dif > dea ? '金叉之上' : '死叉之下';
   out += cell('MACD DIF', fnum(dif, 4), isFinite(dif) ? (dif >= 0 ? '零轴上' : '零轴下') : '-',
-    isFinite(dif) ? cc(dif) : '');
+    isFinite(dif) ? cc(dif) : '', 'macd');
   out += cell('MACD DEA', fnum(dea, 4), cross,
-    isFinite(dif) && isFinite(dea) ? (dif > dea ? 'up' : 'down') : '');
+    isFinite(dif) && isFinite(dea) ? (dif > dea ? 'up' : 'down') : '', 'dea');
 
   // 布林带：直接给 %B（当前价在上下轨之间的位置），比给两个价格好读
   var bu = c.boll_up ? c.boll_up[i] : NaN;
@@ -1080,19 +1276,19 @@ function hInd(idx){
   var pb = (isFinite(bu) && isFinite(bl) && bu > bl) ? (px - bl) / (bu - bl) * 100 : NaN;
   out += cell('BOLL %B', isFinite(pb) ? pb.toFixed(0) + '%' : '-',
     isFinite(bu) && isFinite(bl) ? fnum(bl, 3) + ' ~ ' + fnum(bu, 3) : '-',
-    isFinite(pb) ? (pb >= 100 ? 'up' : (pb <= 0 ? 'down' : '')) : '');
+    isFinite(pb) ? (pb >= 100 ? 'up' : (pb <= 0 ? 'down' : '')) : '', 'pb');
 
   // ATR 与历史波动率：都换成占比/百分比，绝对值没意义
   var atr = c.atr14 ? c.atr14[i] : NaN;
   out += cell('ATR14', fnum(atr, 4),
-    isFinite(atr) && px > 0 ? '占价 ' + (atr / px * 100).toFixed(2) + '%' : '-');
+    isFinite(atr) && px > 0 ? '占价 ' + (atr / px * 100).toFixed(2) + '%' : '-', '', 'atr');
   var hv = c.hvol20 ? c.hvol20[i] : NaN;
   // hvol20 在 alpha/indicators.py 里已经乘过 100 变成百分数，这里不能再乘
-  out += cell('HVOL20', isFinite(hv) ? hv.toFixed(1) + '%' : '-', '年化波动');
+  out += cell('HVOL20', isFinite(hv) ? hv.toFixed(1) + '%' : '-', '年化波动', '', 'hvol');
 
   var vr = c.vol_ratio5 ? c.vol_ratio5[i] : NaN;
   out += cell('量比5', isFinite(vr) ? vr.toFixed(2) : '-', '5 日均量对比',
-    isFinite(vr) ? (vr >= 1.5 ? 'up' : (vr <= 0.6 ? 'down' : '')) : '');
+    isFinite(vr) ? (vr >= 1.5 ? 'up' : (vr <= 0.6 ? 'down' : '')) : '', 'vr');
 
   el.innerHTML = out;
 }
@@ -1261,6 +1457,19 @@ function renderRs(){
   document.getElementById('rsBody').innerHTML = h;
 }
 
+/* 内嵌的那份是部署时的快照，先画出来（0ms，断网也有）；再向服务端要当天的。
+   远端拿不到就保持现状，不弹错——这个页面不该因为一次请求失败变成空白。 */
+function pullResearch(){
+  fetch('/api/research').then(function(r){ return r.json(); }).then(function(j){
+    if (!j || j.ok === false || !j.ic || !j.bt) return;
+    RESEARCH = j;
+    var body = document.getElementById('rsBody');
+    var top = body.scrollTop;
+    renderRs();
+    body.scrollTop = top;
+  }).catch(function(){});
+}
+
 function openRs(){
   if (!document.getElementById('rsBody').innerHTML) renderRs();
   document.getElementById('rsMask').classList.add('on');
@@ -1268,10 +1477,39 @@ function openRs(){
 function closeRs(){
   document.getElementById('rsMask').classList.remove('on');
 }
-document.getElementById('btnRs').onclick = openRs;
 document.getElementById('rsClose').onclick = closeRs;
 document.getElementById('rsMask').onclick = function(e){
   if (e.target === this) closeRs();
+};
+
+document.getElementById('btnSync').onclick = function(){
+  var link = location.origin + '/?u=' + encodeURIComponent(WATCH_UID);
+  function fallback(){ window.prompt('在另一台设备打开这个链接，就是你现在的自选：', link); }
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(link).then(function(){
+      toast('同步链接已复制，在另一台设备打开即可');
+    }).catch(fallback);
+  } else fallback();
+};
+
+document.getElementById('hSubs').onclick = function(e){
+  var b = e.target;
+  if (!b || b.tagName !== 'B') return;
+  var k = b.getAttribute('data-s');
+  if (!k || k === H.sub) return;
+  H.sub = k;
+  var kids = this.getElementsByTagName('b');
+  for (var i = 0; i < kids.length; i++) kids[i].classList.toggle('on', kids[i] === b);
+  if (H.d){ hDraw(); hLegend(H.hover); }
+};
+document.getElementById('hOv').onclick = function(e){
+  var b = e.target;
+  if (!b || b.tagName !== 'B') return;
+  var k = b.getAttribute('data-o');
+  if (!k) return;
+  H.ov[k] = !H.ov[k];
+  b.classList.toggle('on', !!H.ov[k]);
+  if (H.d){ hDraw(); hLegend(H.hover); }
 };
 
 document.getElementById('hClose').onclick = closeHist;document.getElementById('histMask').onclick = function(e){
@@ -1534,13 +1772,26 @@ document.getElementById('btnProbe').onclick = function(){
 function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
 clock(); setInterval(clock, 1000);
 
-pullWatch();
-loadFull().then(function(){
-  renderCards();
-  loadTXQuotes();
-  schedule();
-  deepLink();
-});
+/* /research 走独立页面：同一个 HTML，只是把因子面板提到文档流里。
+   URL 直接可分享，也不占一个弹窗的注意力。 */
+var _pn = location.pathname;
+var RS_MODE = (_pn === '/research' || _pn === '/research/' || _pn === '/r' || _pn === '/r/');
+
+if (RS_MODE){
+  document.body.classList.add('rsmode');
+  document.title = '因子研究 · ETF 全市场';
+  renderRs();
+  document.getElementById('rsMask').classList.add('on');
+  pullResearch();
+} else {
+  pullWatch();
+  loadFull().then(function(){
+    renderCards();
+    loadTXQuotes();
+    schedule();
+    deepLink();
+  });
+}
 
 /* 深链：?panel=rs 直接打开因子研究，?panel=hist&code=510300 直接看某只 K 线。
    方便把结论发给别人，不用让对方自己找。 */
@@ -1556,10 +1807,37 @@ function qs(name){
   return '';
 }
 
+/* 副图选择支持深链：?sub=macd 直接打开就是 MACD，分享给别人不用再点一次 */
+function applySub(k){
+  if (!k) return;
+  if (k !== 'macd' && !SUB_DEF[k]) return;
+  H.sub = k;
+  var kids = document.getElementById('hSubs').getElementsByTagName('b');
+  for (var i = 0; i < kids.length; i++){
+    kids[i].classList.toggle('on', kids[i].getAttribute('data-s') === k);
+  }
+}
+
+/* 叠加层同理：?ov=boll 只看布林，?ov=ma,boll 两个都开 */
+function applyOv(v){
+  if (!v) return;
+  var ks = v.split(',');
+  H.ov.ma = false; H.ov.boll = false;
+  for (var i = 0; i < ks.length; i++){
+    if (ks[i] === 'ma' || ks[i] === 'boll') H.ov[ks[i]] = true;
+  }
+  var kids = document.getElementById('hOv').getElementsByTagName('b');
+  for (var j = 0; j < kids.length; j++){
+    kids[j].classList.toggle('on', !!H.ov[kids[j].getAttribute('data-o')]);
+  }
+}
+
 function deepLink(){
+  applySub(qs('sub'));
+  applyOv(qs('ov'));
   var p = qs('panel');
   if (!p) return;
-  if (p === 'rs') { setTimeout(openRs, 600); return; }
+  if (p === 'rs') { location.replace('/research'); return; }
   if (p === 'hist'){
     var c = qs('code');
     if (c) setTimeout(function(){ openHist(c, c); }, 900);

@@ -377,16 +377,31 @@ async function serveHist(code, env, ctx) {
 const WATCH_KEY = 'watch:list';
 const WATCH_MAX = 80;
 
+/**
+ * 每份自选按 uid 分桶。
+ *
+ * 一个 key 存所有人意味着：陌生人打开这个网址，看到的是你的自选，
+ * 他一按「+」就把你的覆盖掉。uid 由前端生成存在 localStorage，
+ * 想把自选带到另一台设备，就把链接加上 ?u=<同步码> 打开。
+ */
+function watchKey(url) {
+  const raw = (url.searchParams.get('u') || 'default');
+  const uid = raw.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
+  if (!uid || uid === 'default') return WATCH_KEY;   // 老链接/无 uid 沿用原有那份
+  return WATCH_KEY + ':' + uid;
+}
+
 async function serveWatch(request, env) {
   if (!env || !env.WATCH) {
     return json({ ok: false, code: 'NO_KV', error: '未绑定 KV，自选仅存本地' });
   }
+  const KEY = watchKey(new URL(request.url));
   if (request.method === 'GET') {
     try {
       // 必须区分「没写过」和「写了空数组」：前者要用本地列表初始化云端，
       // 后者代表用户主动清空了自选，其他设备必须跟着清空。
       // 只返回 list 的话两者都是 []，清空操作会在另一台设备上被"复活"。
-      const raw = await env.WATCH.get(WATCH_KEY);
+      const raw = await env.WATCH.get(KEY);
       let list = [];
       if (raw) {
         try { list = JSON.parse(raw); } catch (e) { list = []; }
@@ -407,10 +422,37 @@ async function serveWatch(request, env) {
     .filter((c) => typeof c === 'string' && /^\d{6}$/.test(c))
     .slice(0, WATCH_MAX);
   try {
-    await env.WATCH.put(WATCH_KEY, JSON.stringify(list));
+    await env.WATCH.put(KEY, JSON.stringify(list));
     return json({ ok: true, n: list.length });
   } catch (e) {
     return json({ ok: false, error: String(e.message || e) });
+  }
+}
+
+/**
+ * 当天的因子研究数据（IC 检验 + 样本外回测）。
+ *
+ * 页面里内嵌的是「部署那一刻的快照」，data 分支上的是每天 Actions 重算的。
+ * 这里只负责把远端那份吐出去；拿不到就返回 ok:false，让前端继续用内嵌的——
+ * 不把「没数据」包装成错误，页面才不会因为一次请求失败而空掉。
+ */
+async function serveResearch(env) {
+  if (!histSource(env)) {
+    return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
+  }
+  try {
+    const a = await readAsset(env, 'research.json');
+    if (!a) return json({ ok: false, code: 'NOT_FOUND', error: 'data 分支还没有 research.json' });
+    const txt = await a.text();
+    return new Response(txt, {
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=1800',
+      },
+    });
+  } catch (e) {
+    return json({ ok: false, code: 'FETCH_ERR', error: String(e.message || e) });
   }
 }
 
@@ -497,7 +539,10 @@ export default {
     const p = url.pathname;
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
-    if (p === '/' || p === '/index.html') {
+    // /research 与首页共用同一个 HTML：前端按 pathname 决定是整页因子面板
+    // 还是盯盘首页。一份模板，样式和渲染代码不会两边走偏。
+    if (p === '/' || p === '/index.html'
+        || p === '/research' || p === '/research/' || p === '/r' || p === '/r/') {
       const etag = htmlEtag();
       if (request.headers.get('If-None-Match') === etag) {
         return new Response(null, { status: 304, headers: { ETag: etag } });
@@ -522,6 +567,10 @@ export default {
         return json({ ok: false, error: '只支持 GET/POST' });
       }
       return serveWatch(request, env);
+    }
+
+    if (p === '/api/research') {
+      return serveResearch(env);
     }
 
     if (p === '/api/status') {

@@ -73,3 +73,29 @@ node tools/verify.mjs https://etf-board.171098509.workers.dev
 | K 线回源慢（首次 ~200ms） | 开 R2（需绑卡），`wrangler r2 bucket create etf-data` 后取消 toml 里 `[[r2_buckets]]` 注释再 deploy。绑了 R2 自动优先用 R2 |
 | 仓库想改回私有 | `wrangler secret put GITHUB_TOKEN`，填一个只读 `data` 分支的 fine-grained PAT；代码已支持 |
 | 想用自定义域名 | Cloudflare Dashboard → Workers → etf-board → Settings → Domains & Routes |
+
+## 本轮更新（2026-11-04）
+
+线上跑的是旧版本，下面这几项要重新部署 `worker` 才会生效：
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| K 线副图可切换 | 页面 | RSI / MACD / 量比 / 波动率 / ATR / BOLL%B，主图可叠均线、布林带 |
+| 因子研究改成独立页 | `/research` | 不再弹窗；`/?panel=rs` 会自动跳转过去 |
+| 因子数据每天更新 | Actions + `/api/research` | 新增 `select_factors.py`（33 秒）与 `gen_research.mjs`，结果推到 `data` 分支的 `research.json` |
+| 自选按设备隔离 | `/api/watch?u=` | 别人打开你的网址不会再看到或覆盖你的自选 |
+
+**部署**（两条路选一条）：
+
+```bash
+# A. 有 API Token
+export CLOUDFLARE_API_TOKEN=...        # Workers Scripts:Edit + KV Storage:Edit
+cd worker && npx wrangler deploy
+```
+
+**B. 没 Token**：Dashboard → Workers → `etf-board` → **Edit code** →
+全选删掉 → 粘贴 `/workspace/worker.js` → **Deploy**。
+
+部署完 `node tools/verify.mjs <域名>` 应该看到 8 项全过，其中新增一项
+`/api/research 因子数据`——第一次部署时它可能提示 `NOT_FOUND`，
+那是因为 `data` 分支还没跑过新流水线，页面会自动用内嵌的那份，不影响打开。

@@ -79,5 +79,12 @@ const body = '// 由 tools/gen_research.mjs 生成，勿手改\n'
   + 'export const RESEARCH = ' + JSON.stringify(RESEARCH) + ';\n';
 
 writeFileSync('worker/src/research_data.js', body, 'utf8');
+
+/* 同一份数据再落一个 json，供 Actions 推到 data 分支。
+   内嵌那份是「构建时的快照」，页面先拿它渲染（0ms、离线可看），
+   再向 /api/research 要当天的新数据覆盖——两全。 */
+writeFileSync(`${DIST}/research.json`, JSON.stringify(RESEARCH), 'utf8');
+
 console.log('已生成 worker/src/research_data.js  ' + (body.length / 1024).toFixed(1) + ' KB'
   + '（' + icRows.length + ' 个因子 / ' + bt.length + ' 条回测 / ' + combo.picks.length + ' 个入选组合）');
+console.log('已生成 dist/research.json  ' + (JSON.stringify(RESEARCH).length / 1024).toFixed(1) + ' KB');
