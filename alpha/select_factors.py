@@ -751,7 +751,13 @@ def main():
     (dist / 'factor_combo.json').write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding='utf-8')
 
-    plot_heatmap(corr, labels, dist / 'corr_heatmap.png')
+    # 两张图只是本地分析用的，网页不引用（页面读的是 factor_combo.json / research.json）。
+    # matplotlib 因此不进 CI 依赖：装它要多花几十秒，还会因为缺包把整条流水线挂掉——
+    # 之前就真的挂在 ModuleNotFoundError: matplotlib 上，白排 26 分钟。
+    try:
+        plot_heatmap(corr, labels, dist / 'corr_heatmap.png')
+    except ImportError:
+        print('  跳过 corr_heatmap.png（没装 matplotlib，网页不需要这张图）')
     idx_dates = dates[cut:T]
     curves = {}
     base = 100.0
@@ -763,10 +769,13 @@ def main():
         curves[label] = (idx_dates[:len(nav)], base * nav, lw)
     nb = np.cumprod(1 + np.nan_to_num(bm, nan=0.0))
     curves['all-ETF long'] = (idx_dates[:len(nb)], base * nb, 1.2)
-    plot_nav(curves, dist / 'combo_nav.png')
+    try:
+        plot_nav(curves, dist / 'combo_nav.png')
+    except ImportError:
+        print('  跳过 combo_nav.png（没装 matplotlib，网页不需要这张图）')
 
     print(f'  factor_corr.parquet / factor_clusters.csv / factor_combo.json')
-    print(f'  combo_backtest.csv / corr_heatmap.png / combo_nav.png')
+    print(f'  combo_backtest.csv')
     print(f'\n总耗时 {time.time()-t0:.0f}s')
 
 

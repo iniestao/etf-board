@@ -8,3 +8,6 @@ pyarrow>=14.0
 # 到 Actions 上才炸在 ModuleNotFoundError——这类「本地能跑」的依赖漏登记，
 # 只有真正在干净环境里跑一次才会暴露。
 scipy>=1.10
+# 画相关性热力图 / 组合净值曲线才需要。网页不引用这两张 png，所以**故意不装**：
+# 装了要多花几十秒，不装则必须让绘图跳过（select_factors.py 已用 try/except 处理）。
+# matplotlib>=3.7
