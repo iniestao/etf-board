@@ -1,0 +1,129 @@
+name: 更新 ETF 数据
+
+# 每个交易日收盘后自动跑：拉数据 → 算因子 → 传 R2
+# 手动触发：Actions 页面点 Run workflow
+
+on:
+  schedule:
+    # GitHub 的 cron 是 UTC。北京时间 16:35 = UTC 08:35
+    # 收盘 15:00 + 数据源清洗延迟，留 1.5 小时余量
+    - cron: '35 8 * * 1-5'
+  workflow_dispatch:        # 支持手动跑，改因子后不用等定时
+
+concurrency:
+  group: etf-update           # 防止上次没跑完又触发新的
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ---------- 1. 拉全市场历史数据 ----------
+      # node:sqlite 是 Node 22+ 内置，不需要装任何依赖
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 拉取日线（1717 只，约 9 分钟）
+        working-directory: data
+        run: node import_etf.mjs --out etf.db --delay 60
+        env:
+          NODE_NO_WARNINGS: '1'
+
+      - name: 数据完整性断言
+        working-directory: data
+        run: |
+          python3 - <<'PY'
+          import sqlite3, sys
+          db = sqlite3.connect('etf.db')
+          n_etf = db.execute('SELECT COUNT(*) FROM etf_meta').fetchone()[0]
+          n_row = db.execute('SELECT COUNT(*) FROM etf_daily').fetchone()[0]
+          last  = db.execute('SELECT MAX(date) FROM etf_daily').fetchone()[0]
+          print(f'ETF {n_etf} 只 / 日线 {n_row:,} 条 / 最新 {last}')
+          # 数据集在 2026-11 约 1717 只；低于 1500 只说明上游大面积失败，
+          # 宁可让流水线红掉，也不要把残缺数据覆盖到线上
+          assert n_etf > 1500, f'ETF 数量异常: {n_etf}'
+          assert n_row > 1_200_000, f'日线数量异常: {n_row}'
+          PY
+
+      # ---------- 2. 算指标与因子 ----------
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install pandas numpy pyarrow
+
+      - name: 计算 56 指标 + 101 因子（约 4 分钟）
+        working-directory: alpha
+        run: python -u compute.py --db ../data/etf.db --out ../dist
+
+      - name: 输出体积检查
+        run: |
+          du -sh dist dist/etf dist/hist
+          python3 - <<'PY'
+          import json, pathlib
+          m = json.loads(pathlib.Path('dist/manifest.json').read_text())
+          h = m.get('hist') or {}
+          print(f"标的 {m['codes']} 只 / 字段 {m['field_count']} 个 / 最新 {m['last_trade_date']}")
+          print(f"历史二进制 {h.get('files')} 个 / {h.get('bytes',0)/1024/1024:.1f} MB / 格式 {h.get('format')} / 列 {len(h.get('cols') or [])}")
+          # 历史面板依赖这份文件，缺了页面会静默没图，所以在 CI 里就卡住
+          assert h.get('format') == 'ETH1', 'hist 格式标记缺失'
+          assert h.get('files') == m['codes'], f"hist 文件数 {h.get('files')} != 标的数 {m['codes']}"
+          assert h.get('bytes', 0) > 10e6, 'hist 总体积异常偏小'
+          PY
+
+      # 跟踪指数映射是盯盘页"同指数去重"的依据，季度手动更新一次即可
+      # （node pipeline/fetch_index_map.mjs && node pipeline/gen_idx_data.mjs，然后重新部署）。
+      # 这里只做覆盖度体检：新 ETF 上市会让覆盖率慢慢下滑，低于阈值就该重跑了。
+      - name: 指数映射覆盖率检查
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          man = json.loads(pathlib.Path('dist/manifest.json').read_text())
+          idx = json.loads(pathlib.Path('pipeline/index_map.json').read_text())['map']
+          codes = [it['code'] for it in man['items']]
+          hit = sum(1 for c in codes if (idx.get(c) or {}).get('idx'))
+          rate = hit / len(codes)
+          print(f'跟踪指数已知 {hit}/{len(codes)} = {rate:.1%}')
+          if rate < 0.90:
+              print('::warning::覆盖度低于 90%，重跑 pipeline/fetch_index_map.mjs 并重新部署 Worker')
+          PY
+
+      # ---------- 3. 上传 R2 ----------
+      # R2 完全兼容 S3 协议，region 必须写 auto
+      - name: 同步到 Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          aws s3 sync dist/ "s3://$R2_BUCKET/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --no-progress \
+            --exclude "*.pyc"
+          echo "已上传 $(find dist -name '*.parquet' | wc -l) 个 parquet / $(find dist/hist -name '*.bin' | wc -l) 个 hist"
+          # 想省掉每天 1GB 的全量重传，把上面改成同时带：
+          #   --exclude "etf/*" --exclude "*.parquet"
+          # 代价是 R2 上没有全历史 Parquet，只有 hist/ 和 snapshot.parquet。
+          # 页面不需要 Parquet，只有在别的机器上拉数据做回测时才用得上。
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### ETF 数据更新"
+            echo "- 时间：$(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "- 产物：$(du -sh dist 2>/dev/null | cut -f1)"
+            echo "- 状态：${{ job.status }}"
+          } >> $GITHUB_STEP_SUMMARY

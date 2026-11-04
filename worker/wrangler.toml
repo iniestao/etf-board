@@ -1,0 +1,27 @@
+name = "etf-board"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# 免费版即可运行：10 万请求/天，无休眠
+# 部署：npx wrangler deploy
+
+# ---------------------------------------------------------------- 可选绑定
+# 下面两段默认注释掉，为的是「首次部署开箱即用」——没建存储也能先把页面跑起来，
+# 页面会自己降级（历史面板提示未启用、自选退回 localStorage）。
+# 要用完整功能，先建资源，去掉注释，再 deploy 一次。
+#
+# 【R2：历史 K 线】
+#   npx wrangler r2 bucket create etf-data
+#   bucket 名可以改，但要和 GitHub Actions 的 R2_BUCKET secret 保持一致
+#
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "etf-data"
+#
+# 【KV：自选跨设备】
+#   npx wrangler kv namespace create WATCH
+#   命令会打印 id = "xxxxxxxx"，填到下面
+#
+# [[kv_namespaces]]
+# binding = "WATCH"
+# id = "把上一条命令输出的 id 填这里"

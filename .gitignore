@@ -1,0 +1,14 @@
+# 缓存
+__pycache__/
+*.pyc
+.DS_Store
+
+# 每日重新生成，不进仓库（只忽略根目录，别误伤 worker/dist/worker.js）
+/data/etf.db
+/dist/
+
+# worker/dist/worker.js 特意保留进仓库——它是网页粘贴部署的入口文件，
+# 不要求使用者先跑 build。改完 src 记得 `cd worker && node build.mjs`。
+
+# 本地预览截图
+*.local.png
