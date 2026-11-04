@@ -282,3 +282,35 @@ boll_up 0.0000%  boll_low 0.0000%  atr14 0.0000%  hvol20 0.0003%  vol_ratio5 0.0
 `worker/build.mjs`、`tools/gen_alpha_meta.py`（新增）。
 
 
+
+### 3. 手机端宽表格不再裁列
+
+390px 宽的屏上，因子页那几张 6~9 列的表原来是把右侧**直接裁掉**：
+「最大回撤」后面的年化波动、胜率、IC、IR 全都看不见，页面上却不报错、
+也不产生横向滚动，属于最难发现的一类排版问题（`scrollWidth == clientWidth`，
+任何自动检测都测不出来）。
+
+现在改成容器横向滚动：
+
+```css
+.rstwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+@media(max-width:700px){
+  .rstwrap>.btbl{min-width:620px}    /* 回测 9 列 */
+  .rstwrap>.fxtbl{min-width:540px}   /* 因子表 7 列 */
+  .rstwrap>.rstbl{min-width:480px}   /* 入选组合 6 列 */
+  .rstwrap>.indtbl{min-width:0}      /* 指标说明表是整段文字，换行更好读 */
+}
+```
+
+配套两处：
+
+- 指标说明表原来跟着 `.rstbl td` 的 `white-space:nowrap` 走，整段文字被顶成
+  671px 宽。改成 `.rstbl.indtbl td{white-space:normal}` —— 注意权重必须写到
+  `.rstbl.indtbl`，只写 `.indtbl` 会被后面的 `.rstbl td` 盖掉（同权重按顺序取后者）。
+- 表格被裁一半的样子容易被当成本站坏了，窄屏下在标题后补一句「← 左右滑动看全部列」，
+  只对会滚动的那几张表显示（`:has(.rstwrap>table:not(.indtbl))`）。
+
+因子页顶部标题原来在窄屏会折成「因子 / 研究」两行，还把日期挤到旁边。
+现在 `.rshd b` 固定不换行、元信息在窄屏整体降到第二行。
+
+**本次改动文件**：`worker/src/page.js`。
