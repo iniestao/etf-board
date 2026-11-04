@@ -1,5 +1,10 @@
-# alpha/compute.py 的运行时依赖
+# 运行时依赖（compute.py + select_factors.py）
 # 版本给下限而不是钉死，避免 Actions 上拿不到预编译 wheel
 pandas>=2.0
 numpy>=1.24
 pyarrow>=14.0
+# 因子相关性聚类要用（select_factors.py 里的 linkage / fcluster）。
+# 一开始漏了这行：本地沙箱早就装了 scipy，跑得好好的，
+# 到 Actions 上才炸在 ModuleNotFoundError——这类「本地能跑」的依赖漏登记，
+# 只有真正在干净环境里跑一次才会暴露。
+scipy>=1.10
