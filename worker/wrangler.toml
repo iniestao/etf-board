@@ -9,16 +9,23 @@ compatibility_date = "2024-11-01"
 # 而 R2 在这里是可选的——历史数据默认走 GitHub 的 data 分支。
 
 # ---------------------------------------------------------------- 历史数据源
-# 【二选一】
+# 当前配置：GitHub 仓库的 data 分支（已部署验证可用）
 #
-# 方案 1（默认，推荐）：GitHub 仓库的 data 分支
-#   不绑卡、不配 secret。Actions 每天跑完把 dist/hist + manifest.json 推上去，
-#   Worker 从这里读，边缘缓存 6 小时。
-#   把用户名/仓库名换成你自己的，然后去掉下面两行注释。
+# Actions 每天跑完把 dist/hist + manifest.json 推到 data 分支，
+# Worker 从这里读，边缘缓存 6 小时。不绑卡、不配 secret。
 #
+# 仓库必须**公开**：raw.githubusercontent.com 对匿名请求读私有仓库一律返回 404。
+# 如果一定要用私有仓库，就再配一个只读令牌（见 README 5.2 末尾），
+# Worker 会自动改走 api.github.com 取原始字节。
+
+[vars]
+HIST_BASE = "https://raw.githubusercontent.com/iniestao/etf-board/data"
+
+# 可选：私有仓库才需要。用 wrangler secret put GITHUB_TOKEN 设置，
+# 不要写在这个文件里（会被提交进仓库）。
 # [vars]
-# HIST_BASE = "https://raw.githubusercontent.com/你的用户名/etf-board/data"
-#
+# GITHUB_TOKEN = "不要写在这里"
+
 # 方案 2（可选，更快）：R2
 #   需要绑卡开通（额度内不扣费）。绑了 R2 就优先用 R2，HIST_BASE 自动失效。
 #   npx wrangler r2 bucket create etf-data
@@ -28,10 +35,8 @@ compatibility_date = "2024-11-01"
 # bucket_name = "etf-data"
 
 # ---------------------------------------------------------------- 自选跨设备
-# KV 免费、不用绑卡，建议开。不开就退回 localStorage，换浏览器会丢自选。
-#   npx wrangler kv namespace create WATCH
-#   命令会打印 id = "xxxxxxxx"，填到下面
-#
-# [[kv_namespaces]]
-# binding = "WATCH"
-# id = "把上一条命令输出的 id 填这里"
+# KV 免费、不用绑卡。不开就退回 localStorage，换浏览器会丢自选。
+
+[[kv_namespaces]]
+binding = "WATCH"
+id = "433b04a19510470ca9e54a778cd2b598"

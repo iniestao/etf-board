@@ -242,6 +242,12 @@ function histSource(env) {
 }
 ```
 
+**仓库必须是公开的**：`raw.githubusercontent.com` 对匿名请求读私有仓库一律返回 404，
+jsDelivr 也不服务私有仓库。要么仓库公开（零配置），要么配一个只读令牌
+（`wrangler secret put GITHUB_TOKEN`），Worker 会自动改走 `api.github.com` 取原始字节——
+`Accept: application/vnd.github.raw` 让接口直出文件内容，不做 base64 解码，
+否则 36KB 解一遍就吃掉几十毫秒 CPU，免费版（10ms）直接超限。
+
 默认走 GitHub：Actions 每天把 `dist/hist/` + `manifest.json` 推到仓库的 `data` 分支
 （每次都是孤儿单提交 + `--force`，所以仓库体积稳定在 62MB，不会一天涨一份）。
 Worker 只需一个变量指过去：

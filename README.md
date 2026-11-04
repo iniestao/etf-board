@@ -1,9 +1,30 @@
 # ETF 全市场盯盘 + 历史数据
 
+**线上地址：https://etf-board.171098509.workers.dev**
+
 境内上市全部 ETF（1717 只）的实时盯盘页，全部跑在云上：Cloudflare Workers 提供页面，
 GitHub Actions 每天收盘后算历史指标，推到仓库的 `data` 分支；Worker 从那里读，边缘缓存 6 小时。
 
 不是本地方案——不需要在你的机器上装任何东西、开任何端口。
+
+## 当前部署状态（2026-11-04 已验证）
+
+| 项 | 值 |
+|---|---|
+| Worker | `etf-board` @ `etf-board.171098509.workers.dev` |
+| 数据源 | GitHub `iniestao/etf-board` 的 `data` 分支（仓库需**公开**） |
+| KV | `etf-board-WATCH`，自选跨设备同步 |
+| R2 | 未启用（需绑卡，可选） |
+| Actions | 每日 16:35 自动跑；已成功跑完一次全量 |
+
+端到端实测（Cloudflare 内部调用，非本地 mock）：
+
+```
+首页       200   72KB HTML       14ms
+/api/status 200  kv=true gh=true  117ms   1717 只 / 2026-11-03 / 17 列
+/api/hist   200  36228B ETH1       7ms
+/api/all    200  n=1717 sina    3740ms   首次拉 18 页
+```
 
 ```
 etf_board/

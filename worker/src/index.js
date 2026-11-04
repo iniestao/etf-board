@@ -243,6 +243,15 @@ async function readAsset(env, key) {
     if (!o) return null;
     return { body: o.body, text: () => o.text(), etag: o.httpEtag || null };
   }
+  // 私有仓库：raw.githubusercontent.com 对匿名请求一律 404，必须走 API 取原始字节。
+  // 配了令牌就走这条，没配说明仓库是公开的，走下面的 raw 直连。
+  if (env.GITHUB_TOKEN) {
+    try {
+      const hit = await getViaApi(env, key);
+      if (hit !== undefined) return hit;
+    } catch (e) { /* 令牌失效或限流，降级到公开路径 */ }
+  }
+
   const base = String(env.HIST_BASE).replace(/\/+$/, '');
   try {
     return await getFrom(base, key);
@@ -253,6 +262,35 @@ async function readAsset(env, key) {
     if (!mirror) throw e;
     return await getFrom(mirror, key);
   }
+}
+
+/**
+ * 用 GitHub Contents API 取原始字节。
+ *
+ * Accept: application/vnd.github.raw 让接口直接返回文件内容，
+ * Worker 只做字节透传，不做 base64 解码——否则 36KB 的文件解一遍
+ * 就要吃掉几十毫秒 CPU，免费版（10ms）直接超限。
+ *
+ * 返回 null 表示文件不存在，undefined 表示这条路径不适用（地址推不出 owner/repo）。
+ */
+async function getViaApi(env, key) {
+  const base = String(env.HIST_BASE).replace(/\/+$/, '');
+  const m = base.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)$/);
+  if (!m) return undefined;
+  const url = 'https://api.github.com/repos/' + m[1] + '/' + m[2]
+    + '/contents/' + key + '?ref=' + m[3];
+  const r = await fetch(url, {
+    headers: {
+      Authorization: 'Bearer ' + env.GITHUB_TOKEN,
+      Accept: 'application/vnd.github.raw',
+      'User-Agent': 'etf-board-worker',
+    },
+    signal: AbortSignal.timeout(6000),
+    cf: { cacheTtl: 1800, cacheEverything: true },
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('GitHub API ' + r.status);
+  return { body: r.body, text: () => r.text(), etag: r.headers.get('etag') };
 }
 
 async function getFrom(base, key) {
