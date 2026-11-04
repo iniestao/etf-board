@@ -1,9 +1,14 @@
 import { IDX_GROUPS } from './idx_data.js';
+import { RESEARCH } from './research_data.js';
 
 // 注入到 HTML 里的紧凑映射：{ "沪深300": ["510300", ...], ... }
 // 18KB 一次随页面下发，比再开一个 /api 接口划算——省一次 RTT，也省 Worker 的 CPU 配额。
 // 注意 build.mjs 会把这个插值替换成实际 JSON 字面量，不能只靠模板字符串。
 const IDX_JS = JSON.stringify(IDX_GROUPS);
+
+// 因子研究的全部数据（101 个 IC、7 条回测、8 个入选组合），约 5KB。
+// 同样在构建时固化，点开面板不需要额外请求。
+const RESEARCH_JS = JSON.stringify(RESEARCH);
 
 export const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -29,6 +34,9 @@ background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--
 .dot.up i{background:var(--down);box-shadow:0 0 7px var(--down)}
 .dot.down i{background:var(--up);box-shadow:0 0 7px var(--up)}
 .dot.down{color:var(--up)}
+#btnRs{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);
+background:var(--bg3)}
+#btnRs:hover{color:var(--txt);border-color:var(--accent)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(142px,1fr));gap:9px;margin-bottom:12px}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
 .card .k{font-size:11px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
@@ -101,7 +109,7 @@ transition:.25s;pointer-events:none;z-index:9}
 #histMask{position:fixed;inset:0;background:rgba(6,8,12,.72);z-index:60;display:none;
 align-items:center;justify-content:center;padding:18px}
 #histMask.on{display:flex}
-.hpanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
+.hpanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;min-width:0;
 max-width:1060px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;
 box-shadow:0 24px 64px rgba(0,0,0,.55)}
 .hhd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -117,16 +125,64 @@ cursor:pointer;border:1px solid transparent;user-select:none}
 .hx{width:26px;height:26px;border-radius:6px;border:1px solid var(--line);background:transparent;
 color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
 .hx:hover{color:var(--txt);background:var(--bg3)}
-#histCv{display:block;width:100%;height:460px;cursor:crosshair}
+#histCv{display:block;width:100%;height:460px;cursor:crosshair;min-width:0;max-width:100%}
 .hleg{display:flex;gap:16px;padding:7px 14px 0;font-size:11.5px;color:var(--txt2);flex-wrap:wrap}
 .hleg i{display:inline-block;width:8px;height:2px;vertical-align:3px;margin-right:4px}
 .hnote{padding:5px 14px 12px;font-size:10.5px;color:var(--txt3);line-height:1.7}
 .hnote:empty{display:none}
+/* 指标明细：K 线下方一排小卡，把 17 个字段里最能看的那几个摊开 */
+.hind{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:6px;padding:6px 14px 2px;min-width:0}
+.hind .i{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
+.hind .i .k{font-size:10px;color:var(--txt3);letter-spacing:.2px;white-space:nowrap}
+.hind .i .v{font-size:12.5px;font-family:var(--mono);font-weight:600;margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hind .i .s{font-size:10px;color:var(--txt2);margin-top:1px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 .hload{padding:70px 0;text-align:center;color:var(--txt2);font-size:12.5px;line-height:2}
 @media(max-width:700px){
   #histCv{height:300px}
   .hhd .nm{font-size:13px}
   .htabs span{padding:2px 7px}
+  /* 小屏固定 3 列：auto-fit 在 400px 里会算出 4 列 96px，
+     但 canvas 的固有宽度参与 flex 计算会把面板撑宽，导致第 4 列被裁掉 */
+  .hind{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+/* ---- 因子研究面板 ---- */
+#rsMask{position:fixed;inset:0;background:rgba(6,8,12,.72);z-index:70;display:none;
+align-items:center;justify-content:center;padding:18px}
+#rsMask.on{display:flex}
+.rspanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
+max-width:900px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;
+box-shadow:0 24px 64px rgba(0,0,0,.55)}
+.rshd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.rshd b{font-size:14.5px}
+.rshd .sub{font-size:11px;color:var(--txt3);font-family:var(--mono)}
+.rsbody{overflow-y:auto;padding:14px}
+.rssec{margin-bottom:18px}
+.rssec h4{font-size:12px;color:var(--txt2);font-weight:600;margin-bottom:8px;
+letter-spacing:.3px;display:flex;align-items:center;gap:7px}
+.rssec h4::after{content:'';flex:1;height:1px;background:var(--line)}
+.rsk{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.rsk .i{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+.rsk .i .k{font-size:10.5px;color:var(--txt3);margin-bottom:3px}
+.rsk .i .v{font-size:17px;font-family:var(--mono);font-weight:600}
+.rsk .i .s{font-size:10px;color:var(--txt3);margin-top:2px}
+.rstbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.rstbl th{text-align:right;font-weight:500;color:var(--txt3);padding:5px 7px;
+border-bottom:1px solid var(--line);font-size:10.5px;white-space:nowrap}
+.rstbl th:first-child,.rstbl td:first-child{text-align:left}
+.rstbl td{padding:4px 7px;border-bottom:1px solid rgba(38,44,55,.5);
+font-family:var(--mono);text-align:right;white-space:nowrap}
+.rstbl tr:hover td{background:var(--bg3)}
+.rsnote{font-size:11px;color:var(--txt2);line-height:1.85;background:var(--bg3);
+border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
+.rsnote b{color:var(--txt)}
+.rsnote .warn{border-left-color:var(--up)}
+.rssrc{font-size:10px;color:var(--txt3);margin-top:10px;text-align:right}
+@media(max-width:700px){
+  .rsbody{padding:10px}
+  .rstbl{font-size:10.5px}
+  .rstbl th,.rstbl td{padding:3px 4px}
 }
 </style>
 </head>
@@ -136,14 +192,13 @@ color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
   <h1>ETF 全市场盯盘 <em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
   <span class="dot" id="d-src"><i></i><span id="srcName">连接中</span></span>
-  <span class="dot" id="d-pm"><i></i>溢价率</span>
+  <button id="btnRs" title="101 个 Alpha 因子的 IC 检验与样本外回测结果">因子研究</button>
 </header>
 
 <div class="cards">
   <div class="card"><div class="k">全市场 ETF</div><div class="v" id="cTotal">-</div><div class="s" id="cUni">-</div></div>
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
   <div class="card"><div class="k">全市场成交额</div><div class="v" id="cAmt">-</div><div class="s">合计</div></div>
-  <div class="card"><div class="k">最高溢价</div><div class="v" id="cPm">-</div><div class="s" id="cPmN">-</div></div>
 </div>
 
 <div class="sec">
@@ -227,13 +282,26 @@ color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
     </div>
     <canvas id="histCv"></canvas>
     <div class="hleg" id="hLeg"></div>
+    <div class="hind" id="hInd"></div>
     <div class="hnote" id="hNote"></div>
+  </div>
+</div>
+
+<div id="rsMask">
+  <div class="rspanel">
+    <div class="rshd">
+      <b>因子研究</b>
+      <span class="sub" id="rsSub"></span>
+      <button class="hx" id="rsClose" title="关闭 (Esc)" style="margin-left:auto">×</button>
+    </div>
+    <div class="rsbody" id="rsBody"></div>
   </div>
 </div>
 
 <script>
 'use strict';
 var IDX_GROUPS = ${IDX_JS};
+var RESEARCH = ${RESEARCH_JS};
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -516,14 +584,6 @@ function renderCards(){
     document.getElementById('cUDs').textContent = '平 ' + STATS.flat;
     document.getElementById('cAmt').textContent = famt(STATS.amt);
   }
-  var mp=null, mn='-';
-  for (var i=0;i<DATA.length;i++){
-    var x=DATA[i];
-    if (x.pm!=null && (mp===null || x.pm>mp)){ mp=x.pm; mn=x.n; }
-  }
-  document.getElementById('cPm').innerHTML = mp==null ? '-' :
-    '<span class="'+(mp>=2?'up':'')+'">'+(mp>0?'+':'')+mp.toFixed(2)+'%</span>';
-  document.getElementById('cPmN').textContent = mn;
   // 分类标签上的数量
   ['all','broad','cross','industry','bond','money','commodity'].forEach(function(k){
     var el = document.getElementById('n-'+k);
@@ -917,7 +977,9 @@ function hCross(idx){
 }
 
 function hLegend(idx){
-  var d = H.d; if (!d) return;
+  var d = H.d;
+  if (!d){ document.getElementById('hInd').innerHTML = ''; return; }
+  hInd(idx);
   var leg = document.getElementById('hLeg');
   var c = d.col, n = d.n;
 
@@ -969,6 +1031,72 @@ function hLegend(idx){
     + '<span>RSI <b>' + fnum(c.rsi14[idx],1) + '</b></span>';
 }
 
+/* 指标明细：把 17 个字段里最能看的那几个摊开成小卡。
+   hover 时跟着游标走，不 hover 就是最后一根。 */
+function hInd(idx){
+  var el = document.getElementById('hInd');
+  var d = H.d;
+  if (!d){ el.innerHTML = ''; return; }
+  var c = d.col, n = d.n;
+  var i = (idx >= 0 && idx < n) ? idx : n - 1;
+  var px = c.close[i];
+
+  function cell(k, v, s, cls){
+    return '<div class="i"><div class="k">' + k + '</div>'
+      + '<div class="v' + (cls ? ' ' + cls : '') + '">' + v + '</div>'
+      + (s ? '<div class="s">' + s + '</div>' : '') + '</div>';
+  }
+  var out = '';
+
+  // 均线：值 + 当前价相对均线的偏离
+  var m20 = c.ma20 ? c.ma20[i] : NaN, m60 = c.ma60 ? c.ma60[i] : NaN;
+  out += cell('MA20', fnum(m20, 3),
+    isFinite(m20) && m20 > 0 ? fpc((px / m20 - 1) * 100) : '-',
+    isFinite(m20) && m20 > 0 ? cc(px - m20) : '');
+  out += cell('MA60', fnum(m60, 3),
+    isFinite(m60) && m60 > 0 ? fpc((px / m60 - 1) * 100) : '-',
+    isFinite(m60) && m60 > 0 ? cc(px - m60) : '');
+
+  // RSI：70 以上超买、30 以下超卖，中间给中性描述
+  var r = c.rsi14 ? c.rsi14[i] : NaN;
+  var rTag = '-';
+  if (isFinite(r)) rTag = r >= 70 ? '超买' : (r <= 30 ? '超卖' : (r >= 55 ? '偏强' : (r <= 45 ? '偏弱' : '中性')));
+  out += cell('RSI14', fnum(r, 1), rTag,
+    isFinite(r) ? (r >= 70 ? 'up' : (r <= 30 ? 'down' : '')) : '');
+
+  // MACD：DIF 与 DEA 的差决定金叉/死叉（这里用的是已算好的两条线）
+  var dif = c.macd_dif ? c.macd_dif[i] : NaN;
+  var dea = c.macd_dea ? c.macd_dea[i] : NaN;
+  var cross = '-';
+  if (isFinite(dif) && isFinite(dea)) cross = dif > dea ? '金叉之上' : '死叉之下';
+  out += cell('MACD DIF', fnum(dif, 4), isFinite(dif) ? (dif >= 0 ? '零轴上' : '零轴下') : '-',
+    isFinite(dif) ? cc(dif) : '');
+  out += cell('MACD DEA', fnum(dea, 4), cross,
+    isFinite(dif) && isFinite(dea) ? (dif > dea ? 'up' : 'down') : '');
+
+  // 布林带：直接给 %B（当前价在上下轨之间的位置），比给两个价格好读
+  var bu = c.boll_up ? c.boll_up[i] : NaN;
+  var bl = c.boll_low ? c.boll_low[i] : NaN;
+  var pb = (isFinite(bu) && isFinite(bl) && bu > bl) ? (px - bl) / (bu - bl) * 100 : NaN;
+  out += cell('BOLL %B', isFinite(pb) ? pb.toFixed(0) + '%' : '-',
+    isFinite(bu) && isFinite(bl) ? fnum(bl, 3) + ' ~ ' + fnum(bu, 3) : '-',
+    isFinite(pb) ? (pb >= 100 ? 'up' : (pb <= 0 ? 'down' : '')) : '');
+
+  // ATR 与历史波动率：都换成占比/百分比，绝对值没意义
+  var atr = c.atr14 ? c.atr14[i] : NaN;
+  out += cell('ATR14', fnum(atr, 4),
+    isFinite(atr) && px > 0 ? '占价 ' + (atr / px * 100).toFixed(2) + '%' : '-');
+  var hv = c.hvol20 ? c.hvol20[i] : NaN;
+  // hvol20 在 alpha/indicators.py 里已经乘过 100 变成百分数，这里不能再乘
+  out += cell('HVOL20', isFinite(hv) ? hv.toFixed(1) + '%' : '-', '年化波动');
+
+  var vr = c.vol_ratio5 ? c.vol_ratio5[i] : NaN;
+  out += cell('量比5', isFinite(vr) ? vr.toFixed(2) : '-', '5 日均量对比',
+    isFinite(vr) ? (vr >= 1.5 ? 'up' : (vr <= 0.6 ? 'down' : '')) : '');
+
+  el.innerHTML = out;
+}
+
 /* 分红/折算会让原始价出现跳空。adj_ratio 是「相对最新日的复权比率」，
    首尾变化就是区间内的累计调整幅度——超过 0.5% 才提示，免得噪声吓人。 */
 function hAdjNote(){
@@ -986,12 +1114,173 @@ function hAdjNote(){
     + (adj > 0 ? '+' : '') + adj.toFixed(2) + '%。';
 }
 
-document.getElementById('hClose').onclick = closeHist;
-document.getElementById('histMask').onclick = function(e){
+/* ---------- 因子研究面板 ----------
+   数据在构建时固化成 research_data.js（5KB），随 HTML 一起下发，
+   点开就是 0ms，不需要额外请求，也不占 Worker 请求额度。 */
+function rsCard(k, v, s, cls){
+  return '<div class="i"><div class="k">' + k + '</div>'
+    + '<div class="v' + (cls ? ' ' + cls : '') + '">' + v + '</div>'
+    + (s ? '<div class="s">' + s + '</div>' : '') + '</div>';
+}
+function rsPct(v, d){
+  if (v == null || !isFinite(v)) return '-';
+  return (v > 0 ? '+' : '') + (v * 100).toFixed(d == null ? 2 : d) + '%';
+}
+function renderRs(){
+  var R = RESEARCH;
+  if (!R) return;
+  document.getElementById('rsSub').textContent =
+    R.window[0] + ' ~ ' + R.window[1] + ' · 因子 ' + R.ic.n
+    + ' · 生成 ' + String(R.generated_at || '').replace('T', ' ').slice(0, 16);
+
+  var h = '';
+
+  // ---- 关键数字 ----
+  var multi = null, eqLong = null;
+  for (var i = 0; i < R.bt.length; i++){
+    if (R.bt[i][0].indexOf('101因子等权') === 0 && R.bt[i][0].indexOf('多空') > 0) multi = R.bt[i];
+    if (R.bt[i][0].indexOf('全市场等权') === 0) eqLong = R.bt[i];
+  }
+  h += '<div class="rssec"><h4>关键结论</h4><div class="rsk">'
+    + rsCard('因子数', R.ic.n, 'Alpha101 全集')
+    + rsCard('IC 为负', R.ic.neg + ' / ' + R.ic.n,
+      (R.ic.neg / R.ic.n * 100).toFixed(0) + '% 方向是反的', 'down')
+    + rsCard('相关性均值', R.corr.mean.toFixed(3),
+      '中位 ' + R.corr.median.toFixed(3) + ' · |ρ|>0.6 占 ' + (R.corr.gt06 * 100).toFixed(1) + '%')
+    + rsCard('相关性簇', R.clusters, '阈值 ' + R.cluster_thresh)
+    + rsCard('样本外夏普', multi ? multi[4].toFixed(2) : '-',
+      '101 因子等权多空 · ' + (multi ? multi[1] : '-') + ' 天', 'down')
+    + rsCard('基准（全市场等权）', eqLong ? eqLong[4].toFixed(2) : '-',
+      '同期多头 · 年化 ' + (eqLong ? rsPct(eqLong[2]) : '-'))
+    + '</div></div>';
+
+  // ---- 样本外回测 ----
+  h += '<div class="rssec"><h4>样本外回测 · ' + R.test[0] + ' ~ ' + R.test[1]
+    + '（' + R.test_days + ' 个交易日，持有 ' + R.horizon + ' 日）</h4>';
+  h += '<table class="rstbl"><thead><tr><th>策略</th><th>天数</th><th>年化</th>'
+    + '<th>年化波动</th><th>夏普</th><th>最大回撤</th><th>胜率</th>'
+    + '<th>IC 均值</th><th>IR</th></tr></thead><tbody>';
+  for (var k = 0; k < R.bt.length; k++){
+    var r = R.bt[k];
+    var isBase = r[0].indexOf('全市场等权') === 0;
+    h += '<tr' + (isBase ? ' style="color:var(--txt3)"' : '') + '>'
+      + '<td>' + r[0] + '</td><td>' + (r[1] == null ? '-' : r[1]) + '</td>'
+      + '<td class="' + cc(r[2]) + '">' + rsPct(r[2]) + '</td>'
+      + '<td>' + rsPct(r[3]) + '</td>'
+      + '<td class="' + cc(r[4]) + '">' + (r[4] == null ? '-' : r[4].toFixed(2)) + '</td>'
+      + '<td class="down">' + rsPct(r[5]) + '</td>'
+      + '<td>' + (r[6] == null ? '-' : (r[6] * 100).toFixed(1) + '%') + '</td>'
+      + '<td>' + (r[7] == null ? '-' : r[7].toFixed(4)) + '</td>'
+      + '<td>' + (r[8] == null ? '-' : r[8].toFixed(3)) + '</td></tr>';
+  }
+  h += '</tbody></table></div>';
+
+  // ---- IC 排行 ----
+  var rows = R.ic.rows.slice().sort(function(a, b){
+    return Math.abs(b[1] || 0) - Math.abs(a[1] || 0);
+  }).slice(0, 12);
+  h += '<div class="rssec"><h4>IC 绝对值最大的 12 个因子（全样本 '
+    + R.train_days + '+' + R.test_days + ' 天）</h4>';
+  h += '<table class="rstbl"><thead><tr><th>因子</th><th>IC 均值</th><th>IR</th>'
+    + '<th>t 值</th><th>胜率</th><th>有效天数</th></tr></thead><tbody>';
+  for (var m = 0; m < rows.length; m++){
+    var x = rows[m];
+    h += '<tr><td>' + x[0] + '</td>'
+      + '<td class="' + cc(x[1]) + '">' + (x[1] == null ? '-' : x[1].toFixed(4)) + '</td>'
+      + '<td>' + (x[2] == null ? '-' : x[2].toFixed(3)) + '</td>'
+      + '<td>' + (x[3] == null ? '-' : x[3].toFixed(2)) + '</td>'
+      + '<td>' + (x[4] == null ? '-' : (x[4] * 100).toFixed(1) + '%') + '</td>'
+      + '<td>' + (x[5] == null ? '-' : x[5]) + '</td></tr>';
+  }
+  h += '</tbody></table>'
+    + '<div class="rsnote" style="margin-top:8px">IC 均值到 0.03 就算「强」了，'
+    + '这里最大的只有 ' + (rows[0] ? Math.abs(rows[0][1]).toFixed(3) : '-')
+    + '；而 t 值超过 2 只能说明「不是零」，不代表能赚钱——'
+    + '2671 天的样本下，t=2 的因子随手就能找到一堆。</div></div>';
+
+  // ---- 入选组合 ----
+  h += '<div class="rssec"><h4>相关性去重后入选的 ' + R.picks.length + ' 个因子</h4>';
+  h += '<table class="rstbl"><thead><tr><th>因子</th><th>IC 均值</th><th>IR</th>'
+    + '<th>t 值</th><th>胜率</th><th>所属簇</th></tr></thead><tbody>';
+  for (var p = 0; p < R.picks.length; p++){
+    var q = R.picks[p];
+    h += '<tr><td>' + q[0] + '</td>'
+      + '<td class="' + cc(q[1]) + '">' + q[1].toFixed(4) + '</td>'
+      + '<td>' + q[2].toFixed(3) + '</td>'
+      + '<td>' + q[3].toFixed(2) + '</td>'
+      + '<td>' + (q[4] * 100).toFixed(1) + '%</td>'
+      + '<td>' + q[5] + '</td></tr>';
+  }
+  h += '</tbody></table></div>';
+
+  // ---- 指标说明 ----
+  var IND = [
+    ['MA20', '20 日移动平均', '价格在均线上方偏强；偏离超过 ±5% 容易回归'],
+    ['MA60', '60 日移动平均', '中期趋势线，跌破后反弹常在此受阻'],
+    ['RSI14', '14 日相对强弱', '>70 超买、<30 超卖；低波动标的（债券 ETF）在 30~90 间摆动，参考价值有限'],
+    ['MACD DIF', '快慢均线差', '在零轴上方说明中期动能偏多'],
+    ['MACD DEA', 'DIF 的均线', 'DIF 上穿 DEA 为金叉，下穿为死叉'],
+    ['BOLL %B', '价格在布林带中的位置', '0% 贴下轨、100% 贴上轨；突破上下轨说明波动放大'],
+    ['ATR14', '14 日平均真实波幅', '换成占价百分比，就是这只标的的「日常抖动幅度」'],
+    ['HVOL20', '20 日年化波动率', '股票型 ETF 通常 15~30%，债券型 2~5%'],
+    ['量比5', '当日成交量 / 5 日均量', '>1.5 放量，>3 异动，<0.6 缩量']
+  ];
+  h += '<div class="rssec"><h4>K 线里那 9 个指标怎么看</h4>'
+    + '<table class="rstbl"><thead><tr><th>指标</th><th style="text-align:left">含义</th>'
+    + '<th style="text-align:left">怎么读</th></tr></thead><tbody>';
+  for (var n2 = 0; n2 < IND.length; n2++){
+    h += '<tr><td>' + IND[n2][0] + '</td>'
+      + '<td style="text-align:left;font-family:inherit">' + IND[n2][1] + '</td>'
+      + '<td style="text-align:left;font-family:inherit;color:var(--txt2)">' + IND[n2][2] + '</td></tr>';
+  }
+  h += '</tbody></table>'
+    + '<div class="rsnote" style="margin-top:8px">'
+    + '这 9 个是盯盘时真正看得上眼的。完整算了 <b>56 个指标 + 101 个 Alpha 因子</b>，'
+    + '全量存在 Parquet 里给回测用，页面上摊开反而干扰判断。'
+    + '每个指标的公式、参数、失效场景见仓库 <b>docs/FACTORS.md</b>。</div></div>';
+
+  // ---- 结论 ----
+  h += '<div class="rssec"><h4>怎么读这些数</h4>'
+    + '<div class="rsnote">'
+    + '<b>结论是「不要用」。</b>训练段（' + R.train[0] + ' ~ ' + R.train[1] + '，'
+    + R.train_days + ' 天）夏普 1.21 / 1.61，同几个因子到测试段（'
+    + R.test_days + ' 天）变成 −0.67 / −0.71，IC 持续性只有 0.184、同号率 53%——'
+    + '和抛硬币分不开。<br><br>'
+    + '<b>不是因为因子互相重复。</b>两两相关性均值 ' + R.corr.mean.toFixed(3)
+    + '、中位 ' + R.corr.median.toFixed(3) + '，|ρ|>0.6 只有 ' + (R.corr.gt06 * 100).toFixed(1)
+    + '%，' + R.ic.n + ' 个因子聚成 ' + R.clusters + ' 簇、其中 60 个是单因子簇——'
+    + '它们确实各不相同，只是每个都很弱。弱信号被噪声主导，这叫衰减偏差。'
+    + '<br><br>'
+    + '<b>ETF 上尤其弱的原因：</b>Alpha101 是给个股设计的，衡量的是「这只股票会跑赢同行多少」。'
+    + 'ETF 是一篮子股票，成分股的 alpha 互相抵消，剩下的主要是风格暴露（大小盘、成长价值），'
+    + '而风格暴露靠资产配置就能拿到，不需要 101 个因子。<br><br>'
+    + '<b>所以这个页面的价值在盯盘和 K 线，不在选股信号。</b>'
+    + '因子部分保留下来是为了留个记录：这些数跑过，结论是负的，别再重复试一遍。'
+    + '</div><div class="rssrc">完整推导见仓库 docs/FACTORS.md（620 行）</div></div>';
+
+  document.getElementById('rsBody').innerHTML = h;
+}
+
+function openRs(){
+  if (!document.getElementById('rsBody').innerHTML) renderRs();
+  document.getElementById('rsMask').classList.add('on');
+}
+function closeRs(){
+  document.getElementById('rsMask').classList.remove('on');
+}
+document.getElementById('btnRs').onclick = openRs;
+document.getElementById('rsClose').onclick = closeRs;
+document.getElementById('rsMask').onclick = function(e){
+  if (e.target === this) closeRs();
+};
+
+document.getElementById('hClose').onclick = closeHist;document.getElementById('histMask').onclick = function(e){
   if (e.target === this) closeHist();
 };
 document.addEventListener('keydown', function(e){
-  if (e.key === 'Escape' && document.getElementById('histMask').classList.contains('on')) closeHist();
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('rsMask').classList.contains('on')) { closeRs(); return; }
+  if (document.getElementById('histMask').classList.contains('on')) closeHist();
 });
 
 document.getElementById('histCv').addEventListener('mousemove', function(e){
@@ -1067,9 +1356,7 @@ function loadFull(){
     document.getElementById('fErr').textContent = '';
 
     var hasPm = items.some(function(x){ return x.pm != null; });
-    var dpm = document.getElementById('d-pm');
-    dpm.classList.remove('up','down'); dpm.classList.add(hasPm ? 'up' : 'down');
-    dpm.title = hasPm ? '溢价率可用（东财源）' : '当前源无 IOPV，溢价率不可得';
+    void hasPm;
 
     renderCards(); renderList(); renderWatch();
   }).catch(function(e){
@@ -1119,14 +1406,16 @@ function loadTXQuotes(){
       LIVE = out;
       renderWatch();
       var tip = document.getElementById('quoteTip');
-      if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒') + '刷新';
+      if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒')
+        + '刷新 · ' + new Date().toLocaleTimeString('zh-CN');
     }
     finish();
   };
   s.onerror = function(){
     if (done) return;
     var tip = document.getElementById('quoteTip');
-    if (tip) tip.textContent = '腾讯直连失败，自选跟随全市场数据';
+    if (tip) tip.textContent = '腾讯直连失败，自选跟随全市场数据 · '
+        + new Date().toLocaleTimeString('zh-CN');
     finish();
   };
   document.head.appendChild(s);
@@ -1250,7 +1539,32 @@ loadFull().then(function(){
   renderCards();
   loadTXQuotes();
   schedule();
+  deepLink();
 });
+
+/* 深链：?panel=rs 直接打开因子研究，?panel=hist&code=510300 直接看某只 K 线。
+   方便把结论发给别人，不用让对方自己找。 */
+/* 取 query 参数。故意不用正则：这段代码整体在模板字符串里，
+   源码里的 \\ 会被 Node 求值和 build.mjs 文本替换分别处理一次，
+   两条路径结果不同（本地预览正常、线上报错）。用字符串切分绕开这个坑。 */
+function qs(name){
+  var parts = location.search.slice(1).split('&');
+  for (var i = 0; i < parts.length; i++){
+    var eq = parts[i].indexOf('=');
+    if (eq > 0 && parts[i].slice(0, eq) === name) return parts[i].slice(eq + 1);
+  }
+  return '';
+}
+
+function deepLink(){
+  var p = qs('panel');
+  if (!p) return;
+  if (p === 'rs') { setTimeout(openRs, 600); return; }
+  if (p === 'hist'){
+    var c = qs('code');
+    if (c) setTimeout(function(){ openHist(c, c); }, 900);
+  }
+}
 </script>
 </body>
 </html>`;

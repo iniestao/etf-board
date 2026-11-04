@@ -4,6 +4,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { IDX_GROUPS } from './src/idx_data.js';
+import { RESEARCH } from './src/research_data.js';
 
 const page = readFileSync('src/page.js', 'utf8');
 const core = readFileSync('src/index.js', 'utf8');
@@ -18,8 +19,15 @@ if (!m[1].includes('${IDX_JS}')) {
   console.error('page.js 里找不到 ${IDX_JS} 占位符，指数映射注入会失效');
   process.exit(1);
 }
+if (!m[1].includes('${RESEARCH_JS}')) {
+  console.error('page.js 里找不到 ${RESEARCH_JS} 占位符，因子研究面板会空白');
+  process.exit(1);
+}
 const idxJson = JSON.stringify(IDX_GROUPS);
-const filled = m[1].replace(/\$\{IDX_JS\}/g, idxJson);
+const rsJson = JSON.stringify(RESEARCH);
+const filled = m[1]
+  .replace(/\$\{IDX_JS\}/g, idxJson)
+  .replace(/\$\{RESEARCH_JS\}/g, rsJson);
 
 // 模板字符串再嵌套一层，需要转义 \ 、` 和 ${
 const html = filled
@@ -35,4 +43,5 @@ const out = core
 mkdirSync('dist', { recursive: true });
 writeFileSync('dist/worker.js', out, 'utf8');
 console.log('已生成 dist/worker.js  ' + (out.length / 1024).toFixed(1) + ' KB'
-  + '（内嵌指数映射 ' + (idxJson.length / 1024).toFixed(1) + ' KB）');
+  + '（内嵌指数映射 ' + (idxJson.length / 1024).toFixed(1) + ' KB'
+  + ' / 因子研究 ' + (rsJson.length / 1024).toFixed(1) + ' KB）');
