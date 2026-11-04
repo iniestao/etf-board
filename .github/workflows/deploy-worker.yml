@@ -1,0 +1,84 @@
+name: 部署 Worker
+
+# 为什么单独开一条流水线：
+# 以前每次改 Worker 都要「生成 Token → 贴过来 → 部署 → 销毁 Token」，
+# 一轮下来手都酸，Token 还会在聊天记录里留痕。改成 push 即部署之后，
+# 只需要在仓库里存一个长期 Token 当 secret，之后改代码我直接推，
+# 一分钟内自动上线，谁都不用再碰凭证。
+#
+# 前置（只需做一次）：
+#   Settings → Secrets and variables → Actions → New repository secret
+#     CLOUDFLARE_API_TOKEN   ← 权限：Workers Scripts:Edit + Workers KV Storage:Edit + Account Settings:Read
+#     CLOUDFLARE_ACCOUNT_ID  ← d4661207d82c2945cc023c3cd208362c
+# 建议这个 Token 设成「无过期」但只给上面三项权限，泄露也只能动 Workers。
+
+on:
+  push:
+    branches: [main]
+    # 只有动到 Worker 代码才部署，改文档/README 不触发，省 Actions 分钟数
+    paths:
+      - 'worker/src/**'
+      - 'worker/wrangler.toml'
+      - 'worker/build.mjs'
+      - 'worker/package.json'
+      - 'tools/gen_alpha_meta.py'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+
+# 同一时间只允许一个部署，避免两次 push 抢着改线上版本
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 构建并部署
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 检查 Secret 是否配好
+        run: |
+          missing=""
+          [ -z "$CF_TOKEN" ]   && missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -z "$CF_ACCOUNT" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 secret:$missing"
+            echo "去 Settings → Secrets and variables → Actions 添加，然后重跑本任务。"
+            exit 1
+          fi
+          echo "两个 secret 都在。"
+
+      # 构建有三件事：把 page.js 的占位符换成实际 JSON、产出可手动粘贴的单文件、
+      # 以及检查占位符有没有被误删（删了页面会白屏，但不会报错，最难查）。
+      - name: 构建并校验
+        working-directory: worker
+        run: |
+          node build.mjs
+          node --check dist/worker.js
+          ls -l dist/worker.js
+
+      - name: 部署到 Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy
+
+      # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
+      # 这里只做提醒不回显值，避免把口令打进日志。
+      - name: 部署后提醒
+        run: |
+          echo "线上地址：https://etf-board.171098509.workers.dev"
+          echo "ACCESS_PASS 由 Cloudflare 侧 secret 管理，本次部署不会改动它。"
+          echo "若页面显示 503 设置说明页，说明这个 secret 不在了，需要重新添加。"
