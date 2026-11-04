@@ -242,12 +242,39 @@ async function readAsset(env, key) {
     return { body: o.body, text: () => o.text(), etag: o.httpEtag || null };
   }
   const base = String(env.HIST_BASE).replace(/\/+$/, '');
+  try {
+    return await getFrom(base, key);
+  } catch (e) {
+    // raw.githubusercontent.com 在部分网络下会被阻断。jsDelivr 是同内容镜像，
+    // 地址规则不同（gh/{owner}/{repo}@{branch}），能推导出来就自动切一次。
+    const mirror = mirrorOf(base);
+    if (!mirror) throw e;
+    return await getFrom(mirror, key);
+  }
+}
+
+async function getFrom(base, key) {
   const r = await fetch(base + '/' + key, {
-    // 让 Cloudflare 边缘再兜一层，减少对 GitHub raw 的依赖
+    // 3 秒还没下来就别等了，交给镜像
+    signal: AbortSignal.timeout(3000),
+    // 让 Cloudflare 边缘再兜一层，减少对上游的依赖
     cf: { cacheTtl: 1800, cacheEverything: true },
   });
-  if (!r.ok) return null;
+  if (r.status === 404) return null;   // 确实没有这个文件，不用再试镜像
+  if (!r.ok) throw new Error('上游 HTTP ' + r.status);
   return { body: r.body, text: () => r.text(), etag: r.headers.get('etag') };
+}
+
+/**
+ * raw → jsDelivr 的地址换算：
+ *   https://raw.githubusercontent.com/owner/repo/data
+ *   → https://cdn.jsdelivr.net/gh/owner/repo@data
+ * 不是 raw 地址就返回 null（比如用户直接填了 jsDelivr，就不需要再切）。
+ */
+function mirrorOf(base) {
+  const m = base.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)$/);
+  if (!m) return null;
+  return 'https://cdn.jsdelivr.net/gh/' + m[1] + '/' + m[2] + '@' + m[3];
 }
 
 // ---------------------------------------------------------------- 历史数据
