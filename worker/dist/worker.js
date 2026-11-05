@@ -1469,7 +1469,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </div>
 
 <div class="sec" id="mktSec">
-  <div class="sechd"><b>全市场异动</b><span class="n" id="mktN">-</span>
+  <div class="sechd"><b>全市场异动</b>
+    <span class="n" id="mktN" title="剔除债券货币，一个指数只留流动性最好的一只 ETF；上市不满半年、当日无成交的不计入">-</span>
     <span class="sync" id="btnMkt" title="重新读一遍收盘快照">刷新</span></div>
   <div class="dnote">跳出自己的自选池：全部指数今天谁创新高、谁在放量、谁在破位。一个指数只留流动性最好的那只 ETF。</div>
   <div class="mkbox" style="margin-bottom:9px">
@@ -2297,13 +2298,14 @@ function mktPos(r){
 }
 
 function mktEvr(r){
+  // 盘中用实时成交额重算：快照里的量能是「昨天收盘时」的读数，今天已经变了。
+  // 分母（20 日均额）用快照成交额反推，不用再拉数据。
   var it = findItem(r[0]);
-  if (it && it.amt > 0 && r[10] > 0){
-    // 盘中：今日成交额按已交易时间折算，再和快照里的昨日量比相乘
+  if (it && it.amt > 0 && r[10] > 0 && r[5] > 0){
     var pr = dayProgress();
     if (pr > 0.12 && pr < 1){
-      var base = r[10] / (r[5] || 1);
-      return (it.amt / 1e8) / pr / base;
+      var base = r[10] / r[5];
+      if (base > 0) return (it.amt / 1e8) / pr / base;
     }
   }
   return r[5];

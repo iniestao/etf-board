@@ -229,7 +229,13 @@ Deno Deploy / Turso **不需要**——重计算已下沉，它们解决的问�
 pip install pandas numpy pyarrow
 python compute.py --limit 50 --check    # 冒烟测试
 python compute.py --out ../dist         # 全量导出
+python events.py --out ../dist          # 单独重算全市场异动快照
 ```
+
+`events.py` 会由 `compute.py` 在导出末尾自动调用（收盘后跟因子一起重算），
+单独跑只用于调试。它产出 `dist/events.json`（约 26KB），同时写一份到
+`dist/hist/events.json` —— 因为发布流水线只整目录复制 `dist/hist`，
+放这里就能跟着现有通道发到 data 分支，不需要改 workflow。
 
 ## 六、因子相关性聚类与样本外验证
 
