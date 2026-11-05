@@ -153,15 +153,16 @@ if (isMain) {
   }
 
   // PCF 预热：Cloudflare 版靠 Cron Trigger，沙箱版没有 Cron，用进程内的定时器
-  // 顶替，调的是同一个 warmRound。只在工作日 09:00–16:00（北京时间）跑，每轮
-  // 处理二十来只、抓完当天清单就自己空转（只读一次进度就返回）。
+  // 顶替，调的是同一个 warmRound。只在工作日 07:00–16:00（北京时间）跑——早上
+  // 那几轮抓到的还是昨天那份清单，先用着；等今天的清单上线，warmRound 会自己
+  // 把游标归零重抓。抓完就空转（每轮只读一次进度就返回）。
   // 沙箱休眠期间不会执行——漏了就退回「打开时现场拉」，正确性不受影响。
   if (process.env.PCF_WARM !== '0') {
     const warmTick = async () => {
       const cst = new Date(Date.now() + 8 * 3600e3);
       const hh = cst.getUTCHours(), wd = cst.getUTCDay();
       if (wd === 0 || wd === 6) return;
-      if (hh < 9 || hh >= 16) return;
+      if (hh < 7 || hh >= 16) return;
       try {
         const r = await warmRound(env);
         if (r && (r.got || r.wrote || r.built)) console.log('[pcfwarm] ' + JSON.stringify(r));

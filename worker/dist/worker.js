@@ -934,6 +934,13 @@ function parsePcfSzseTxt(txt) {
   return items.length ? items : null;
 }
 
+/** 深交所清单文件头里的「目标指数代码：399006」——这是唯一一处能白拿到的
+ *  跟踪指数（上交所的清单里没有，只能靠基金全称推）。 */
+function pcfSzseIndex(txt) {
+  const m = String(txt || '').match(/目标指数代码[：:]\s*([0-9A-Za-z]{4,10})/);
+  return m ? m[1] : '';
+}
+
 async function fetchPcfSzse(code, days) {
   /* 文件按日命名，取不到就往回找 8 天：盘前文件还没生成、周末、长假都取不到。
      每一次尝试是一个子请求，所以上限压到 8——真遇到长假，回退季报也不算错。
@@ -954,7 +961,7 @@ async function fetchPcfSzse(code, days) {
     } catch (e) { /* 换个日期再试 */ }
     if (!txt) continue;
     const items = parsePcfSzseTxt(txt);
-    if (items) return { ex: 'szse', day, items };
+    if (items) return { ex: 'szse', day, items, idx: pcfSzseIndex(txt) };
   }
   throw new Error('深交所 PCF 取不到（今天可能还没发布）');
 }
@@ -1298,7 +1305,7 @@ async function serveTop3(ctx, codes, env) {
 */
 const PCFS_KV = 'pcfsh-v1/';
 const PCFW_KV = 'pcfwarm-v1/';
-const PCFP_KV = 'pcfpool-v2/';
+const PCFP_KV = 'pcfpool-v3/';
 const PCFS_TTL = 3 * 86400;       // 分片留 3 天：周末回来还能给周五的清单兜个底
 const WARM_PER_RUN = 20;          // 每轮至少这么多只（按整片取，允许超出）
 const WARM_PROBE = '510300';      // 沪深300ETF：盘前清单发布的风向标
@@ -1360,15 +1367,97 @@ async function pcfTradingDay(code) {
    子请求。所以预热只取每个指数里成交额最大的那只，其余等真被点开时再现场拉
    （getPcf 的三级读取里，「现场拉」这一级本来就是给这种长尾准备的）。
 
-   判定同指数靠简称：`{核心}ETF{基金公司}`，取 ETF 之前那段，去掉括号里的份额/币种
-   标注和「基金/指数/LOF/联接」这些通用词。规则刻意保守——宁可多分几组（多抓一只），
-   也不要误并：误并的代价是那只 ETF 永远没预热，每次点开都现场拉。核心词短于两个字
-   的（「酒」「金」这种）直接按代码各算一组，不参与归并。 */
+   分组键要的是**跟踪指数**，不是简称。两个市场给的东西不一样：
+
+   | 市场 | 来源 | 键 |
+   |---|---|---|
+   | 沪市 | 上交所清单列表的 `ETF_FULLNAME`（基金合同里的标的指数全称） | 指数全称 |
+   | 深市 | PCF 文件头的「目标指数代码」 | 指数代码 |
+
+   沪市那条一次请求拿全 947 条，每天刷一次；深市没有批量接口（列表接口固定
+   10 条一页、771 只 = 78 页，大页直接被 WAF 掐断），只能在抓清单时顺手把代码
+   记下来，攒几天就齐了。两条都没有时才退回简称匹配（coreOf）。 */
+const IDX_KV = 'idxmap-v1';
+
+/** 基金全称 → 标的指数名。
+ *  华泰柏瑞沪深300交易型开放式指数证券投资基金 ＋ 华泰柏瑞基金管理有限公司 → 沪深300
+ *  上证180公司治理交易型开放式指数证券投资基金（全称里没有公司名）→ 上证180公司治理 */
+function idxFromFullName(full, comp) {
+  let s = String(full || '').replace(/[\s（）()]/g, '');
+  if (!s) return '';
+  const c = String(comp || '').replace(/资产管理.*$/, '').replace(/基金管理.*$/, '').replace(/基金.*$/, '');
+  if (c && c.length >= 2 && s.indexOf(c) === 0 && s.length > c.length + 2) s = s.slice(c.length);
+  const cut = s.search(/交易型|ETF|证券投资基金/);
+  if (cut > 0) s = s.slice(0, cut);
+  return s;
+}
+
+async function fetchSseEtfNames() {
+  const u = 'https://query.sse.com.cn/commonQuery.do?isPagination=true&pageHelp.pageSize=1000'
+    + '&pageHelp.pageNo=1&sqlId=COMMON_SSE_PL_ETFGGSGSHQD_L';
+  const r = await fetch(u, {
+    headers: {
+      'User-Agent': HOLD_UA, Accept: '*/*',
+      Referer: 'https://www.sse.com.cn/disclosure/fund/etflist/',
+    },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!r.ok) throw new Error('SSE list HTTP ' + r.status);
+  const j = await r.json();
+  const d = (j && j.pageHelp && j.pageHelp.data) || [];
+  const m = {};
+  for (const x of d) {
+    const c = String(x.FUNDID2 || '').trim();
+    if (!/^\d{6}$/.test(c)) continue;
+    const k = idxFromFullName(x.ETF_FULLNAME, x.FUND_COMP_NAME);
+    if (k && k.length >= 2) m[c] = k;
+  }
+  if (!Object.keys(m).length) throw new Error('上交所清单列表为空');
+  return m;
+}
+
+/** 指数映射：{d: 建表日, sh: {code: 指数名}, sz: {code: 指数代码}} */
+async function loadIdxMap(env) {
+  const day = cstDay();
+  let m = null;
+  try { m = await env.WATCH.get(IDX_KV, 'json'); } catch (e) { /* 重建 */ }
+  const sh = (m && m.sh) || {};
+  const sz = (m && m.sz) || {};
+  if (m && m.d === day && Object.keys(sh).length) return m;
+  let fresh = sh;
+  try { fresh = await fetchSseEtfNames(); } catch (e) { /* 拉不到就沿用旧表，总比没有强 */ }
+  const out = { d: day, sh: fresh, sz };
+  try { await env.WATCH.put(IDX_KV, JSON.stringify(out), { expirationTtl: 8 * 86400 }); } catch (e) { /* 忽略 */ }
+  return out;
+}
+
+/** 把这一轮从深市清单里学到的「代码 → 目标指数代码」并进映射表 */
+async function saveSzIdx(env, m, add) {
+  if (!add || !Object.keys(add).length) return;
+  let changed = false;
+  for (const c of Object.keys(add)) {
+    if (m.sz[c] !== add[c]) { m.sz[c] = add[c]; changed = true; }
+  }
+  if (!changed) return;
+  try { await env.WATCH.put(IDX_KV, JSON.stringify(m), { expirationTtl: 8 * 86400 }); } catch (e) { /* 忽略 */ }
+}
+
+/** 简称为主的兜底分组键：{核心}ETF{基金公司}，取 ETF 之前那段。规则刻意保守——
+ *  宁可多分几组（多抓一只），也不要误并：误并的代价是那只 ETF 永远没预热。 */
 function coreOf(name) {
   let s = String(name || '').replace(/[\s\-—_]/g, '').replace(/[（(][^）)]*[）)]/g, '');
   const i = s.toUpperCase().indexOf('ETF');
   if (i > 0) s = s.slice(0, i);
   return s.replace(/ETF|基金|指数|LOF|联接|证券投资基金/gi, '');
+}
+
+function groupKeyOf(code, name, m) {
+  const sh = m && m.sh && m.sh[code];
+  if (sh) return 'i:' + sh;
+  const sz = m && m.sz && m.sz[code];
+  if (sz) return 'x:' + sz;
+  const core = coreOf(name);
+  return core.length >= 2 ? 'n:' + core : '#' + code;
 }
 
 /** 当天的预热顺序：每指数一只 → 成交额降序 → 按分片聚拢（片间按片内最大成交额排） */
@@ -1404,10 +1493,13 @@ async function buildWarmPlan(day, env) {
 
   /* 同指数只留成交额最大的一只。用 Map 边遍历边比，天然保留最大者，
      顺便记下被并掉的只数，好在 /api/pcfwarm 里对账。 */
+  const idxm = await loadIdxMap(env);
   const byCore = new Map();
+  let exact = 0;      // 用真指数分到组的只数（剩下的是退回简称的）
   for (const x of got) {
-    const core = coreOf(x.m);
-    const k = core.length >= 2 ? core : ('#' + x.c);   // 核心词太短就各算一组
+    const k = groupKeyOf(x.c, x.m, idxm);
+    const tag = k.charCodeAt(0);
+    if (tag !== 110 && tag !== 35) exact++;   // 'n:' 简称兜底、'#' 独立成组
     const cur = byCore.get(k);
     if (!cur || x.a > cur.a) byCore.set(k, x);
   }
@@ -1443,7 +1535,7 @@ async function buildWarmPlan(day, env) {
   groups.sort((a, b) => b[0].a - a[0].a);
   const codes = [];
   for (const g of groups) for (const x of g) codes.push(x.c);
-  return { day, n: codes.length, codes, grp: byCore.size, dropped, all: got.length };
+  return { day, n: codes.length, codes, grp: byCore.size, dropped, all: got.length, exact };
 }
 
 /** 预热阶段抓一只：上交所重试 2 次，深交所只认今天的文件 */
@@ -1480,29 +1572,44 @@ async function warmRound(env) {
 
   let st = null;
   try { st = await env.WATCH.get(PCFW_KV + day, 'json'); } catch (e) { /* 从头开始 */ }
-  if (!st || typeof st.i !== 'number' || st.n !== plan.n) st = { i: 0, n: plan.n, ok: 0, fail: 0, t: 0 };
-  if (st.i >= plan.n) return { ok: true, done: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped };
-
-  // 建计划这一轮不抓清单：18 页列表已经吃掉不少子请求，再抓二十几只容易撞上限
-  if (built) return { ok: true, built: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped, all: plan.all };    
-
-  /* 闸门：清单没发布时不能写。上交所的成分接口不带日期，抓早了拿到的是昨天
-     的组合，却会被当成今天的存进去，而且当天再也不会刷新。
-
-     判断依据是 510300 的基本信息里的 TRADING_DAY。但这个接口本身会抽风——
-     实测有一半请求直接回 "System Error"，所以给三次机会；三次都问不到就按时间
-     兜底：交易所的发布窗口是 08:30–09:20，过了 09:30 还没问到日期，就当作
-     已发布继续抓——宁可冒一次「拿到昨天的组合」的风险，也不要因为一个诊断
-     接口抽风，让全天一千多只都退回现场拉。 */
-  let tday = '';
-  for (let a = 0; a < 3 && tday !== day; a++) {
-    try { tday = await pcfTradingDay(WARM_PROBE); } catch (e) { tday = ''; }
-    if (tday !== day && a < 2) await new Promise((r) => setTimeout(r, 200 + a * 300));
+  if (!st || typeof st.i !== 'number' || st.n !== plan.n) {
+    st = { i: 0, n: plan.n, ok: 0, fail: 0, t: 0, pday: '', probeAt: 0, refresh: 0 };
   }
-  if (tday !== day) {
-    const cst = new Date(Date.now() + 8 * 3600e3);
-    const hm = cst.getUTCHours() * 100 + cst.getUTCMinutes();
-    if (hm < 930) return { ok: true, wait: true, day, sse: tday, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped };
+
+  // 建计划这一轮不抓清单：20 页列表已经吃掉不少子请求，再抓二十几只容易撞上限
+  if (built) {
+    return { ok: true, built: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped, all: plan.all, exact: plan.exact };
+  }
+
+  /* 清单日期探测：**不再用它挡路**，只用来判断今天的清单发布没有。
+
+     07:00 一开跑，交易所给的还是昨天那份（上交所的成分接口不带日期，深交所的
+     文件按日命名、今天的还没生成）。两天的差别只在调仓，先用着不影响盯市——
+     但要在探测到「今天已发布」时把游标按回 0 重抓一遍，让成交额大的那些尽快换成
+     今天的组合。重抓是原地覆盖分片，不会出现半张空表。
+
+     这个诊断接口自己会抽风（实测一半请求回 System Error），所以 5 分钟内只探一次，
+     结果连同 probeAt 一起存在状态里跨轮复用。 */
+  if (!st.probeAt || Date.now() - st.probeAt > 5 * 60e3) {
+    let tday = '';
+    for (let a = 0; a < 3; a++) {
+      try { tday = await pcfTradingDay(WARM_PROBE); } catch (e) { tday = ''; }
+      if (tday === day) break;
+      await new Promise((r) => setTimeout(r, 150 + a * 250));
+    }
+    st.probeAt = Date.now();
+    if (tday) {
+      if (!st.pday) st.pday = tday;
+      else if (tday !== st.pday) {
+        st.pday = tday;
+        if (st.i > 0) { st.i = 0; st.refresh = (st.refresh || 0) + 1; }
+      }
+    }
+  }
+
+  if (st.i >= plan.n) {
+    try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
+    return { ok: true, done: true, day, i: st.i, n: st.n, pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, exact: plan.exact };
   }
 
   // 从游标开始，按整片累加到 WARM_PER_RUN 只以上（片不切，保证每片只写一次）
@@ -1518,13 +1625,23 @@ async function warmRound(env) {
   const batch = plan.codes.slice(from, to);
 
   const res = {};
+  const szIdx = {};
   let ok = 0, fail = 0;
   await mapLimit(batch, 3, async (code) => {
     try {
       const p = await pcfForWarm(code);
-      if (p && p.items && p.items.length) { res[code] = p; ok++; } else fail++;
+      if (p && p.items && p.items.length) {
+        res[code] = p; ok++;
+        if (p.idx) szIdx[code] = p.idx;
+      } else fail++;
     } catch (e) { fail++; }
   });
+
+  /* 深市没有批量接口（列表接口固定 10 条一页、大页会被 WAF 掐断），跟踪指数只能
+     从清单文件里顺手攒。攒满一次全市场要几天，攒到之前那几只走简称兜底。 */
+  if (Object.keys(szIdx).length) {
+    try { await saveSzIdx(env, await loadIdxMap(env), szIdx); } catch (e) { /* 攒不下就明天再攒 */ }
+  }
 
   const shards = {};
   for (const code of Object.keys(res)) {
@@ -1539,11 +1656,11 @@ async function warmRound(env) {
     } catch (e) { /* 单片写失败，下一轮不会补（游标已过），盘中退回现场拉 */ }
   }
 
-  st = { i: to, n: plan.n, ok: st.ok + ok, fail: st.fail + fail, t: Date.now() };
+  st = { ...st, i: to, n: plan.n, ok: st.ok + ok, fail: st.fail + fail, t: Date.now() };
   try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
   return {
     ok: true, day, i: st.i, n: st.n, got: ok, fail, wrote, done: st.i >= st.n,
-    grp: plan.grp, dropped: plan.dropped, all: plan.all,
+    pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, all: plan.all, exact: plan.exact,
   };
 }
 

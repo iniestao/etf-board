@@ -360,24 +360,28 @@ async function runContracts(base, pass) {
   if (w1 && w1.ok) {
     ok('/api/pcfwarm 一轮：' + JSON.stringify({
       i: w1.i, n: w1.n, got: w1.got, wrote: w1.wrote,
-      built: !!w1.built, wait: !!w1.wait, done: !!w1.done,
+      built: !!w1.built, done: !!w1.done, pday: w1.pday || '',
     }));
     if (!(w1.n > 500)) bad('/api/pcfwarm 的清单只有 ' + w1.n + ' 只，全市场应该一千多');
     /* 同指数只留龙头：清单必须比市场总数明显少，且组数不超过清单长度。
        两个数只在建计划那一轮返回，命中已有计划的轮次就跳过这条。 */
     if (w1.all) {
       (w1.all > w1.n && w1.grp <= w1.n && w1.dropped === w1.all - w1.grp)
-        ? ok('/api/pcfwarm 按指数归并：' + w1.all + ' 只 → ' + w1.grp + ' 组 → 预热 ' + w1.n + ' 只')
+        ? ok('/api/pcfwarm 按指数归并：' + w1.all + ' 只 → ' + w1.grp + ' 组 → 预热 ' + w1.n
+          + ' 只（' + w1.exact + ' 只用真指数分组）')
         : bad('/api/pcfwarm 归并数目对不上：' + JSON.stringify({ all: w1.all, grp: w1.grp, n: w1.n, dropped: w1.dropped }));
+      if (!(w1.exact > 0)) bad('/api/pcfwarm 没有一只走真指数分组，全退回简称了');
     }
     await new Promise((res) => setTimeout(res, 1200));
     r = await rawRequest(base, '/api/pcfwarm', { cookie, timeout: 40000 });
     w2 = r.json();
     if (!(w2 && w2.ok)) bad('/api/pcfwarm 第二轮失败：' + r.text.slice(0, 160));
-    else if (w2.wait) ok('/api/pcfwarm 第二轮：清单还没发布（wait），符合盘前预期');
     else if (w2.done) ok('/api/pcfwarm 第二轮：当天已预热完（done）');
     else if (w2.i > w1.i) ok('/api/pcfwarm 游标前进 ' + w1.i + ' → ' + w2.i + '/' + w2.n);
-    else bad('/api/pcfwarm 连跑两轮游标没动：' + JSON.stringify(w2));
+    // 探测到今日清单刚发布时，游标会归零重抓，不算异常
+    else if ((w2.refresh || 0) > (w1.refresh || 0)) {
+      ok('/api/pcfwarm 探测到新清单，游标归零重抓：' + w1.i + ' → ' + w2.i + '（第 ' + w2.refresh + ' 次）');
+    } else bad('/api/pcfwarm 连跑两轮游标没动：' + JSON.stringify(w2));
   } else {
     bad('/api/pcfwarm 失败：' + r.text.slice(0, 160));
   }
@@ -456,7 +460,7 @@ if (!pass) {
     shardFiles.length
       ? ok('预热分片已落 KV：' + shardFiles.length + ' 片（' + day + '）')
       : bad('预热没有产生任何分片（pcfsh-v1/*' + day + '）');
-    const planFile = 'pcfpool-v2_2F' + day + '.json';
+    const planFile = 'pcfpool-v3_2F' + day + '.json';
     files.includes(planFile) ? ok('当天的预热顺序表已落 KV（' + planFile + '）')
       : bad('没有预热顺序表 ' + planFile);
     // 分片里存的必须是能读回的结构，不能是一串字符串
