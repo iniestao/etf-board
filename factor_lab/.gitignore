@@ -4,3 +4,8 @@ __pycache__/
 out_*.csv
 out_*.json
 lab_data.json
+
+# 大体积原始数据，可由脚本重抓，不进仓库
+pcf.db
+stocks.db
+*.log
