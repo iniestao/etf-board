@@ -2361,18 +2361,21 @@ function mktList(){
     return;
   }
   var h = '<div class="mhead"><span>名称 / 跟踪指数</span><span>类型</span>'
-    + '<span>位置</span><span>量能</span><span>20日</span></div>';
+    + '<span>位置</span><span>量能</span><span>今日</span></div>';
   var cap = 13;
   for (var i = 0; i < rows.length && i < cap; i++){
     var r = rows[i].r, tg = MKT_LABEL[rows[i].t] || ['', ''];
     var pos = mktPos(r), ev = mktEvr(r);
-    h += '<div class="mrow" data-c="' + r[0] + '">'
+    // 最后一列放今日涨幅而不是 20 日：这一栏回答的是「今天发生了什么」，
+    // 20 日累计放进标题提示，鼠标停上去能看到。
+    var tip = r[1] + ' · 20日 ' + fpc(r[6]) + ' · 成交 ' + r[10].toFixed(1) + ' 亿';
+    h += '<div class="mrow" data-c="' + r[0] + '" title="' + esc(tip) + '">'
       + '<span class="mn">' + esc(r[1])
       + (r[2] ? '<em>' + esc(r[2]) + '</em>' : '') + '</span>'
       + '<span class="mtag ' + tg[1] + '">' + tg[0] + '</span>'
       + '<span class="mnum">' + pos.toFixed(0) + '</span>'
       + '<span class="mnum">' + (ev == null ? '-' : ev.toFixed(1)) + '</span>'
-      + '<span class="mnum ' + cc(r[6]) + '">' + fpc(r[6]) + '</span>'
+      + '<span class="mnum ' + cc(r[7]) + '">' + fpc(r[7]) + '</span>'
       + '</div>';
   }
   if (rows.length > cap){
