@@ -102,6 +102,47 @@ background:var(--bg3)}
 .mn em{font-style:normal;font-size:10px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
 .mnum{font-family:var(--mono);font-size:11.5px;text-align:right}
 .mnum small{font-size:9.5px;color:var(--txt3);margin-right:2px}
+/* ---- 急涨急跌 ---- */
+.spdgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.spdcol{min-width:0}
+.spdcol + .spdcol{border-left:1px solid var(--line);padding-left:14px}
+.spdcol:first-child{padding-right:14px}
+.spdnone{padding:9px 0;color:var(--txt3);font-size:11.5px}
+.spdch{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--txt3);
+  padding-bottom:5px;border-bottom:1px solid var(--line);margin-bottom:2px;letter-spacing:.3px}
+.spdch b{font-weight:600;font-size:11px}
+.spdch b.up{color:var(--up)}.spdch b.dn{color:var(--down)}
+/* 用 flex 而不是 grid：名称 + 走势线是「左边一块信息」，涨速和量比是
+   「右边两个数」。网格会把走势线顶到栏宽的中段，两边各留一片空白，
+   看着像中间缺了内容。 */
+.spdrow{display:flex;gap:8px;align-items:center;padding:5px 0;
+  border-bottom:1px dashed var(--line);cursor:pointer;font-size:12px}
+.spdrow:last-child{border-bottom:none}
+.spdrow:hover{background:#f7f9fc}
+.spdrow:hover .spdnm{color:#1d4ed8}
+/* 给名字一个下限：不然「银行ETF华宝」和「沪深300ETF华泰柏瑞」两种长度
+   会让走势线在每一行都往右挪一点，一列 spark 看着像锯齿。 */
+.spdnm{flex:0 0 auto;min-width:126px;max-width:210px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.spdnm em{font-style:normal;font-size:9.5px;color:var(--txt3);margin-left:4px;font-family:var(--mono)}
+.spk{display:block;flex:0 0 auto;overflow:visible}
+.spdv{flex:0 0 56px;margin-left:auto;font-family:var(--mono);font-size:12px;
+  text-align:right;font-weight:600}
+.spdq{flex:0 0 40px;font-family:var(--mono);font-size:11px;text-align:right;color:var(--txt2)}
+.spdq.hot{color:#a9660a;font-weight:600}
+.spdnote{font-size:10.5px;color:var(--txt3);margin-top:7px;padding-top:6px;
+  border-top:1px solid var(--line);line-height:1.5}
+@media(max-width:760px){
+  .spdgrid{grid-template-columns:1fr;gap:10px}
+  .spdcol + .spdcol{border-left:none;border-top:1px solid var(--line);padding-left:0;padding-top:12px}
+  .spdcol:first-child{padding-right:0}
+  /* 手机上挤不下走势线，让位给名字——名字被截成两三个字更伤 */
+  .spdrow{gap:6px}
+  .spdrow .spk{display:none}
+  .spdnm{flex:1 1 auto;min-width:0;max-width:none}
+  .spdv{flex:0 0 52px;font-size:11.5px}
+  .spdq{flex:0 0 36px;font-size:10.5px}
+}
 .styl{display:grid;grid-template-columns:62px minmax(0,1fr) 44px 40px;
   gap:8px;align-items:center;padding:3.5px 0;font-size:11.5px}
 .styl .sk{color:var(--txt2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -493,6 +534,21 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </div>
 </div>
 
+<div class="sec" id="spdSec">
+  <div class="sechd"><b>急涨急跌</b><span class="n" id="spdN">-</span>
+    <span class="sync" id="btnSpd" title="立刻重算一次">刷新</span></div>
+  <div class="dnote">上面那栏看「今天」，这一栏看「刚才」：过去几分钟谁在急拉、谁在急砸，量跟不跟得上。</div>
+  <div class="mkbox">
+    <div class="mtabs" id="spdTabs">
+      <span class="mtab on" data-w="3">3 分钟</span>
+      <span class="mtab" data-w="5">5 分钟</span>
+      <span class="mtab" id="spdVol" title="量比低于 1.5 倍的不显示">只看放量</span>
+    </div>
+    <div class="spdgrid" id="spdGrid"><div class="empty">读取中…</div></div>
+    <div class="spdnote" id="spdNote"></div>
+  </div>
+</div>
+
 <div class="sec">
   <div id="staleBar" class="stalebar" style="display:none"></div>
   <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
@@ -621,7 +677,7 @@ var STATS = null;
 var LIVE = {};                 // 自选高频覆盖 {code: item}
 var g = 'all', sortKey = 'amt', limit = 100, kw = '';
 var DATA_SRC = '', DATA_TS = 0;
-var lastP = {}, timerSlow = null, timerFast = null, retryTimer = null;
+var lastP = {}, timerSlow = null, timerFast = null, timerSpd = null, retryTimer = null;
 
 /* ---------- 分类（浏览器端，带缓存；Worker 端做会吃掉 10ms CPU 预算） ---------- */
 var GROUP_CACHE = new Map();
@@ -1672,6 +1728,232 @@ function renderList(){
   document.getElementById('listN').textContent =
     '显示 ' + arr.length + ' / 可用 ' + matched + ' 只' + note;
 }
+
+/* ================= 急涨急跌 =================
+   为什么自己算，不用现成的涨速字段：
+   - 东财 f22 就是涨速，但 push2 / push2his 这条线在沙箱和 Worker 两侧都是
+     TLS 握手完成后空响应，整条链路不可用（见 README 的分时一节）；
+   - 新浪排行接口 sort=speed 不生效——传 changepercent 能正确排序，传 speed
+     返回的还是代码序，说明它根本不认这个字段。
+   所以回到最原始的口径：拿分钟线，自己回溯。
+
+   为什么池子只有 40 只：
+   涨速要逐只拉分时，一只一个子请求。Cloudflare 免费计划每请求上限 50 个，
+   服务端截到 48，前端主动取 40 留余量。按成交额取，是因为涨速榜的意义是
+   「有机会下手的标的在动」——成交额小的票就算 3 分钟拉 3%，也成交不了。
+   同指数去重照旧：三只 A500 一起涨，占三个坑没有任何信息量。
+*/
+
+var SPD = { rows: [], w: 3, volOnly: false, ts: 0, ms: 0, ask: 0, err: '', loading: false };
+var SPD_POOL_MAX = 40;
+var SPD_VOL_HOT = 1.5;         // 量比到这个倍数算「放量」
+var SPD_SHOW = 5;              // 每边显示几只
+/* 现金管理类日内振幅常年 0.0x%，挤进榜只会稀释信号。group() 已经把它们
+   归到 money/bond，这里再按名称兜一道——有些短融 ETF 名称不带「货币」二字，
+   被分到了 industry，漏进池子就会一直霸占榜首（实测 551550、511150 都这样）。 */
+var SPD_SKIP = /短融|货币|日利|添益|现金|理财|保证金|快线/;
+
+function spdPool(){
+  if (!DATA.length) return [];
+  var arr = [], i, x;
+  for (i = 0; i < DATA.length; i++){
+    x = DATA[i];
+    if (!(x.amt > 0)) continue;            // 当日没成交，分时是空的
+    if (x.g === 'bond' || x.g === 'money') continue;
+    if (SPD_SKIP.test(x.n)) continue;
+    arr.push(x);
+  }
+  // KEEP 表要等指数映射加载完才有；没加载时 !KEEP[ix] 为真，等于不去重，
+  // 比「把同指数的票全藏掉」安全
+  if (DEDUP){
+    arr = arr.filter(function(x){ return !x.ix || !KEEP[x.ix] || KEEP[x.ix] === x.c; });
+  }
+  arr.sort(function(a, b){ return b.amt - a.amt; });
+  return arr.slice(0, SPD_POOL_MAX).map(function(x){ return x.c; });
+}
+
+function spdFetch(force){
+  var pool = spdPool();
+  if (!pool.length){
+    // 池子是从全市场快照里挑的。快照没到（或挂了）就一直「读取中」，
+    // 那块地方看起来像卡死，得说清楚卡在哪一步
+    if (!DATA.length && !SPD.err){
+      SPD.err = '全市场快照还没到，涨速榜要等它先选出活跃池';
+      renderSpeed();
+    }
+    return;
+  }
+  if (SPD.loading) return;
+  SPD.loading = true;
+  var url = '/api/speed?codes=' + pool.join(',') + (force ? '&f=' + Date.now() : '');
+  fetch(url).then(function(r){ return r.json(); }).then(function(j){
+    SPD.loading = false;
+    if (!j || !j.ok){ SPD.err = (j && j.error) || '读取失败'; renderSpeed(); return; }
+    SPD.rows = j.rows || [];
+    SPD.err = '';
+    SPD.ts = Date.now();
+    SPD.ms = j.ms || 0;
+    SPD.ask = j.ask || 0;
+    renderSpeed();
+  }).catch(function(e){
+    SPD.loading = false;
+    SPD.err = '网络错误：' + (e.message || e);
+    renderSpeed();
+  });
+}
+
+/* 最后一根停在 15:00 就是收完了。盘中 14:59:xx 时最后一根还是 14:59，
+   所以这个判据不会提前把运行中的行情判成收盘。 */
+function spdClosed(){
+  return !!(SPD.rows.length && SPD.rows[0].t >= '15:00');
+}
+
+function spdPct(v){
+  if (v == null || !isFinite(v)) return '-';
+  // 一律两位：混着 0.15% 和 0.082% 排一列，眼睛没法比大小
+  return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+/* 迷你线：横轴是最近 20 分钟，与「涨速」的窗口不是一回事，所以颜色按窗口
+   方向给、形状按 20 分钟给——「一路阴跌最后两分钟拉起来」这种形态才看得见。
+   颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量（--up/--down 改主题时
+   这里要跟着改）。 */
+function spdSpark(vals, up){
+  if (!vals || vals.length < 3) return '<span class="spk"></span>';
+  var w = 58, h = 18, pad = 1.5, mn = Infinity, mx = -Infinity, i;
+  for (i = 0; i < vals.length; i++){
+    if (vals[i] < mn) mn = vals[i];
+    if (vals[i] > mx) mx = vals[i];
+  }
+  var rng = (mx - mn) || (mx * 0.002) || 0.001;
+  var d = '';
+  for (i = 0; i < vals.length; i++){
+    var x = pad + (i / (vals.length - 1)) * (w - pad * 2);
+    var y = h - pad - ((vals[i] - mn) / rng) * (h - pad * 2);
+    d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }
+  return '<svg class="spk" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">'
+    + '<path d="' + d + '" fill="none" stroke="' + (up ? '#d93a3a' : '#0e9a61')
+    + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+
+function renderSpeed(){
+  var box = document.getElementById('spdGrid');
+  var note = document.getElementById('spdNote');
+  var nEl = document.getElementById('spdN');
+  if (!box) return;
+
+  if (SPD.err){
+    box.innerHTML = '<div class="empty">' + SPD.err + '</div>';
+    if (note) note.textContent = '';
+    if (nEl) nEl.textContent = '';
+    return;
+  }
+  if (!SPD.rows.length){
+    box.innerHTML = '<div class="empty">还没有数据</div>';
+    return;
+  }
+
+  var kR = SPD.w === 5 ? 'r5' : 'r3';
+  var kQ = SPD.w === 5 ? 'q5' : 'q3';
+  var up = [], dn = [], i, r, v, q;
+  for (i = 0; i < SPD.rows.length; i++){
+    r = SPD.rows[i];
+    v = r[kR];
+    if (v == null || !isFinite(v)) continue;
+    q = r[kQ];
+    if (SPD.volOnly && !(q >= SPD_VOL_HOT)) continue;
+    (v >= 0 ? up : dn).push({ r: r, v: v, q: q });
+  }
+  up.sort(function(a, b){ return b.v - a.v; });
+  dn.sort(function(a, b){ return a.v - b.v; });
+
+  function rowHtmlOf(o){
+    var x = o.r, it = findItem(x.c);
+    var nm = it ? it.n : x.c;
+    var hot = o.q >= SPD_VOL_HOT;
+    // sp 和标称窗口差得多就标 ~：可能是数据缺口把基准推远了（尾盘 14:56
+    // 直接跳 15:00，3 分钟实际跨了 4 分钟），也可能是午后刚开盘窗口还没走满
+    var far = Math.abs(x.sp - SPD.w) >= 2;
+    return '<div class="spdrow" data-c="' + x.c + '">'
+      + '<div class="spdnm" title="' + nm + '  ' + x.c + '">' + nm + '<em>' + x.c + '</em></div>'
+      + spdSpark(x.pv, o.v >= 0)
+      + '<div class="spdv" style="color:' + (o.v >= 0 ? 'var(--up)' : 'var(--down)') + '">'
+        + (far ? '~' : '') + spdPct(o.v) + '</div>'
+      + '<div class="spdq' + (hot ? ' hot' : '') + '" title="量比：最近 ' + SPD.w
+        + ' 分钟每分钟成交量 ÷ 此前 30 分钟每分钟成交量">'
+        + (o.q > 0 ? o.q.toFixed(1) + '×' : '-') + '</div>'
+      + '</div>';
+  }
+
+  function colHtmlOf(list, dir){
+    var buf = [], n = Math.min(list.length, SPD_SHOW);
+    for (var j = 0; j < n; j++) buf.push(rowHtmlOf(list[j]));
+    if (!n) buf.push('<div class="spdnone">'
+      + (SPD.volOnly ? '没有量比 ≥ ' + SPD_VOL_HOT + ' 倍的标的' : '暂无数据') + '</div>');
+    return '<div class="spdcol">'
+      + '<div class="spdch"><b class="' + (dir > 0 ? 'up' : 'dn') + '">'
+      + (dir > 0 ? '急涨 ↑' : '急跌 ↓') + '</b><span>'
+      + list.length + ' 只' + (list.length > n ? '，显示前 ' + n : '') + '</span></div>'
+      + buf.join('') + '</div>';
+  }
+
+  box.innerHTML = colHtmlOf(up, 1) + colHtmlOf(dn, -1);
+
+  // 数据时点用分时最后一根的时间，不用本地时钟：一个显示「刚刚」，另一个
+  // 显示「15:00」，用户才知道这是不是实时的
+  var t = SPD.rows[0].t || '';
+  var when = SPD.ts ? new Date(SPD.ts) : null;
+  var hhmm = when ? ('0' + when.getHours()).slice(-2) + ':' + ('0' + when.getMinutes()).slice(-2) + ':'
+    + ('0' + when.getSeconds()).slice(-2) : '-';
+  if (nEl){
+    // 手机上这一行会把「急涨急跌」标题挤到第二行，所以只留最要紧的两个数
+    nEl.innerHTML = '有效 ' + SPD.rows.length + ' 只 · 数据时点 ' + t
+      + '<span class="hide-sm"> · 扫描 ' + SPD.ask + ' 只 · 算于 ' + hhmm
+      + (SPD.ms ? '（' + SPD.ms + 'ms）' : '') + '</span>';
+  }
+  if (note){
+    // 「收盘了没有」按分时最后一根判断，不能复用 isOpen()——那个函数为了
+    // 让收盘后的快照继续刷新，一直算到 16:10，拿它当收盘标志会晚一个多小时
+    note.innerHTML = '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
+      + '到 <b>' + SPD_VOL_HOT + '×</b> 标黄。收盘集合竞价那根按 4 分钟折算，'
+      + '否则尾盘会凭空多出十倍放量。'
+      + (spdClosed() ? '<br>已收盘：这里是<b>今天最后几分钟</b>的涨速，明天 9:30 才重新走动。' : '');
+  }
+}
+
+Array.prototype.forEach.call(document.querySelectorAll('#spdTabs .mtab[data-w]'), function(t){
+  t.onclick = function(){
+    var w = +t.getAttribute('data-w');
+    if (w === SPD.w) return;
+    SPD.w = w;
+    Array.prototype.forEach.call(document.querySelectorAll('#spdTabs .mtab[data-w]'), function(x){
+      x.classList.toggle('on', x === t);
+    });
+    renderSpeed();
+  };
+});
+(function(){
+  var vol = document.getElementById('spdVol');
+  if (!vol) return;
+  vol.onclick = function(){
+    SPD.volOnly = !SPD.volOnly;
+    vol.classList.toggle('on', SPD.volOnly);
+    renderSpeed();
+  };
+})();
+(function(){
+  var b = document.getElementById('btnSpd');
+  if (b) b.onclick = function(){ spdFetch(true); };
+  var g = document.getElementById('spdGrid');
+  if (g) g.addEventListener('click', function(e){
+    var row = e.target.closest ? e.target.closest('.spdrow[data-c]') : null;
+    if (!row) return;
+    var c = row.getAttribute('data-c');
+    var it = findItem(c);
+    openHist(c, it ? it.n : c);
+  });
+})();
 
 /* ================= 历史 K 线面板 =================
    数据来自 R2 上的精简二进制（近 500 天 × 17 字段），Worker 只做透传。
@@ -3526,6 +3808,8 @@ function loadFull(){
 
     renderCards(); renderList(); renderWatch();
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
+    // 涨速榜的池子是从这份快照里挑的，第一次拿到数据才有得挑
+    if (!SPD.rows.length && !SPD.loading) spdFetch();
   }).catch(function(e){
     setStale('行情源暂时不可用（' + e.message + '），15 秒后自动重试；自选行情走腾讯直连，不受影响', true);
     document.getElementById('fErr').textContent = '';
@@ -3595,12 +3879,18 @@ function loadTXQuotes(){
 }
 
 function schedule(){
-  clearInterval(timerSlow); clearInterval(timerFast);
+  clearInterval(timerSlow); clearInterval(timerFast); clearInterval(timerSpd);
   var open = isOpen();
   // 全市场：交易时段 60 秒，非交易 300 秒（保护新浪上游，避免被风控）
   timerSlow = setInterval(loadFull, open ? 60000 : 300000);
   // 自选高频：浏览器直连腾讯，不经过 Worker，5 秒一次也不消耗任何配额
   timerFast = setInterval(loadTXQuotes, open ? 5000 : 30000);
+  /* 涨速榜 30 秒一轮，和 /api/min 的 30 秒分桶对齐——再密也只是反复命中
+     同一个缓存桶。服务端已经对同一批代码做 30 秒缓存，这里多刷一次不会
+     多打一次上游；真正省的是「切到后台标签页时停掉」。 */
+  timerSpd = setInterval(function(){
+    if (isOpen() && !spdClosed() && document.visibilityState !== 'hidden') spdFetch();
+  }, 30000);
 }
 
 /* ---------- 事件 ---------- */

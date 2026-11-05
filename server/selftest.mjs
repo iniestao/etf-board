@@ -242,6 +242,32 @@ async function runContracts(base, pass) {
   const jmb = r.json();
   (jmb && jmb.ok === false) ? ok('/api/min 非法 code 被拒') : bad('/api/min 非法 code 没拒');
 
+  // 涨速榜：一次拉十几只分时，最慢的一条链路，给两次机会
+  let jsp = null;
+  const spCodes = '510300,159915,588000,513180,513120,518880,512100,513050,510500,159516';
+  for (let i = 0; i < 2 && !(jsp && jsp.ok && jsp.rows && jsp.rows.length); i++) {
+    if (i) await new Promise((res) => setTimeout(res, 1500));
+    r = await rawRequest(base, '/api/speed?codes=' + spCodes, { cookie });
+    jsp = r.json();
+  }
+  if (jsp && jsp.ok && Array.isArray(jsp.rows) && jsp.rows.length >= 5) {
+    ok('/api/speed → ' + jsp.rows.length + '/' + jsp.ask + ' 只有效，' + r.body.length + ' 字节');
+    const badRow = jsp.rows.find((x) =>
+      !x.c || !isFinite(x.r3) || !isFinite(x.q3) || !Array.isArray(x.pv) || x.pv.length < 2);
+    badRow ? bad('/api/speed 有异常行：' + JSON.stringify(badRow).slice(0, 120))
+      : ok('/api/speed 每行含 r3/q3/pv，字段齐全');
+    // 量比是比值不是绝对量：出现 0 以外的负数或离谱的量级，说明口径算歪了
+    const badQ = jsp.rows.find((x) => x.q3 < 0 || x.q3 > 200);
+    badQ ? bad('/api/speed 量比越界：' + badQ.c + ' q3=' + badQ.q3)
+      : ok('/api/speed 量比取值在 0–200 之间');
+  } else {
+    bad('/api/speed 失败：' + r.text.slice(0, 160));
+  }
+
+  r = await rawRequest(base, '/api/speed?codes=__bad__', { cookie });
+  const jspb = r.json();
+  (jspb && jspb.ok === false) ? ok('/api/speed 非法 codes 被拒') : bad('/api/speed 非法 codes 没拒');
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();

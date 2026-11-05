@@ -674,6 +674,155 @@ async function serveMin(ctx, code) {
   }
 }
 
+/* ---------------------------------------------------------------- 涨速榜
+   一分钟点只有「价格 + 这一分钟的量」，没有涨速字段（东财的 f22 在这台机器
+   上 TLS 层就不通，见 README）。所以 3/5 分钟涨速只能自己从分时里回溯算。
+
+   两个口径上的坑，都是收盘数据一眼能看出来的：
+
+   1) 横轴不是等距的。11:30 之后直接跳 13:00，午后第一分钟回溯 3 格会落到
+      上午 11:28——那不是「3 分钟涨速」，是把午休的跳空算进来了。所以用
+      slot（9:30 起算的交易分钟序号，午休折叠）而不是数组下标来回溯。
+
+   2) 15:00 那一根不是一分钟。14:57–14:59 没有连续竞价数据，收盘集合竞价
+      的成交全部记在 15:00 名下，量常是平时一根的 4~10 倍。按 1 分钟算量比
+      会凭空多出 10 倍放量，所以它的权重记 4 分钟。 */
+function slotOf(t) {
+  const h = +t.slice(0, 2), m = +t.slice(3, 5);
+  const x = h * 60 + m;
+  return x <= 690 ? x - 570 : x - 780 + 120;
+}
+function weightOf(t) { return t === '15:00' ? 4 : 1; }
+
+/**
+ * 最近 20 分钟的价格轨迹，降采样到最多 16 点。
+ * 给前端画迷你线用——「+0.31%」这个数字看不出是一路缓涨还是最后两笔拉起来，
+ * 形状才看得出。只传价格不传量，40 只 × 16 点约 3.8KB。
+ */
+function trailOf(pts) {
+  const sl = slotOf(pts[pts.length - 1][0]);
+  const arr = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (slotOf(pts[i][0]) >= sl - 20) arr.push(pts[i][1]);
+  }
+  if (!arr.length) return [];
+  if (arr.length <= 16) return arr.map((v) => +v.toFixed(3));
+  const out = [];
+  for (let k = 0; k < 16; k++) out.push(+arr[Math.round((k * (arr.length - 1)) / 15)].toFixed(3));
+  return out;
+}
+
+/**
+ * @param {Array} pts [[时刻, 价, 均价, 量], ...]（已按时间升序）
+ * @param {number} wmin 回看窗口（分钟）
+ * @returns {{r:number, q:number, p:number, t:string, sp:number}|null}
+ *   r = 区间涨幅%，q = 量比（最近窗口的每分钟量 ÷ 此前 30 分钟的每分钟量），
+ *   sp = 实际跨度（分钟）。sp 明显大于 wmin 说明基准点被数据缺口推远了。
+ */
+function calcSpeed(pts, wmin) {
+  const n = pts.length;
+  if (n < 4) return null;
+  const last = pts[n - 1];
+  const sl = slotOf(last[0]);
+  let j = -1;
+  for (let k = n - 1; k >= 0; k--) {
+    if (slotOf(pts[k][0]) <= sl - wmin) { j = k; break; }
+  }
+  if (j < 0) return null;
+  /* 基准点落在上午、终点落在下午 = 这个窗口跨了午休。数值上算得出来（
+     11:27 → 13:00 的价差是真实的），但它不是「盘中 3 分钟拉起来」，而是
+     把 93 分钟的跳空塞进 3 分钟，还会顺带把午休后的第一波量算成十几倍
+     放量（实测 512880 在 13:00 那个点 q=14.9）。比少几行数据糟得多。
+
+     判据必须用原始时刻字符串、不能用 slot：11:30 和 13:00 的 slot 都是
+     120（午休折叠），只看 slot 的话 11:27 到 11:30 这段正常窗口会被一起误杀。
+
+     但也不能整段返回 null：那样 13:00 一过整个榜单会空掉三四分钟。折中办
+     法是退到午后第一根做基准（等于「午后开盘以来」的涨速），此时 sp 会
+     小于窗口，前端按 sp 标 ~ 说明窗口不足。13:00 这个点本身没有可比基准
+     （前一根是 11:30），只能空着。 */
+  const tj = pts[j][0], tl = last[0];
+  if (tj <= '11:30' && tl >= '13:00') {
+    j = n - 2;
+    if (j < 0 || pts[j][0] <= '11:30') return null;
+  }
+  const base = pts[j][1];
+  if (!(base > 0)) return null;
+  const r = (last[1] / base - 1) * 100;
+
+  let num = 0, numW = 0;
+  for (let k = j + 1; k < n; k++) { num += pts[k][3]; numW += weightOf(pts[k][0]); }
+  const floor = slotOf(pts[j][0]) - 30;
+  let den = 0, denW = 0;
+  for (let k = j; k >= 0; k--) {
+    if (slotOf(pts[k][0]) < floor) break;
+    den += pts[k][3]; denW += weightOf(pts[k][0]);
+  }
+  const q = (numW > 0 && denW > 0 && den > 0) ? (num / numW) / (den / denW) : 0;
+
+  return { r, q, p: last[1], t: last[0], sp: sl - slotOf(pts[j][0]) };
+}
+
+/** 稳定的字符串指纹：进缓存 key 用，避免把 40 个代码原样拼进 URL */
+function fpOf(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(36) + '_' + s.length;
+}
+
+/**
+ * 一次算一批标的的 3/5 分钟涨速。
+ *
+ * 池子由前端挑好再传进来，不在服务端自己筛：服务端要筛就得先把全市场快照
+ * 解析一遍，629KB JSON 在免费版 10ms CPU 里根本放不下（现有 /api/all 用
+ * 字符串拼接绕开 JSON.parse 就是同一个原因）。前端手里本来就有这份快照。
+ *
+ * 代码数量硬上限 48：Cloudflare 免费计划每个请求最多 50 个子请求，
+ * 留 2 个余量给缓存读写和兜底。沙箱版不受这个限制，但不放宽——
+ * 一处代码两个运行时，口径必须一样。
+ */
+const SPEED_MAX = 48;
+async function serveSpeed(ctx, codes) {
+  const list = codes.slice(0, SPEED_MAX);
+  const stamp = fpOf(list.join(','));
+  const bucket = Math.floor(Date.now() / 30000);
+  const key = new Request('https://etf-board.internal/speed/v1/' + stamp + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+  }
+
+  const t0 = Date.now();
+  // 并发 16：实测 40 只并发 40 也就 64ms，但新浪对突发连接敏感（全量快照
+  // 20 页并发 20 会被限速），这里保守一档，换来的是不会抖。
+  const parts = await mapLimit(list, 16, async (c) => {
+    try {
+      const pts = await fetchMin(c);
+      const a = calcSpeed(pts, 3);
+      const b = calcSpeed(pts, 5);
+      if (!a) return null;
+      return { c, p: a.p, r3: +a.r.toFixed(3), r5: b ? +b.r.toFixed(3) : null,
+        q3: +a.q.toFixed(2), q5: b ? +b.q.toFixed(2) : null,
+        t: a.t, sp: a.sp, pv: trailOf(pts) };
+    } catch (e) { return null; }
+  });
+  const rows = parts.filter(Boolean);
+  const res = json({
+    ok: true, n: rows.length, ask: list.length,
+    ms: Date.now() - t0, rows,
+  }, 30);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    try { ctx.waitUntil(cache.put(key, res.clone())); } catch (e) { /* 忽略 */ }
+  }
+  return res;
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -1087,6 +1236,18 @@ export default {
       const code = (url.searchParams.get('code') || '').trim().replace(/^(sh|sz)/i, '');
       if (!/^\d{5,6}$/.test(code)) return json({ ok: false, error: 'code 非法' });
       return serveMin(ctx, code);
+    }
+
+    if (p === '/api/speed') {
+      const raw = (url.searchParams.get('codes') || '').trim();
+      const list = raw.split(',').map((s) => s.trim().replace(/^(sh|sz)/i, ''))
+        .filter((s) => /^\d{5,6}$/.test(s));
+      // 去重但不改顺序：前端按成交额排好了，顺序本身是「流动性优先级」，
+      // 服务端返回时保持它，前端就不用再排一次
+      const seen = new Set();
+      const codes = list.filter((c) => (seen.has(c) ? false : (seen.add(c), true)));
+      if (!codes.length) return json({ ok: false, error: 'codes 为空' });
+      return serveSpeed(ctx, codes);
     }
 
     if (p === '/api/probe') {
