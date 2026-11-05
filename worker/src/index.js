@@ -581,10 +581,16 @@ async function serveEvents(env, ctx) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
   }
-  const cache = caches.default;
+  // 走 getCache() 而不是直接取 caches.default：Node/容器里根本没有 caches 这个全局，
+  // 硬引用会让整个接口 500（沙箱版实测踩过）。没有缓存层时退化为每次读源文件。
+  const cache = await getCache();
   const key = new Request('https://etf-board.internal/events/v1', { method: 'GET' });
-  const hit = await cache.match(key);
-  if (hit) return hit;
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+  }
 
   try {
     const a = await readAsset(env, 'hist/events.json');
@@ -597,7 +603,9 @@ async function serveEvents(env, ctx) {
         'Cache-Control': 'public, max-age=1800',
       },
     });
-    if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(key, res.clone()));
+    if (cache && ctx && typeof ctx.waitUntil === 'function') {
+      try { ctx.waitUntil(cache.put(key, res.clone())); } catch (e) { /* 忽略 */ }
+    }
     return res;
   } catch (e) {
     return json({ ok: false, code: 'FETCH_ERR', error: String(e.message || e) });
@@ -738,7 +746,11 @@ const FAIL_WIN = 10 * 60 * 1000;
 const FAIL_LOCK = 10 * 60 * 1000;
 
 function ipOf(request) {
-  return request.headers.get('CF-Connecting-IP') || 'anon';
+  // Cloudflare 一定带 CF-Connecting-IP；沙箱/容器版走反向代理，只有 X-Forwarded-For。
+  // 少了这个兜底，Node 下所有请求都会算成同一个 'anon'，失败锁定会互相牵连。
+  return request.headers.get('CF-Connecting-IP')
+    || (request.headers.get('X-Forwarded-For') || '').split(',')[0].trim()
+    || 'anon';
 }
 
 function gateLocked(ip) {
@@ -1027,6 +1039,10 @@ export default {
       });
     }
 
-    return json({ ok: false, error: 'not found' }, 0);
+    // 注意 json() 的第二个参数是缓存秒数，不是状态码——想给 404 得自己构造
+    return new Response(JSON.stringify({ ok: false, error: 'not found' }), {
+      status: 404,
+      headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8' },
+    });
   },
 };

@@ -12,3 +12,8 @@ __pycache__/
 
 # 本地预览截图
 *.local.png
+
+# 沙箱版（server/）的本地状态与口令
+# .env 里有 ACCESS_PASS，state/ 里有自选和同步记录，都只属于这台机器
+/server/.env
+/server/state/

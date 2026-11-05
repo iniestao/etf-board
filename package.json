@@ -1,0 +1,12 @@
+{
+  "name": "etf-board",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ETF 全市场盯盘。同一份 worker/src 跑在 Cloudflare Worker 和沙箱 Node 两个运行时。",
+  "scripts": {
+    "start": "node server/app.mjs",
+    "selftest": "node server/selftest.mjs",
+    "sync": "node server/sync-data.mjs"
+  }
+}

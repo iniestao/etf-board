@@ -55,10 +55,15 @@ GitHub Actions 每天收盘后算历史指标，推到仓库的 `data` 分支；
 ```
 etf_board/
 ├── worker/            Workers 应用（页面 + API），部署说明见 worker/README.md
-│   ├── src/index.js   路由：行情透传、历史数据、自选同步
+│   ├── src/index.js   路由：行情透传、历史数据、自选同步 ← 唯一业务代码，两边共用
 │   ├── src/page.js    单页前端：解析、去重、排序、K 线面板
 │   ├── src/idx_data.js  指数映射（自动生成，勿手改）
 │   └── dist/worker.js   单文件构建产物，网页粘贴即部署
+├── server/            沙箱版（WorkBuddy 发布）：Node 入口 + 绑定适配，不含业务逻辑
+│   ├── app.mjs        http → Request → worker.fetch 的桥
+│   ├── env.mjs        R2→本地目录 / KV→JSON 文件 / 口令来源
+│   ├── sync-data.mjs  从 data 分支把 hist 拉到本地
+│   └── selftest.mjs   双运行时合规扫描 + 接口契约回归
 ├── pipeline/          跟踪指数映射：1717 只 ETF → 476 个跟踪指数
 ├── data/              SQLite 全量日线（153 万条）+ 拉取器 + 复权
 ├── alpha/             56 个技术指标 + 101 个 Alpha 因子 + 回测
@@ -66,6 +71,47 @@ etf_board/
 ├── tools/verify.mjs   部署后自检：7 个端点一次验完
 ├── docs/FACTORS.md    **因子手册：每个指标/因子怎么算、怎么读、会不会失效**
 └── .github/           Actions：每日 16:35 拉数据 → 算指标 → 推 data 分支
+```
+
+---
+
+## 部署形态：Cloudflare 与沙箱版（2026-11-05 新增）
+
+同一份 `worker/src/` 跑在两个地方，页面和 API 完全一致：
+
+| | Cloudflare Worker | 沙箱版（WorkBuddy） |
+|---|---|---|
+| 入口 | `worker/src/index.js` | `server/app.mjs`（调同一个 fetch） |
+| 历史数据 | 回源 GitHub `data` 分支 + 边缘缓存 6h | 读本地 `dist/`（**快 3 个数量级**：单只 K 线 1ms vs 0.7–18s） |
+| 自选存储 | KV `etf-board-WATCH` | `server/state/kv/*.json`（原子写） |
+| 口令 | `wrangler secret ACCESS_PASS` | `server/.env` 的 `ACCESS_PASS`（自动生成，权限 600） |
+| 数据更新 | 天然最新（每次回源） | 每 6h 比一次 commit，变了后台拉（`AUTO_SYNC=0` 可关） |
+| 可用性 | 边缘常驻、无冷启动 | 绑沙箱生命周期，**休眠后首次访问要等唤醒** |
+
+### 「以后有变化两边一起改」怎么保证
+
+不靠记性，靠两条硬约束：
+
+1. **业务代码只有一份**。`server/` 里禁止加业务逻辑，只允许「平台能力 → Web 标准接口」的转换。
+   要加接口、改前端、调逻辑，一律改 `worker/src/`，两个运行时同时生效。
+2. **改动前后各跑一次自检**：
+
+```bash
+node server/selftest.mjs                       # 本地：合规扫描 + 12 项接口契约
+BASE=https://etf-board.iniestao.workers.dev \
+  ACCESS_PASS=xxx node server/selftest.mjs     # 线上：同一套断言打远端
+```
+
+合规扫描会拦住 `process` / `Buffer` / `require` / `node:` / 裸 `caches.default` 这类
+「只有一边有」的 API——它们能让本地跑得好好的代码在另一边直接 500
+（`caches is not defined` 就是这次实测踩到的，已修）。
+
+### 沙箱版怎么跑
+
+```bash
+node server/selftest.mjs        # 先确认全绿
+PORT=3000 node server/app.mjs   # 起服务；口令在 server/.env 的 ACCESS_PASS
+node server/sync-data.mjs       # 手动同步最新 hist（--check 只看状态）
 ```
 
 ---
