@@ -3355,6 +3355,14 @@ function fetchMinOnce(code, first){
     if (!pre) pre = j.pts[0][1];
     H.m = { code:code, pre:pre, pts:j.pts, guess:guess, src:j.src };
     H.hover = -1;
+    // 面板顶部那个现价是打开时的快照，分时每 35 秒会重拉，顺手把它带上——
+    // 否则盘中会出现「图走到 4.21 了，顶栏还写着 4.19」的错位
+    if (it && it.p > 0){
+      document.getElementById('hPx').textContent = fnum(it.p, 3);
+      var chEl = document.getElementById('hChg');
+      chEl.textContent = fpc(it.chg);
+      chEl.className = 'ch ' + cc(it.chg);
+    }
     hDraw();
     hLegend(-1);
     document.getElementById('hNote').textContent = minNote();
