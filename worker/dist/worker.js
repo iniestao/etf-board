@@ -997,8 +997,8 @@ const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETF 全市场盯盘</title>
 <style>
-:root{--bg:#0f1115;--bg2:#161a21;--bg3:#1d222b;--line:#262c37;--txt:#e6e9ef;
---txt2:#8b93a3;--txt3:#5a6373;--up:#ff4d4f;--down:#00c48c;--accent:#4c8dff;
+:root{--bg:#f5f6f8;--bg2:#ffffff;--bg3:#f0f2f5;--line:#e3e6eb;--txt:#15181d;
+--txt2:#5b6472;--txt3:#939aa7;--up:#d93a3a;--down:#0e9a61;--accent:#2563eb;
 --mono:"SF Mono",Consolas,"Roboto Mono",Menlo,monospace}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
@@ -1011,23 +1011,64 @@ h1 em{color:var(--txt3);font-weight:400;font-size:11.5px;font-style:normal;margi
 .dot{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;
 background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--txt2)}
 .dot i{width:7px;height:7px;border-radius:50%;background:var(--txt3)}
-.dot.up i{background:var(--down);box-shadow:0 0 7px var(--down)}
-.dot.down i{background:var(--up);box-shadow:0 0 7px var(--up)}
+.dot.up i{background:var(--down);box-shadow:0 0 0 3px rgba(14,154,97,.16)}
+.dot.down i{background:var(--up);box-shadow:0 0 0 3px rgba(217,58,58,.16)}
 .dot.down{color:var(--up)}
 #btnRs{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);display:inline-block;
 text-decoration:none;
 background:var(--bg3)}
 #btnRs:hover{color:var(--txt);border-color:var(--accent)}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(142px,1fr));gap:9px;margin-bottom:12px}
+.cards{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}
+.cards .card{width:186px;flex:0 0 auto}
+@media(max-width:560px){.cards .card{width:calc(50% - 5px)}}
 /* 上游故障时的横幅：贴在卡片下面，一进页面就能看见。
    放在 footer 里等于没有——100 行的表格把 footer 顶到 4600px 之外。 */
 .stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12px;line-height:1.5;
-  background:rgba(255,176,32,.09);border:1px solid rgba(255,176,32,.32);color:#ffb020}
-.stalebar.bad{background:rgba(255,77,79,.09);border-color:rgba(255,77,79,.32);color:#ff4d4f}
+  background:#fff8e8;border:1px solid #f0dcb0;color:#8a5a00}
+.stalebar.bad{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
 .card .k{font-size:11px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
-.card .v{font-size:18px;font-weight:600;font-family:var(--mono)}
+.card .v{font-size:19px;font-weight:600;font-family:var(--mono);line-height:1.25}
+.card .v small{font-size:11px;font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
+/* ---------- 位置诊断 ---------- */
+/* 这一栏是整页唯一「不是行情软件」的东西：行情软件给报价，这里给位置和量能。
+   位置条用蓝色深浅而不是红绿——红绿在这页已经被涨跌占用，再用一次就乱了。 */
+.dnote{font-size:11.5px;color:var(--txt3);margin:-1px 0 9px;line-height:1.6}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:9px}
+@media(max-width:560px){.dgrid{grid-template-columns:1fr}}
+.dcard{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 12px 11px;
+  cursor:pointer;transition:border-color .15s,box-shadow .15s;display:flex;flex-direction:column}
+.dcard:hover{border-color:#c9d6ef;box-shadow:0 3px 12px rgba(23,32,54,.07)}
+.dcard.pend{opacity:.55}
+.dtop{display:flex;align-items:baseline;gap:7px;margin-bottom:9px;min-width:0}
+.dtop .dn{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dtop .dc{font-family:var(--mono);font-size:11px;color:var(--txt3);flex:0 0 auto}
+.dtag{margin-left:auto;font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px;
+  white-space:nowrap;flex:0 0 auto}
+.dtag.d0{background:#f0f2f5;color:#5b6472;border:1px solid #e3e6eb}
+.dtag.d1{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
+.dtag.d2{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
+.dtag.d3{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
+.dtag.d4{background:#fdecee;color:#b02a2a;border:1px solid #f3c7c7}
+.posbar{position:relative;height:7px;border-radius:4px;background:#e7ebf1;overflow:visible}
+.posbar u{position:absolute;left:0;top:0;height:7px;border-radius:4px;
+  background:linear-gradient(90deg,#c9dbff,#5c92ec)}
+.posbar i{position:absolute;top:-2.5px;width:4px;height:12px;border-radius:2px;background:#1d4ed8;
+  box-shadow:0 0 0 2px #fff,0 1px 3px rgba(20,26,40,.25);transform:translateX(-2px)}
+.poslb{display:flex;align-items:baseline;justify-content:space-between;font-size:9.5px;
+  color:var(--txt3);font-family:var(--mono);margin-top:6px;letter-spacing:.2px}
+.poslb .pz{font-size:15px;font-weight:600;color:var(--txt);font-family:var(--mono);line-height:1}
+.poslb .pz em{font-style:normal;font-size:9.5px;color:var(--txt3);font-weight:400;margin-left:5px;
+  letter-spacing:.2px}
+.dchips{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px}
+.dchip{font-size:10.5px;color:var(--txt3);background:var(--bg3);border:1px solid var(--line);
+  border-radius:5px;padding:2px 7px;font-family:var(--mono);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.dchip b{color:var(--txt);font-weight:600;margin-left:2px}
+.dchip b.up{color:var(--up)}.dchip b.down{color:var(--down)}
+.dwhy{margin-top:auto;padding-top:7px;font-size:11px;color:var(--txt2);line-height:1.55}
+
 .bar{display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
 input,select,button{background:var(--bg2);color:var(--txt);border:1px solid var(--line);
 border-radius:6px;padding:6px 10px;font-size:12.5px;font-family:inherit;outline:none}
@@ -1035,18 +1076,18 @@ input:focus,select:focus{border-color:var(--accent)}
 input#q{width:180px}
 button{cursor:pointer;transition:.15s}
 button:hover{background:var(--bg3)}
-button.pri{background:#1a3a6b;border-color:#2b5ba8;color:#cfe0ff}
+button.pri{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
 .tag{display:inline-block;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12px;
 border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:.15s;user-select:none}
 .tag:hover{color:var(--txt)}
-.tag.on{background:#1a3a6b;border-color:#2b5ba8;color:#cfe0ff}
+.tag.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
 .tag b{font-weight:400;opacity:.6;font-size:10.5px;margin-left:3px}
 .sec{margin-bottom:16px}
 .sechd{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;color:var(--txt2)}
-.sechd b{color:var(--txt);font-size:13.5px;font-weight:600}
-.sechd .n{color:var(--txt3);font-size:11.5px}
+.sechd b{color:var(--txt);font-size:13.5px;font-weight:600;white-space:nowrap;flex:0 0 auto}
+.sechd .n{color:var(--txt3);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sechd .sync{margin-left:auto;font-size:10.5px;color:var(--txt3);border:1px solid var(--line);
-border-radius:5px;padding:1px 7px;cursor:pointer;user-select:none}
+border-radius:5px;padding:1px 7px;cursor:pointer;user-select:none;white-space:nowrap;flex:0 0 auto}
 .sechd .sync:hover{color:var(--txt);border-color:var(--accent)}
 .tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
 table{width:100%;border-collapse:collapse}
@@ -1057,9 +1098,9 @@ thead th:hover{color:var(--txt)}
 thead th.l{text-align:left}
 thead th.ctr{text-align:center}
 thead th.on{color:var(--accent)}
-tbody td{padding:8px 9px;text-align:right;border-bottom:1px solid #1c2028;
+tbody td{padding:8px 9px;text-align:right;border-bottom:1px solid #e3e6eb;
 font-family:var(--mono);font-size:12.5px;white-space:nowrap}
-tbody tr:hover{background:#1a1f28}
+tbody tr:hover{background:#f7f9fd}
 tbody tr:last-child td{border-bottom:none}
 td.l{text-align:left;font-family:inherit}
 td.ctr{text-align:center}
@@ -1067,40 +1108,40 @@ td.ctr{text-align:center}
 .nm{font-weight:500}
 .up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--txt3)}
 .pm{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11.5px;font-weight:600;min-width:56px}
-.pm.hi{background:#3d1418;color:#ff6b6b;border:1px solid #6b2126}
-.pm.mid{background:#3a2d12;color:#ffb340;border:1px solid #6b5420}
-.pm.lo{background:#0f3329;color:#28d09a;border:1px solid #1a5c48}
-.pm.na{background:transparent;color:var(--txt3);border:1px dashed var(--line);font-weight:400}
+.pm.hi{background:#fdecec;color:#c62f34;border:1px solid #f5c9cb}
+.pm.mid{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
+.pm.lo{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
+.pm.na{background:transparent;color:var(--txt3);border:none;font-weight:400}
 .act{color:var(--txt3);cursor:pointer;font-size:15px;padding:1px 6px;border-radius:4px}
-.act:hover{color:var(--accent);background:#17233a}
-.act.del:hover{color:var(--up);background:#2a1518}
+.act:hover{color:var(--accent);background:#eaf1ff}
+.act.del:hover{color:var(--up);background:#fdeeee}
 .ixb{display:inline-block;margin-left:5px;padding:0 5px;border-radius:3px;font-size:10px;
-font-weight:500;color:var(--txt3);background:#232833;border:1px solid var(--line);
+font-weight:500;color:var(--txt3);background:#f0f2f5;border:1px solid var(--line);
 vertical-align:1px;cursor:default}
-.ixb.mx{color:#7fa8ff;background:#182545;border-color:#2b4171}
+.ixb.mx{color:#2563eb;background:#eaf1ff;border-color:#c9dbff}
 .syn{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:9.5px;
-color:#7fa8ff;background:#182545;border:1px solid #2b4171;vertical-align:1px;font-weight:500}
+color:#2563eb;background:#eaf1ff;border:1px solid #c9dbff;vertical-align:1px;font-weight:500}
 tr.hr{cursor:pointer}
-tr.hr:hover td{background:#1b212b}
-@keyframes fu{0%{background:#3a1518}100%{background:transparent}}
-@keyframes fd{0%{background:#0c2b23}100%{background:transparent}}
+tr.hr:hover td{background:#f7f9fd}
+@keyframes fu{0%{background:#ffe3e3}100%{background:transparent}}
+@keyframes fd{0%{background:#d9f5ea}100%{background:transparent}}
 .fu{animation:fu .7s ease-out}.fd{animation:fd .7s ease-out}
 footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--txt3)}
 .err{color:var(--up)}
 .empty{padding:20px;text-align:center;color:var(--txt3);font-size:12.5px}
-#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#22272f;
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#fff;box-shadow:0 8px 26px rgba(20,26,40,.16);
 border:1px solid var(--line);padding:8px 16px;border-radius:6px;font-size:12.5px;opacity:0;
 transition:.25s;pointer-events:none;z-index:9}
 #toast.show{opacity:1}
 @media(max-width:820px){.hide-sm{display:none}}
 
 /* ---------- 历史 K 线面板 ---------- */
-#histMask{position:fixed;inset:0;background:rgba(6,8,12,.72);z-index:60;display:none;
+#histMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:60;display:none;
 align-items:center;justify-content:center;padding:18px}
 #histMask.on{display:flex}
 .hpanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;min-width:0;
 max-width:1060px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;
-box-shadow:0 24px 64px rgba(0,0,0,.55)}
+box-shadow:0 18px 48px rgba(20,26,40,.16)}
 .hhd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .hhd .nm{font-size:14.5px;font-weight:600}
 .hhd .cd{font-family:var(--mono);font-size:12px;color:var(--txt3)}
@@ -1123,8 +1164,8 @@ color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
 .hsbar b{padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:11px;
 font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-select:none}
 .hsbar b:hover{color:var(--txt)}
-.hsbar b.on{background:var(--bg3);color:var(--txt);border-color:#3a4a63}
-.hind .i.on{border-color:#3a4a63;background:var(--bg3)}
+.hsbar b.on{background:var(--bg3);color:var(--txt);border-color:#c9d6ef}
+.hind .i.on{border-color:#c9d6ef;background:var(--bg3)}
 .hleg{display:flex;gap:16px;padding:7px 14px 0;font-size:11.5px;color:var(--txt2);flex-wrap:wrap}
 .hleg i{display:inline-block;width:8px;height:2px;vertical-align:3px;margin-right:4px}
 .hnote{padding:5px 14px 12px;font-size:10.5px;color:var(--txt3);line-height:1.7}
@@ -1157,12 +1198,12 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
   .hind{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 /* ---- 因子研究面板 ---- */
-#rsMask{position:fixed;inset:0;background:rgba(6,8,12,.72);z-index:70;display:none;
+#rsMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:70;display:none;
 align-items:center;justify-content:center;padding:18px}
 #rsMask.on{display:flex}
 .rspanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:900px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;
-box-shadow:0 24px 64px rgba(0,0,0,.55)}
+box-shadow:0 18px 48px rgba(20,26,40,.16)}
 .rshd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
 /* 标题不许被压缩换行：以前「因子研究」在 390px 屏上会折成「因子/研究」两行，
    还把日期挤到旁边，看着像排版坏了。标题固定宽度，元信息自己换行。 */
@@ -1230,9 +1271,9 @@ font-size:10.5px;line-height:1.5;max-width:270px}
 text-align:left!important;white-space:normal!important;font-family:inherit!important;background:transparent!important}
 .fxd{background:var(--bg);border-left:2px solid var(--accent);border-radius:0 7px 7px 0;padding:10px 13px}
 .fxdn{font-size:11.5px;color:var(--txt2);margin-bottom:5px}
-.fxdn b{color:#7dd3fc;font-family:var(--mono);font-weight:600;margin-right:7px}
+.fxdn b{color:#0e7490;font-family:var(--mono);font-weight:600;margin-right:7px}
 .fxds{font-size:11.5px;color:var(--txt2);line-height:1.7;margin-bottom:8px}
-.fxf{font-family:var(--mono);font-size:10.8px;color:#c3cfe0;background:var(--bg3);
+.fxf{font-family:var(--mono);font-size:10.8px;color:#2a2f38;background:var(--bg3);
 border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:0;
 white-space:pre-wrap;word-break:break-word;line-height:1.75}
 .rsmore{margin-top:9px;text-align:center}
@@ -1290,6 +1331,14 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">全市场 ETF</div><div class="v" id="cTotal">-</div><div class="s" id="cUni">-</div></div>
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
   <div class="card"><div class="k">全市场成交额</div><div class="v" id="cAmt">-</div><div class="s">合计</div></div>
+  <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
+</div>
+
+<div class="sec" id="diagSec">
+  <div class="sechd"><b>位置诊断</b><span class="n" id="diagN">-</span>
+    <span class="sync" id="btnDiag" title="丢掉缓存，重新读一遍历史">重算</span></div>
+  <div class="dnote">行情软件告诉你今天涨了多少；这一栏告诉你它站在近一年区间的什么位置、量能配不配合。</div>
+  <div class="dgrid" id="diagGrid"><div class="empty">正在读取历史…</div></div>
 </div>
 
 <div class="sec">
@@ -1752,6 +1801,237 @@ function renderWatch(){
   document.getElementById('watchN').innerHTML = watch.length + ' 只'
     + (miss ? ('，' + miss + ' 只未取到') : '')
     + (WATCH_CLOUD ? '<span class="syn" title="已与云端同步，换设备也是这份列表">云端</span>' : '');
+  diagSync();
+}
+
+/* ================= 位置诊断 =================
+   整页唯一不看「今天涨跌」的东西。行情软件告诉你涨了多少，这里回答两个
+   行情软件不回答的问题：它现在站在近一年区间的哪个位置、这次上涨是走出来的
+   还是震出来的。两个指标都不是现编的，是研究页里穿过样本外检验的那两个：
+
+     RANGE_POS  现价在近 250 日高低区间的百分位（0 = 一年新低，100 = 一年新高）
+     PE         20 日净涨幅 ÷ 20 日路径长度。接近 1 是单边拉上去的，接近 0 是
+                来回震荡堆出来的——后者量能一旦跟不上，涨幅还回去的速度更快
+
+   量能倍数 = 今日成交量 ÷ 前 20 日均量，判断这个位置有没有人接。
+   三者交叉给一个动作标签，标签只是把数字翻成人话，不预测涨跌。
+*/
+var DIAG = {};        // code -> {ok,pos,pe,r20,evr,d60,vol20,cls,tag,rk,why}
+var DIAG_Q = [];      // 待取历史的代码队列
+var DIAG_BUSY = 0;
+var DIAG_HTML = '';   // 上一次渲染的 HTML：一样就不重写，避免整块闪
+var DIAG_MAX = 3;     // 并发上限：一次拉太多会把 /api/hist 打出 429
+
+function diagFrom(raw, cur){
+  if (!raw || !raw.col || !raw.col.close) return null;
+  var cl = raw.col.close, hi = raw.col.high, lo = raw.col.low;
+  // 量能用成交额而不是成交量：同一指数换成另一只 ETF，份额和净值都不一样，
+  // 成交量没法横向比；成交额可以，而且和后端算量比的口径一致。
+  var vo = raw.col.amount || raw.col.volume;
+  var n = raw.n, i;
+  if (!n || n < 60) return null;
+  var s = Math.max(0, n - 250);
+  var hh = -1e18, ll = 1e18;
+  for (i = s; i < n; i++){
+    if (hi && hi[i] > hh) hh = hi[i];
+    if (lo && lo[i] > 0 && lo[i] < ll) ll = lo[i];
+  }
+  var c = cur > 0 ? cur : cl[n - 1];
+  if (c > hh) hh = c;
+  if (c < ll) ll = c;
+  if (!(hh > ll)) return null;
+  var pos = (c - ll) / (hh - ll) * 100;
+
+  var m = Math.min(21, n), path = 0, sq = 0, cnt = 0;
+  for (i = n - m + 1; i < n; i++){
+    if (cl[i - 1] > 0){
+      var rr = cl[i] / cl[i - 1] - 1;
+      path += Math.abs(rr); sq += rr * rr; cnt++;
+    }
+  }
+  var r20 = cl[n - m] > 0 ? c / cl[n - m] - 1 : 0;
+  var pe = path > 1e-6 ? Math.max(-1, Math.min(1, r20 / path)) : 0;
+
+  var sum = 0, k = 0;
+  for (i = Math.max(0, n - 21); i < n - 1; i++){ if (vo && vo[i] > 0){ sum += vo[i]; k++; } }
+  var ma = k ? sum / k : 0;
+  var evr = (ma > 0 && vo && vo[n - 1] > 0) ? vo[n - 1] / ma : null;
+
+  var h60 = -1e18;
+  for (i = Math.max(0, n - 60); i < n; i++) if (hi && hi[i] > h60) h60 = hi[i];
+  var d60 = h60 > 0 ? c / h60 - 1 : null;
+
+  return { pos:pos, pe:pe, r20:r20, evr:evr, d60:d60,
+           vol20: cnt > 1 ? Math.sqrt(sq / cnt) * Math.sqrt(252) * 100 : null, bars:n };
+}
+
+function diagTag(d){
+  var pos = d.pos, evr = d.evr;
+  if (pos < 20){
+    return evr != null && evr >= 1.6
+      ? ['低位放量','d2',1,'底部位置突然放量：可能是破位，也可能是启动，先看能不能站住']
+      : ['低位缩量','d1',3,'一年来的低位，量能也萎缩：无人问津的位置适合分批，不适合追'];
+  }
+  if (pos > 80){
+    return evr != null && evr >= 1.6
+      ? ['高位放量','d4',0,'位置和量能同时到高位：有人在交货，别在这里加']
+      : ['高位缩量','d3',2,'位置很高但没量：涨得没人接，追进去容易接最后一棒'];
+  }
+  return ['中位','d0',4,'位置中性：上下都留得住，等突破或破位再动手'];
+}
+
+function diagCard(code){
+  var d = DIAG[code], it = findItem(code);
+  var nm = esc((it && it.n) || (d && d.n) || code);
+  if (!d || !d.ok){
+    return '<div class="dcard pend" data-c="' + code + '">'
+      + '<div class="dtop"><span class="dn">' + nm + '</span><span class="dc">' + code + '</span>'
+      + '<span class="dtag d0">' + (d && d.err ? '无数据' : '计算中') + '</span></div>'
+      + '<div class="posbar"></div><div class="poslb"><span>'
+      + esc((d && d.err) || '读取历史…') + '</span></div></div>';
+  }
+  var w = Math.max(0, Math.min(100, d.pos));
+  var peTxt = d.pe >= 0.45 ? '单边拉上来的' : (d.pe <= 0.15 ? '来回震出来的' : '涨跌交错堆的');
+  return '<div class="dcard" data-c="' + code + '">'
+    + '<div class="dtop"><span class="dn">' + nm + '</span><span class="dc">' + code + '</span>'
+    + '<span class="dtag ' + d.cls + '">' + d.tag + '</span></div>'
+    + '<div class="posbar"><u style="width:' + w.toFixed(1) + '%"></u>'
+    + '<i style="left:' + w.toFixed(1) + '%"></i></div>'
+    + '<div class="poslb"><span>低</span><span class="pz">' + d.pos.toFixed(0)
+    + '<em>位置</em></span><span>高</span></div>'
+    + '<div class="dchips">'
+    + '<span class="dchip">量能 <b>' + (d.evr == null ? '-' : '×' + d.evr.toFixed(2)) + '</b></span>'
+    + '<span class="dchip">20日 <b class="' + cc(d.r20) + '">' + fpc(d.r20 * 100) + '</b></span>'
+    + '<span class="dchip">路径 <b>' + d.pe.toFixed(2) + '</b></span>'
+    + '<span class="dchip">距60日高<b>' + (d.d60 == null ? '-' : fpc(d.d60 * 100)) + '</b></span>'
+    + '</div>'
+    + '<div class="dwhy">' + d.why + '；' + peTxt + '（路径效率 ' + d.pe.toFixed(2) + '）。</div>'
+    + '</div>';
+}
+
+function renderDiag(){
+  var g = document.getElementById('diagGrid');
+  if (!g) return;
+  var nEl = document.getElementById('diagN');
+  if (!watch.length){
+    g.innerHTML = '<div class="empty">还没有自选，加了之后这里自动诊断</div>';
+    if (nEl) nEl.textContent = '';
+    return;
+  }
+  var cnt = {d0:0,d1:0,d2:0,d3:0,d4:0}, have = 0, list = [], i;
+  for (i = 0; i < watch.length; i++){
+    var d = DIAG[watch[i]];
+    if (d && d.ok){ have++; if (cnt[d.cls] != null) cnt[d.cls]++; }
+    list.push(watch[i]);
+  }
+  list.sort(function(a, b){
+    var A = DIAG[a], B = DIAG[b];
+    var ra = A && A.ok ? A.rk : 9, rb = B && B.ok ? B.rk : 9;
+    if (ra !== rb) return ra - rb;
+    return (B && B.ok ? B.pos : 0) - (A && A.ok ? A.pos : 0);
+  });
+  var html = '';
+  for (i = 0; i < list.length; i++) html += diagCard(list[i]);
+  if (html !== DIAG_HTML){ DIAG_HTML = html; g.innerHTML = html; }
+  var sig = cnt.d4 + cnt.d2 + cnt.d3 + cnt.d1;
+  var elSig = document.getElementById('cSig'), elSigs = document.getElementById('cSigs');
+  if (elSig && have){
+    elSig.innerHTML = sig + '<small>只</small>';
+    var pp = [];
+    if (cnt.d4) pp.push('高位放量 ' + cnt.d4);
+    if (cnt.d3) pp.push('高位缩量 ' + cnt.d3);
+    if (cnt.d2) pp.push('低位放量 ' + cnt.d2);
+    if (cnt.d1) pp.push('低位缩量 ' + cnt.d1);
+    elSigs.textContent = pp.length ? pp.join(' · ') : '自选暂无信号，位置都在中段';
+  }
+  if (nEl){
+    var p = [];
+    if (cnt.d4) p.push(cnt.d4 + ' 只高位放量');
+    if (cnt.d3) p.push(cnt.d3 + ' 只高位缩量');
+    if (cnt.d2) p.push(cnt.d2 + ' 只低位放量');
+    if (cnt.d1) p.push(cnt.d1 + ' 只低位缩量');
+    nEl.textContent = have + '/' + watch.length + ' 只已诊断'
+      + (p.length ? ' · ' + p.join(' · ') : '');
+  }
+}
+
+function diagFetch(code){
+  DIAG_BUSY++;
+  DIAG[code] = { ok:false };
+  fetch('/api/hist?code=' + code).then(function(r){
+    var ct = r.headers.get('Content-Type') || '';
+    if (ct.indexOf('json') >= 0){
+      return r.json().then(function(j){ throw new Error(j.error || '没有历史'); });
+    }
+    return r.arrayBuffer();
+  }).then(function(buf){
+    var raw = parseHist(buf);
+    var it = findItem(code);
+    var d = diagFrom(raw, it ? it.p : null);
+    if (!d) throw new Error('历史不足 60 根');
+    var tg = diagTag(d);
+    d.ok = true; d.c = code; d.n = (it && it.n) || raw.code || code;
+    d.cls = tg[1]; d.tag = tg[0]; d.rk = tg[2]; d.why = tg[3];
+    d.raw = raw;                       // 存原始序列：下一次行情刷新就地重算，不再请求
+    DIAG[code] = d;
+  }).catch(function(e){
+    DIAG[code] = { ok:false, c:code, err:(e && e.message) || '读取失败' };
+  }).then(function(){
+    DIAG_BUSY--; renderDiag(); diagPump();
+  });
+}
+
+function diagPump(){
+  while (DIAG_BUSY < DIAG_MAX && DIAG_Q.length) diagFetch(DIAG_Q.shift());
+}
+
+/* 行情每 60 秒刷一次，位置要跟着走。历史已经在手上，重算只是几次浮点运算 */
+function diagReprice(){
+  for (var c in DIAG){
+    var d = DIAG[c];
+    if (!d || !d.ok || !d.raw) continue;
+    var it = findItem(c);
+    var nd = diagFrom(d.raw, it ? it.p : null);
+    if (!nd) continue;
+    var tg = diagTag(nd);
+    nd.ok = true; nd.c = c; nd.n = d.n; nd.raw = d.raw;
+    nd.cls = tg[1]; nd.tag = tg[0]; nd.rk = tg[2]; nd.why = tg[3];
+    DIAG[c] = nd;
+  }
+}
+
+/* 自选变化时补算：已经在 DIAG 里的不重复拉，历史走边缘缓存，第二次几乎瞬时 */
+function diagSync(){
+  diagReprice();
+  for (var i = 0; i < watch.length; i++){
+    var c = watch[i];
+    if (!DIAG[c] && DIAG_Q.indexOf(c) < 0) DIAG_Q.push(c);
+  }
+  renderDiag();
+  diagPump();
+}
+
+function diagInit(){
+  var g = document.getElementById('diagGrid');
+  if (g){
+    g.addEventListener('click', function(e){
+      var el = e.target;
+      while (el && el !== g && !el.getAttribute('data-c')) el = el.parentNode;
+      if (!el || el === g) return;
+      var c = el.getAttribute('data-c');
+      var it = findItem(c);
+      openHist(c, (it && it.n) || c);
+    });
+  }
+  var b = document.getElementById('btnDiag');
+  if (b){
+    b.addEventListener('click', function(){
+      DIAG = {}; DIAG_Q = []; DIAG_HTML = '';
+      renderDiag(); diagSync();
+      toast('已清缓存，重新读历史');
+    });
+  }
+  diagSync();
 }
 
 function renderList(){
@@ -1817,9 +2097,9 @@ function renderList(){
    引库要多 100KB+，还得跟着库的版本走。 */
 
 var HC = {
-  up:'#ff4d4f', dn:'#00c48c', ma20:'#e8a33d', ma60:'#4c8dff',
-  grid:'#202632', axis:'#5a6373', cross:'#7a8699', vol:'#2c3444', rsi:'#b07cff',
-  boll:'#5b6b82'
+  up:'#d93a3a', dn:'#0e9a61', ma20:'#d68910', ma60:'#4c8dff',
+  grid:'#e9ecf1', axis:'#939aa7', cross:'#8b93a1', vol:'#dfe4ec', rsi:'#7c5cd6',
+  boll:'#98a3b5'
 };
 
 var H = {
@@ -2186,15 +2466,15 @@ function hLine(ctx, arr, i0, n, xOf, yFn, color, lw){
 /* 副图定义表。有的指标必须固定量程才读得出来（RSI 的 30/70、%B 的 0~100），
    有的必须跟着数据自适应（ATR 的绝对值在 0.02~2 之间都有，固定量程等于没画）。 */
 var SUB_DEF = {
-  rsi:  { nm:'RSI14',  col:'#b07cff', fixed:[0,100], refs:[30,70],
+  rsi:  { nm:'RSI14',  col:'#7c5cd6', fixed:[0,100], refs:[30,70],
           arr:function(c){ return c.rsi14; }, fmt:function(v){ return v.toFixed(0); } },
-  vr:   { nm:'量比5',  col:'#e8a33d', refs:[1],
+  vr:   { nm:'量比5',  col:'#d68910', refs:[1],
           arr:function(c){ return c.vol_ratio5; }, fmt:function(v){ return v.toFixed(2); } },
   hvol: { nm:'波动率', col:'#4c8dff',
           arr:function(c){ return c.hvol20; }, fmt:function(v){ return v.toFixed(1) + '%'; } },
-  atr:  { nm:'ATR14',  col:'#00c48c',
+  atr:  { nm:'ATR14',  col:'#0e9a61',
           arr:function(c){ return c.atr14; }, fmt:function(v){ return v.toFixed(3); } },
-  pb:   { nm:'BOLL%B', col:'#e8a33d', fixed:[0,100], refs:[0,50,100], arr:null,
+  pb:   { nm:'BOLL%B', col:'#d68910', fixed:[0,100], refs:[0,50,100], arr:null,
           fmt:function(v){ return v.toFixed(0); } }
 };
 
@@ -2226,7 +2506,7 @@ function drawSub(ctx, c, i0, n, xOf, padL, plotW, yR, hR){
     var y0 = yR + hR / 2;
     var yM = function(v){ return y0 - (v / mx) * (hR / 2); };
 
-    ctx.strokeStyle = '#39435460'; ctx.setLineDash([3,4]);
+    ctx.strokeStyle = '#c9d2e0'; ctx.setLineDash([3,4]);
     ctx.beginPath(); ctx.moveTo(padL, Math.round(y0) + 0.5);
     ctx.lineTo(padL + plotW, Math.round(y0) + 0.5); ctx.stroke();
     ctx.setLineDash([]);
@@ -2235,16 +2515,16 @@ function drawSub(ctx, c, i0, n, xOf, padL, plotW, yR, hR){
     for (i = i0; i < n; i++){
       if (!isFinite(dif[i]) || !isFinite(dea[i])) continue;
       var hv = dif[i] - dea[i], X = xOf(i);
-      ctx.fillStyle = hv >= 0 ? 'rgba(255,77,79,.6)' : 'rgba(0,196,140,.6)';
+      ctx.fillStyle = hv >= 0 ? 'rgba(217,58,58,.6)' : 'rgba(14,154,97,.6)';
       ctx.fillRect(X - bw / 2, Math.min(yM(hv), y0), bw, Math.max(1, Math.abs(yM(hv) - y0)));
     }
-    hLine(ctx, dif, i0, n, xOf, yM, '#e8a33d', 1.1);
+    hLine(ctx, dif, i0, n, xOf, yM, '#d68910', 1.1);
     hLine(ctx, dea, i0, n, xOf, yM, '#4c8dff', 1.1);
 
     ctx.fillStyle = HC.axis; ctx.textAlign = 'left';
     ctx.textBaseline = 'top'; ctx.fillText(mx.toFixed(2), padL + plotW + 5, yR + 1);
     ctx.textBaseline = 'bottom'; ctx.fillText('-' + mx.toFixed(2), padL + plotW + 5, yR + hR);
-    subName(ctx, 'MACD', padL, yR, '#8a94a6');
+    subName(ctx, 'MACD', padL, yR, '#6b7380');
     return;
   }
 
@@ -2268,14 +2548,14 @@ function drawSub(ctx, c, i0, n, xOf, padL, plotW, yR, hR){
   var yS = function(v){ return yR + hR * (hi - v) / (hi - lo); };
 
   if (def.refs){
-    ctx.strokeStyle = '#39435460'; ctx.setLineDash([3,4]);
+    ctx.strokeStyle = '#c9d2e0'; ctx.setLineDash([3,4]);
     for (i = 0; i < def.refs.length; i++){
       var lv = def.refs[i];
       if (lv < lo || lv > hi) continue;
       var yy = Math.round(yS(lv)) + 0.5;
       ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
       if (kind === 'rsi' && hR >= 74){
-        ctx.fillStyle = '#4a5464'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#8b93a1'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
         ctx.fillText(String(lv), padL + plotW + 5, yy);
       }
     }
@@ -2368,7 +2648,7 @@ function hDraw(){
   for (i = i0; i < n; i++){
     if (!isFinite(vol[i]) || vol[i] <= 0) continue;
     var cUp = cl[i] >= o[i];
-    ctx.fillStyle = cUp ? 'rgba(255,77,79,.55)' : 'rgba(0,196,140,.55)';
+    ctx.fillStyle = cUp ? 'rgba(217,58,58,.55)' : 'rgba(14,154,97,.55)';
     var x0 = xOf(i) - ew / 2, hgt = yV + hV - yVx(vol[i]);
     ctx.fillRect(x0, yVx(vol[i]), ew, Math.max(1, hgt));
   }
@@ -2454,10 +2734,10 @@ function hCross(idx){
   if (isFinite(c.close[idx])){
     var yy = Math.round(g.yP + g.hP * (g.pmax - c.close[idx]) / (g.pmax - g.pmin)) + 0.5;
     ctx.beginPath(); ctx.moveTo(g.padL, yy); ctx.lineTo(g.padL + g.plotW, yy); ctx.stroke();
-    ctx.fillStyle = '#1b2330';
+    ctx.fillStyle = '#ffffff';
     var lab = fnum(c.close[idx], 3);
     ctx.fillRect(g.padL + g.plotW + 2, yy - 7, 50, 14);
-    ctx.fillStyle = '#cfd6e2'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#15181d'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.font = '10px ui-monospace,Menlo,monospace';
     ctx.fillText(lab, g.padL + g.plotW + 6, yy);
   }
@@ -2650,26 +2930,26 @@ function labSvg(nav){
     if (y !== lastY){
       lastY = y;
       g += '<line x1="' + X(i).toFixed(1) + '" y1="' + PT + '" x2="' + X(i).toFixed(1)
-        + '" y2="' + (H - PB) + '" stroke="#262c37" stroke-width="1"/>'
+        + '" y2="' + (H - PB) + '" stroke="#e3e6eb" stroke-width="1"/>'
         + '<text x="' + (X(i) + 3).toFixed(1) + '" y="' + (H - 7)
-        + '" fill="#5a6373" font-size="11">' + y + '</text>';
+        + '" fill="#939aa7" font-size="11">' + y + '</text>';
     }
   }
   // 三条水平参考线（净值刻度）
   for (var q = 0; q <= 2; q++){
     var vv = lo + (hi - lo) * q / 2;
     g += '<line x1="' + PL + '" y1="' + Y(vv).toFixed(1) + '" x2="' + (W - PR)
-      + '" y2="' + Y(vv).toFixed(1) + '" stroke="#262c37" stroke-width="1" stroke-dasharray="3 4"/>'
+      + '" y2="' + Y(vv).toFixed(1) + '" stroke="#e3e6eb" stroke-width="1" stroke-dasharray="3 4"/>'
       + '<text x="' + PL + '" y="' + (Y(vv) - 4).toFixed(1)
       + '" fill="#4a5260" font-size="10">' + vv.toFixed(2) + '</text>';
   }
   var last = nav[nav.length - 1];
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img">'
     + g
-    + '<path d="' + d(2) + '" fill="none" stroke="#8b93a3" stroke-width="1.6" opacity=".85"/>'
-    + '<path d="' + d(1) + '" fill="none" stroke="#ff4d4f" stroke-width="2.2"/>'
+    + '<path d="' + d(2) + '" fill="none" stroke="#5b6472" stroke-width="1.6" opacity=".85"/>'
+    + '<path d="' + d(1) + '" fill="none" stroke="#d93a3a" stroke-width="2.2"/>'
     + '<circle cx="' + X(nav.length - 1).toFixed(1) + '" cy="' + Y(last[1]).toFixed(1)
-    + '" r="3.5" fill="#ff4d4f"/>'
+    + '" r="3.5" fill="#d93a3a"/>'
     + '</svg>';
 }
 
@@ -2677,8 +2957,8 @@ function labSvg(nav){
 function labHeat(v){
   if (v == null || !isFinite(v)) return '<td class="n">-</td>';
   var a = Math.min(0.45, 0.08 + Math.abs(v) * 1.9);
-  var bg = v >= 0 ? 'rgba(255,77,79,' + a.toFixed(2) + ')'
-                  : 'rgba(0,196,140,' + a.toFixed(2) + ')';
+  var bg = v >= 0 ? 'rgba(217,58,58,' + a.toFixed(2) + ')'
+                  : 'rgba(14,154,97,' + a.toFixed(2) + ')';
   return '<td style="background:' + bg + '">' + (v > 0 ? '+' : '') + (v * 100).toFixed(1) + '</td>';
 }
 
@@ -2713,8 +2993,8 @@ function renderLab(){
   // ---- 净值 ----
   h += '<div class="labchart">'
     + '<div class="lablg">'
-    + '<span><i style="background:#ff4d4f"></i>PE 单因子（做多前 20%）</span>'
-    + '<span><i style="background:#8b93a3"></i>' + U.n_idx + ' 个指数等权</span>'
+    + '<span><i style="background:#d93a3a"></i>PE 单因子（做多前 20%）</span>'
+    + '<span><i style="background:#5b6472"></i>' + U.n_idx + ' 个指数等权</span>'
     + '<span style="margin-left:auto;color:var(--txt3)">持有 20 日 · 双边各 5bp</span></div>'
     + labSvg(L.pe.nav)
     + '<div class="cap">净值 ' + L.pe.nav[0][0] + ' 起算，末值策略 '
@@ -2799,7 +3079,7 @@ function renderLab(){
     var nm = x[8] || (ALPHA_META[x[0]] && ALPHA_META[x[0]].nm) || '';
     h += '<tr data-s="' + sigOk + '" data-n="' + (isNew ? 1 : 0) + '"'
       + (m >= LIMIT ? ' class="labx" style="display:none"' : '') + '>'
-      + '<td><b' + (sigOk ? ' style="color:#ff8b7a"' : '') + '>' + esc(x[0]) + '</b></td>'
+      + '<td><b' + (sigOk ? ' style="color:#c2410c"' : '') + '>' + esc(x[0]) + '</b></td>'
       + '<td class="nm">' + esc(nm) + '<br><span class="fam">' + esc(x[1]) + '</span></td>'
       + '<td class="' + cc(x[2]) + '">' + (x[2] == null ? '-' : x[2].toFixed(4)) + '</td>'
       + '<td>' + (x[3] == null ? '-' : x[3].toFixed(2)) + '</td>'
@@ -3431,6 +3711,7 @@ if (RS_MODE){
   pullWatch();
   loadFull().then(function(){
     renderCards();
+    diagInit();
     loadTXQuotes();
     schedule();
     deepLink();
