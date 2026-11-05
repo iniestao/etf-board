@@ -160,9 +160,10 @@ if (isMain) {
   if (process.env.PCF_WARM !== '0') {
     const warmTick = async () => {
       const cst = new Date(Date.now() + 8 * 3600e3);
-      const hh = cst.getUTCHours(), wd = cst.getUTCDay();
+      const hh = cst.getUTCHours(), mm = cst.getUTCMinutes(), wd = cst.getUTCDay();
       if (wd === 0 || wd === 6) return;
-      if (hh < 7 || hh >= 16) return;
+      // 08:35 起：上交所 08:30 换清单、深交所 08:12 生成文件，再早就拿到昨天那份了
+      if (hh < 8 || (hh === 8 && mm < 35) || hh >= 16) return;
       try {
         const r = await warmRound(env);
         if (r && (r.got || r.wrote || r.built)) console.log('[pcfwarm] ' + JSON.stringify(r));

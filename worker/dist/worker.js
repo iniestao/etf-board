@@ -1300,9 +1300,13 @@ async function serveTop3(ctx, codes, env) {
    开盘时全市场都在 KV 里（归并规则见 groupKeyOf 上面那段，被并掉的非龙头
    走 getPcf 的现场拉）。
 
-   不设「盘前不许写」的闸门：07:00 抓到的必然是上一交易日的清单，两天差别只在
-   调仓，盯市看不出来。每 5 分钟探一次 510300 的 TRADING_DAY，发现交易所换成
-   今天就把游标归零重抓一遍，成交额大的先换成新组合。
+   08:35 开跑，跟着交易所的公布时间走：上交所「ETF公告申购赎回清单」栏目交易日
+   08:30 统一更新，深交所的静态文件实测每天 08:11–08:12 生成（HTTP Last-Modified）。
+   这时候抓到的就是今天的清单，一遍就够。
+
+   万一到点还没换（探 510300 的 TRADING_DAY 还是上一交易日）就先等着不抓——抓了
+   也要归零重抓一遍，白烧一倍请求。09:05 还没等到就按昨天的来：交易所 08:30 就该
+   换好，超过半小时属于异常，宁可先用旧的也别让盯市空手。
 */
 const PCFS_KV = 'pcfsh-v1/';
 const PCFW_KV = 'pcfwarm-v1/';
@@ -1511,12 +1515,13 @@ async function warmRound(env) {
     return { ok: true, built: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped, all: plan.all, exact: plan.exact };
   }
 
-  /* 清单日期探测：**不再用它挡路**，只用来判断今天的清单发布没有。
+  /* 清单日期探测：两个用途——还没开抓时判断要不要等，抓过之后判断要不要归零重抓。
 
-     07:00 一开跑，交易所给的还是昨天那份（上交所的成分接口不带日期，深交所的
-     文件按日命名、今天的还没生成）。两天的差别只在调仓，先用着不影响盯市——
-     但要在探测到「今天已发布」时把游标按回 0 重抓一遍，让成交额大的那些尽快换成
-     今天的组合。重抓是原地覆盖分片，不会出现半张空表。
+     上交所的成分接口不带日期、深交所的文件按日命名，所以"这份是不是今天的"只能
+     问 510300 的基本信息（TRADING_DAY）。8:35 开跑时它应该已经是今天；如果还是
+     昨天，说明交易所没换，先等（抓手一轮就白抓一轮）。抓过之后再探到日期变了，
+     说明遇上了延迟发布，把游标按回 0 重抓一遍，成交额大的先换成新组合；重抓是
+     原地覆盖分片，不会出现半张空表。
 
      这个诊断接口自己会抽风（实测一半请求回 System Error），所以 5 分钟内只探一次，
      结果连同 probeAt 一起存在状态里跨轮复用。 */
@@ -1534,6 +1539,16 @@ async function warmRound(env) {
         st.pday = tday;
         if (st.i > 0) { st.i = 0; st.refresh = (st.refresh || 0) + 1; }
       }
+    }
+
+    /* 一只都还没抓、又明确看到交易所还挂着上一交易日的清单：等，别抓。
+       8:30 是上交所公布的固定时点，9:05 还没等到就按昨天的来（交易所延迟属于
+       异常，这时候让盯市空手比用旧清单更糟）。 */
+    const cst = new Date(Date.now() + 8 * 3600e3);
+    const hm = cst.getUTCHours() * 100 + cst.getUTCMinutes();
+    if (st.i === 0 && st.pday && st.pday !== day && hm < 905) {
+      try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
+      return { ok: true, wait: true, day, sse: st.pday, i: 0, n: plan.n, grp: plan.grp, dropped: plan.dropped, exact: plan.exact };
     }
   }
 
