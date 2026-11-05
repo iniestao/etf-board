@@ -293,6 +293,54 @@ async function runContracts(base, pass) {
   const jhb = r.json();
   (jhb && jhb.ok === false) ? ok('/api/hold 非法 code 被拒') : bad('/api/hold 非法 code 没拒');
 
+  // 交易所 PCF：口径变了就要能看出来，不然「前 20 大 26%」和「全部 279 只 100%」
+  // 混在一起，看的人会以为某天算错了
+  if (jh && jh.ok) {
+    if (jh.src === 'pcf') {
+      ok('/api/hold 走交易所 PCF（' + (jh.ex || '?') + ' · ' + jh.day + '）');
+      Math.abs(jh.wsum - 100) < 0.5
+        ? ok('/api/hold PCF 权重合计归一化到 100%')
+        : bad('/api/hold PCF 权重合计 ' + jh.wsum + '，应为 100');
+      // 归一化之后，各成分贡献相加就应当逼近 ETF 自己的涨跌幅
+      const sumCtr = jh.rows.reduce((a, x) => a + (x.ctr || 0), 0);
+      Math.abs(sumCtr) < 30
+        ? ok('/api/hold 全部成分贡献合计 ' + sumCtr.toFixed(2) + ' 个百分点')
+        : bad('/api/hold 贡献合计异常：' + sumCtr.toFixed(2));
+    } else {
+      bad('/api/hold 没走 PCF，退回 ' + (jh.src || '?') + '：' + (jh.pcfErr || '-'));
+    }
+  }
+
+  // 自选「主要贡献」：批量、跨市场、按 |贡献| 取前三
+  r = await rawRequest(base, '/api/top3?codes=510300,512480,159919,513180', { cookie });
+  const jt = r.json();
+  if (jt && jt.ok && jt.rows) {
+    const ks = Object.keys(jt.rows);
+    const okKs = ks.filter((k) => jt.rows[k].ok);
+    (okKs.length === ks.length)
+      ? ok('/api/top3 ' + ks.length + ' 只全部返回（沪 / 深 / 港）')
+      : bad('/api/top3 失败：' + ks.filter((k) => !jt.rows[k].ok).join(','));
+    const over = okKs.find((k) => (jt.rows[k].items || []).length > 3);
+    over ? bad('/api/top3 ' + over + ' 超过 3 只') : ok('/api/top3 每只最多 3 条');
+    const badIt = okKs.map((k) => (jt.rows[k].items || []).find((x) => !x.n || !x.c || typeof x.ctr !== 'number'))
+      .find(Boolean);
+    badIt ? bad('/api/top3 有异常条目：' + JSON.stringify(badIt).slice(0, 100))
+      : ok('/api/top3 每条含名称 / 代码 / 贡献');
+    // 排序必须是「绝对值降序」，否则跌的时候前三只全是涨的，等于没给信息
+    const badSort = okKs.find((k) => {
+      const a = (jt.rows[k].items || []).map((x) => Math.abs(x.ctr));
+      for (let i = 1; i < a.length; i++) if (a[i] > a[i - 1] + 1e-9) return true;
+      return false;
+    });
+    badSort ? bad('/api/top3 ' + badSort + ' 未按 |贡献| 降序') : ok('/api/top3 按 |贡献| 降序');
+  } else {
+    bad('/api/top3 失败：' + r.text.slice(0, 160));
+  }
+
+  r = await rawRequest(base, '/api/top3?codes=__bad__', { cookie });
+  const jtb = r.json();
+  (jtb && jtb.ok === false) ? ok('/api/top3 非法 codes 被拒') : bad('/api/top3 非法 codes 没拒');
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();

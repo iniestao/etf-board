@@ -289,6 +289,19 @@ border:1px solid var(--line);padding:8px 16px;border-radius:6px;font-size:12.5px
 transition:.25s;pointer-events:none;z-index:9}
 #toast.show{opacity:1}
 @media(max-width:820px){.hide-sm{display:none}}
+/* 「主要贡献」列到中等屏就收掉：自选表本来就有 14 列，1280 以下再加一列会把
+   成交额和换手挤成一坨，反而更难读 */
+@media(max-width:1280px){.hide-md{display:none}}
+.t3cell{white-space:nowrap;text-align:left}
+/* 三只成分压成一串小标签。用底色块而不是纯文字：三行名字连在一起时，
+   靠颜色块才分得清哪一段是名称、哪一段是贡献数字 */
+.t3{display:inline-block;padding:0 4px;margin-right:3px;border-radius:3px;
+  background:#f3f6fb;font-size:10.5px;line-height:17px;color:var(--txt2);
+  font-family:var(--sans);font-weight:500}
+.t3 em{font-style:normal;font-family:var(--mono);margin-left:3px;font-weight:600}
+.t3.up em{color:var(--up)}
+.t3.dn em{color:var(--down)}
+.t3ph{color:var(--txt3);font-size:11px;font-family:var(--mono)}
 
 /* ---------- 历史 K 线面板 ---------- */
 #histMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:60;display:none;
@@ -609,12 +622,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </div>
   <div class="tbl"><table>
     <thead><tr>
-      <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th><th>涨跌</th>
+      <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th>
+      <th class="hide-md" title="贡献最大的三只成分股。贡献 = 权重 × 今日涨跌（百分点），
+按绝对值排——涨的时候看谁在拉，跌的时候看谁在砸">主要贡献</th>
+      <th>涨跌</th>
       <th class="ctr">溢价率</th><th>IOPV</th><th>成交额</th><th>换手</th>
       <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
       <th class="ctr" style="width:36px"></th>
     </tr></thead>
-    <tbody id="watchBody"><tr><td colspan="13" class="empty">加载中…</td></tr></tbody>
+    <tbody id="watchBody"><tr><td colspan="14" class="empty">加载中…</td></tr></tbody>
   </table></div>
 </div>
 
@@ -729,7 +745,7 @@ var STATS = null;
 var LIVE = {};                 // 自选高频覆盖 {code: item}
 var g = 'all', sortKey = 'amt', limit = 100, kw = '';
 var DATA_SRC = '', DATA_TS = 0;
-var lastP = {}, timerSlow = null, timerFast = null, timerSpd = null, retryTimer = null;
+var lastP = {}, timerSlow = null, timerFast = null, timerSpd = null, timerT3 = null, retryTimer = null;
 
 /* ---------- 分类（浏览器端，带缓存；Worker 端做会吃掉 10ms CPU 预算） ---------- */
 var GROUP_CACHE = new Map();
@@ -1004,6 +1020,7 @@ function rowHtml(x, withDel){
     + '<td class="l nm">'+x.n+ixBadge(x)+'</td>'
     + '<td class="'+cc(x.chg)+' '+fl+'">'+fp(x.p)+'</td>'
     + '<td class="'+cc(x.chg)+'">'+fpc(x.chg)+'</td>'
+    + (withDel ? '<td class="hide-md t3cell" data-t3="'+x.c+'">'+top3Html(x.c)+'</td>' : '')
     + (withDel ? '<td class="'+cc(x.chg)+'">'+(x.pc?(x.p-x.pc>0?'+':'')+(x.p-x.pc).toFixed(3):'-')+'</td>' : '')
     + '<td class="ctr">'+pbadge(x.pm)+'</td>'
     + (withDel ? '<td style="color:var(--txt2)">'+(x.iopv?x.iopv.toFixed(4):'-')+'</td>' : '')
@@ -1037,10 +1054,83 @@ function renderCards(){
   });
 }
 
+/* ================= 自选「主要贡献」 =================
+   一行一只 ETF，看得到「涨了 0.8%」，看不到是谁拉的。这一栏补上贡献最大的三只
+   成分股——涨的时候看谁在拉，跌的时候看谁在砸。
+
+   按 |贡献| 排、不是只取正贡献：一只跌 1% 的 ETF，列三只红的对它毫无解释力。
+
+   成本：/api/top3 一次最多 10 只，这里按 10 只一批**串行**发。并发发三批会让
+   上游同时抓二三十只 PCF，上交所那边会空回复（实测并发 6 只就有失败）。
+   自选超过 30 只只算前 30：再往后是长尾，等一屏滚下去时这一列早就不在视野里了。
+*/
+var TOP3 = {};          // code -> {ok, day, n, ctr, items:[{n,c,w,chg,ctr}]}
+var TOP3_SIG = '';      // 上一次请求的自选指纹：列表没变就不重复请求
+var TOP3_BUSY = false;
+
+function t3short(n){
+  // 超过 6 个字截断：「华夏中证新能源汽车」这种全名会把三只挤成两行
+  return (n && n.length > 6) ? n.slice(0, 6) + '…' : (n || '');
+}
+
+function top3Html(c){
+  var r = TOP3[c];
+  if (!r) return '<span class="t3ph">·</span>';
+  if (!r.ok || !r.items || !r.items.length) return '<span class="t3ph">-</span>';
+  var buf = [];
+  for (var i = 0; i < r.items.length; i++){
+    var x = r.items[i];
+    var v = (Math.abs(x.ctr) < 0.005) ? 0 : x.ctr;
+    buf.push('<span class="t3 ' + cc(v) + '" title="' + esc(x.n) + ' ' + esc(x.c)
+      + '\u3000权重 ' + x.w.toFixed(2) + '%，今日 ' + (x.chg == null ? '-' : fpc(x.chg))
+      + '，贡献 ' + fpt(x.ctr) + ' 个百分点">'
+      + esc(t3short(x.n)) + '<em>' + fpt(x.ctr) + '</em></span>');
+  }
+  return buf.join('');
+}
+
+function paintTop3(){
+  var cells = document.querySelectorAll('#watchBody td[data-t3]');
+  for (var i = 0; i < cells.length; i++){
+    var h = top3Html(cells[i].getAttribute('data-t3'));
+    if (cells[i].innerHTML !== h) cells[i].innerHTML = h;
+  }
+}
+
+function runTop3(list){
+  if (TOP3_BUSY || !list.length) return;
+  TOP3_BUSY = true;
+  var i = 0;
+  function next(){
+    if (i >= list.length){ TOP3_BUSY = false; return; }
+    var part = list.slice(i, i + 10);
+    i += 10;
+    fetch('/api/top3?codes=' + part.join(',')).then(function(r){ return r.json(); })
+      .then(function(j){
+        if (j && j.rows) for (var c in j.rows) TOP3[c] = j.rows[c];
+        paintTop3();
+        next();
+      })['catch'](function(){ next(); });
+  }
+  next();
+}
+
+function ensureTop3(){
+  if (!watch.length) return;
+  var list = watch.slice(0, 30);
+  var sig = list.join(',');
+  if (sig === TOP3_SIG) return;
+  TOP3_SIG = sig;
+  // 列表变了就整批丢掉：留着旧的会让删掉的代码一直显示、新加的顶着上一只的名字
+  TOP3 = {};
+  paintTop3();
+  runTop3(list);
+}
+
 function renderWatch(){
   var body = document.getElementById('watchBody');
   if (!watch.length){
-    body.innerHTML = '<tr><td colspan="13" class="empty">还没有自选，点下方榜单的 + 添加</td></tr>';
+    body.innerHTML = '<tr><td colspan="14" class="empty">还没有自选，点下方榜单的 + 添加</td></tr>';
     document.getElementById('watchN').innerHTML = WATCH_CLOUD
       ? '<span class="syn">云端</span>' : '';
     return;
@@ -1054,7 +1144,7 @@ function renderWatch(){
     if (!x){
       miss++;
       html += '<tr class="hr" data-c="'+c+'"><td class="l code">'+c+'</td>'
-        + '<td class="l" colspan="11" style="color:var(--txt3)">未取到（可能已退市或非场内 ETF）</td>'
+        + '<td class="l" colspan="12" style="color:var(--txt3)">未取到（可能已退市或非场内 ETF）</td>'
         + '<td class="ctr"><span class="act del" data-del="'+c+'">×</span></td></tr>';
       continue;
     }
@@ -1064,6 +1154,8 @@ function renderWatch(){
   document.getElementById('watchN').innerHTML = watch.length + ' 只'
     + (miss ? ('，' + miss + ' 只未取到') : '')
     + (WATCH_CLOUD ? '<span class="syn" title="已与云端同步，换设备也是这份列表">云端</span>' : '');
+  ensureTop3();
+  paintTop3();     // tbody 刚被整块重写，单元格是新的，得重画一遍
   diagSync();
 }
 
@@ -2421,15 +2513,21 @@ function loadHold(code, silent){
 function renderHold(j){
   var hd = document.getElementById('hHoldHd');
   var box = document.getElementById('hHoldBody');
-  // 权重四舍五入到 0.00% 的条目不进表：季报里这种「持有但占比极低」的票
-  // 只占行高，贡献恒为 0.00，排在有行情的中间还会打断阅读
-  /* 先按权重取前 20 只，再按贡献排。宽基 ETF 的持仓明细能拉到 40 只，但尾部
-     十几只权重只有 0.0x%——贡献恒为 0.00，排进来只是把列表拉长到要滚动，
-     把底部的合计挤出屏幕。20 行正好一屏放得下，脚注里说明还剩多少只。 */
+  /* 两个口径的持仓不是一回事，界面必须分开写：
+       src=pcf    → 交易所当日申购赎回清单，**全部**成分，权重合计 100%；
+       src=report → 基金季报只披露前十大，权重合计二十几个点，剩下全是「其余」。
+     混着写会出现「前 20 大 26%」这种在 PCF 下永远不可能的数字，用户会以为算错。 */
+  var isPcf = j.src === 'pcf';
+
+  /* 先按权重取前 N 只，再按贡献排。权重 0.00% 的条目不进表——贡献恒为 0，
+     只占行高。PCF 全量能到 500 只（中证500），全铺出来要点几十屏，所以按权重
+     截到前 40（PCF）/ 20（季报），脚注里说明还剩多少只、占多少权重。 */
   var all = (j.rows || []).filter(function(x){ return x.w >= 0.005; })
     .sort(function(a, b){ return b.w - a.w; });
-  var rows = all.slice(0, 20);
+  var rows = all.slice(0, isPcf ? 40 : 20);
   var cut = all.length - rows.length;
+  var cutW = 0;
+  for (var q0 = rows.length; q0 < all.length; q0++) cutW += all[q0].w;
   var it = findItem(H.code);
   var ec = (it && isFinite(it.chg)) ? it.chg : null;
 
@@ -2450,10 +2548,20 @@ function renderHold(j){
     if (Math.abs(r.ctr) > mx) mx = Math.abs(r.ctr);
   }
 
-  hd.innerHTML = '<span>前 <b>' + rows.length + '</b> 大 · 权重合计 <b>'
-    + wsum.toFixed(1) + '%</b> · 截止 <b>' + esc(j.asof || '-') + '</b>'
-    + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
-    + '</span><span>贡献 = 权重 × 今日涨跌，单位百分点</span>';
+  // 注意这里是模板字符串：正则里的反斜杠要写两个，写成 \d 会被当成 d
+  var dayTxt = (j.asof || '-').replace(/^(\\d{4})(\\d{2})(\\d{2})$/, '$2-$3');
+  if (isPcf){
+    hd.innerHTML = '<span>全部 <b>' + all.length + '</b> 只 · 权重合计 <b>100%</b>'
+      + ' · 交易所 PCF <b>' + esc(dayTxt) + '</b>'
+      + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>' : '')
+      + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
+      + '</span><span>权重 = 股数 × 昨收归一化 · 贡献 = 权重 × 今日涨跌（百分点）</span>';
+  } else {
+    hd.innerHTML = '<span>前 <b>' + rows.length + '</b> 大 · 权重合计 <b>'
+      + wsum.toFixed(1) + '%</b> · 季报 <b>' + esc(dayTxt) + '</b>'
+      + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
+      + '</span><span>贡献 = 权重 × 今日涨跌，单位百分点</span>';
+  }
 
   var buf = [];
   for (i = 0; i < rows.length; i++){
@@ -2489,16 +2597,30 @@ function renderHold(j){
   // 整个算到未披露仓位上，纯属瞎猜
   if (ec != null && got){
     foot += '<span class="k">ETF 今日</span><span><b class="' + cc(ec) + '">' + fpc(ec) + '</b></span>'
-      + '<span class="k">其余 ' + Math.max(0, 100 - wsum).toFixed(1)
-      + '% 仓位（未披露持仓 / 现金 / 折溢价）约</span>'
+      + '<span class="k">' + (isPcf
+        ? '其余 ' + cut + ' 只（权重 ' + cutW.toFixed(1) + '%）约'
+        : '其余 ' + Math.max(0, 100 - wsum).toFixed(1) + '% 仓位（未披露持仓 / 现金 / 折溢价）约')
+      + '</span>'
       + '<span><b class="' + cc(ec - sum) + '">' + fpt(ec - sum) + '</b></span>';
   }
   foot += '</div>';
 
-  var note = '<div class="hhnote">权重取自基金季报（持仓截止 ' + esc(j.asof || '-')
-    + '）。期间申赎、调仓会让实际权重偏离报表值，所以「其余仓位」是一个残差——'
-    + '里面既有没披露的持仓，也有现金拖累和折溢价，不要当成某一只票的涨跌。'
-    + (cut > 0 ? '另有 ' + cut + ' 只权重不足 0.1%，没列出来。' : '') + '</div>';
+  var note;
+  if (isPcf){
+    note = '<div class="hhnote">权重由交易所申购赎回清单（PCF）的股数 × 昨收归一化算得，'
+      + '每日开盘前更新，覆盖全部成分——所以「前 N 大合计贡献」加上「其余部分」'
+      + '就约等于 ETF 今日涨跌，差额来自现金差额和折溢价（折溢价收敛几个 bp 很正常）。'
+      + '跨境 ETF 的成分是当地市场的涨跌（港币 / 美元计价），与 A 股不同步，'
+      + '白天看纳指 ETF 时成分股涨跌反映的是昨夜美股。'
+      + (cut > 0 ? '另有 ' + cut + ' 只权重最小的没列出来，合计占 ' + cutW.toFixed(1) + '%。' : '')
+      + '</div>';
+  } else {
+    note = '<div class="hhnote">权重取自基金季报（持仓截止 ' + esc(dayTxt)
+      + '），只披露前十大，所以「其余仓位」是一个残差——'
+      + '里面既有没披露的持仓，也有现金拖累和折溢价，不要当成某一只票的涨跌。'
+      + (j.pcfErr ? '（交易所 PCF 本次取不到：' + esc(j.pcfErr) + '）' : '')
+      + (cut > 0 ? '另有 ' + cut + ' 只权重不足 0.1%，没列出来。' : '') + '</div>';
+  }
 
   // 脚注排在合计行之前：合计是 sticky 吸底的，放在最后才不会被脚注顶开
   box.innerHTML = buf.join('') + note + foot;
@@ -4144,6 +4266,7 @@ function loadTXQuotes(){
 
 function schedule(){
   clearInterval(timerSlow); clearInterval(timerFast); clearInterval(timerSpd);
+  clearInterval(timerT3);
   var open = isOpen();
   // 全市场：交易时段 60 秒，非交易 300 秒（保护新浪上游，避免被风控）
   timerSlow = setInterval(loadFull, open ? 60000 : 300000);
@@ -4155,6 +4278,15 @@ function schedule(){
   timerSpd = setInterval(function(){
     if (isOpen() && !spdClosed() && document.visibilityState !== 'hidden') spdFetch();
   }, 30000);
+  /* 「主要贡献」60 秒一轮，和 /api/top3 的 60 秒分桶对齐。带 force 走一遍：
+     指纹没变时 ensureTop3 会直接返回，这里要的是「同一份自选重算一次」。
+     切到后台标签页时跳过——它比行情重得多（每轮要拉上千只成分的行情）。 */
+  clearInterval(timerT3);
+  timerT3 = setInterval(function(){
+    if (!watch.length || document.visibilityState === 'hidden') return;
+    if (TOP3_BUSY) return;
+    runTop3(watch.slice(0, 30));
+  }, 60000);
 }
 
 /* ---------- 事件 ---------- */

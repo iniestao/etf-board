@@ -770,6 +770,9 @@ function sinaSymOf(secid) {
  *   港股  hk00700   → 0 英文名 1 中文名 2 今开 3 昨收 4 高 5 低 6 现价 7 涨跌额 8 涨跌幅%
  *   美股  gb_aapl   → 0 名称 1 现价 2 涨跌幅%
  * 涨跌幅口径也不统一：A 股自己用现价/昨收算，港股美股直接取字段。
+ *
+ * prev（昨收）是给 PCF 算权重用的：权重 = 股数 × 昨收，和净值同口径。
+ * 用现价算也行，但那样权重会跟着当日涨跌漂，同一只票上午和收盘的权重不一样。
  */
 function parseHq(sym, raw) {
   if (!raw) return null;
@@ -777,15 +780,19 @@ function parseHq(sym, raw) {
   if (!f.length) return null;
   if (sym.slice(0, 3) === 'gb_') {
     const p = +f[1], chg = +f[2];
-    return p > 0 && isFinite(chg) ? { p, chg } : null;
+    if (!(p > 0) || !isFinite(chg)) return null;
+    // 新浪美股不给昨收，从涨跌幅倒推：p / (1 + chg/100)。chg=-100 时无解，交给下面判
+    const prev = p / (1 + chg / 100);
+    return { p, chg, prev: prev > 0 ? prev : 0 };
   }
   if (sym.slice(0, 2) === 'hk') {
-    const p = +f[6], chg = +f[8];
-    return p > 0 && isFinite(chg) ? { p, chg } : null;
+    const p = +f[6], chg = +f[8], prev = +f[3];
+    if (!(p > 0) || !isFinite(chg)) return null;
+    return { p, chg, prev: prev > 0 ? prev : 0 };
   }
   const p = +f[3], prev = +f[2];
   if (!(p > 0) || !(prev > 0)) return null;
-  return { p, chg: (p / prev - 1) * 100 };
+  return { p, chg: (p / prev - 1) * 100, prev };
 }
 
 async function fetchHq(syms) {
@@ -818,7 +825,289 @@ async function fetchHqRetry(syms) {
   }
 }
 
+/* ---------------------------------------------------- 交易所每日 PCF（申购赎回清单）
+
+   季报口径的前 N 大有个硬伤：只强制披露前十大，宽基 ETF 只能解释 26% 的仓位，
+   剩下 74% 全塞进「其余」。交易所 PCF 不一样——它是**当日**申购赎回用的完整
+   组合：沪深300ETF 给到 301 只、中证500ETF 给到 500 只，每只都带真实股数，
+   每天开盘前换一次。用它算出来的权重是持仓权重，不是前十大。
+
+   两家格式完全不兼容，只能分开写：
+
+   上交所 query.sse.com.cn 返回 JSON：
+     INSTRUMENT_ID 代码、INSTRUMENT_NAME 名称、QUANTITY 股数、
+     UNDERLYION_SECURITY_ID 市场（101 沪 / 102 深 / 103 港 / 9999 其他）
+
+   深交所是一个固定宽度的 GBK 文本（ETF{code}{yyyymmdd}.txt），列靠空格对齐，
+   中文占双字节——不能按字符位置切，只能用「代码 + 名称 + 股数 + 现金替代标志」
+   这种语义正则抓，再用行尾的「深圳市场/上海市场」判沪深。
+
+   权重不取交易所给的百分比（PCF 里没有），而是 **股数 × 昨收 归一化到 100%**。
+   两个好处：省掉一次取净值的请求；汇率自动约掉（跨境 ETF 的分子分母同乘外币
+   汇率），纳指 ETF 的美股成分也能算对。停牌股拿不到昨收就从分母剔掉，不会把
+   剩下的权重算歪。
+
+   已知偏差：PCF 组合 + 现金差额才等于申赎单位净值，所以股票部分归一化到 100%
+   会把权重整体放大约百分之零点几。相比季报「只覆盖 26%」，这点偏差无所谓。
+*/
+
+const PCF_KV = 'pcf-v3/';
+const PCF_TTL = 43200;            // 12 小时：PCF 每天开盘前换一次，盘中不会变
+const PCF_MAX_Q = 520;            // 中证500 有 500 只，留点余量
+
+/** 北京时间第 off 天前的 YYYYMMDD（Worker 跑在 UTC，必须自己加 8 小时） */
+function cstDay(off) {
+  const t = new Date(Date.now() + 8 * 3600e3 - (off || 0) * 86400e3);
+  return t.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+/**
+ * 上交所市场码 → 新浪代码。
+ *
+ * 港股要补前导零：交易所给的 INSTRUMENT_ID 是**去掉前导零**的（石药集团给
+ * 「1093」，不是「01093」），直接拼成 hk1093 新浪认不出来，整只 ETF 的成分
+ * 就全变成「无行情」。实测 513120 港股创新药 41 只全是四位码。
+ */
+function symOfSse(mkt, c) {
+  if (mkt === '101') return 'sh' + c;
+  if (mkt === '102') return 'sz' + c;
+  if (mkt === '103') return 'hk' + c.padStart(5, '0');
+  /* 9999 是「其他」：美股用纯字母代码，但货币 ETF 的现金替代码 SSXJ 也长这样，
+     不排掉的话它会被当成一只美股 gb_ssxj 去查行情，查不到，整只 ETF 就变成
+     「有持仓、零行情」的空表。 */
+  if (mkt === '9999') {
+    if (c === 'SSXJ' || c === 'CASH') return null;
+    return /^[A-Z]{1,6}$/.test(c) ? 'gb_' + c.toLowerCase() : null;
+  }
+  return null;                    // 90/128 B 股、203 回购，不画
+}
+
+async function fetchPcfSse(code) {
+  const u = 'https://query.sse.com.cn/commonQuery.do?isPagination=false&FUNDID2=' + code
+    + '&sqlId=COMMON_SSE_CP_JJLB_ETFJJGK_GGSGSHQD_COMPONENT_C';
+  const r = await fetch(u, {
+    headers: {
+      'User-Agent': HOLD_UA, Accept: '*/*',
+      Referer: 'https://www.sse.com.cn/disclosure/fund/etflist/detail.shtml?fundid=' + code,
+    },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('PCF HTTP ' + r.status);
+  const j = await r.json();
+  const list = (j && j.result) || [];
+  if (!list.length) throw new Error('PCF 空表');
+  const items = [];
+  for (const x of list) {
+    const c = String(x.INSTRUMENT_ID || '').trim().toUpperCase();
+    const q = +String(x.QUANTITY || '0').replace(/,/g, '');
+    if (!c || !(q > 0)) continue;
+    const sym = symOfSse(String(x.UNDERLYION_SECURITY_ID || '').trim(), c);
+    if (!sym) continue;
+    items.push({ c, n: (x.INSTRUMENT_NAME || c).trim(), q, sym });
+  }
+  if (!items.length) throw new Error('PCF 无可交易成分');
+  return { ex: 'sse', day: cstDay(), items };
+}
+
+/** 解析深交所固定宽度文本里的组合信息段 */
+function parsePcfSzseTxt(txt) {
+  const items = [];
+  // 一行长这样（列间是多空格）：
+  // 000001   平安银行   1,600   允许   34.00%   0.00%   0.0000   0.0000   深圳市场
+  const re = /^[ \t]*(\d{6}|[A-Z]{1,6})[ \t]+(.+?)[ \t]+([\d,]+)[ \t]+(?:允许|必须|禁止)/gm;
+  let m;
+  while ((m = re.exec(txt))) {
+    const c = m[1];
+    const q = +m[3].replace(/,/g, '');
+    // 159900 是跨市场 ETF 的虚拟券，代表「所有沪市成分的现金替代合计」，不是持仓
+    if (!(q > 0) || c === '159900') continue;
+    const eol = txt.indexOf('\n', m.index);
+    const line = txt.slice(m.index, eol < 0 ? txt.length : eol);
+    let sym = null;
+    // 用行尾的挂牌市场判沪深：看代码首位靠不住（688/605 是沪、300/301 是深）
+    if (line.indexOf('上海市场') >= 0) sym = 'sh' + c;
+    else if (line.indexOf('深圳市场') >= 0) sym = 'sz' + c;
+    // 港股同样要补前导零（和上交所一个毛病）
+    else if (line.indexOf('香港市场') >= 0) sym = 'hk' + c.padStart(5, '0');
+    else if (/^[A-Z]/.test(c)) sym = 'gb_' + c.toLowerCase();
+    if (!sym) continue;
+    items.push({ c, n: m[2].trim(), q, sym });
+  }
+  return items.length ? items : null;
+}
+
+async function fetchPcfSzse(code) {
+  /* 文件按日命名，取不到就往回找 8 天：盘前文件还没生成、周末、长假都取不到。
+     每一次尝试是一个子请求，所以上限压到 8——真遇到长假，回退季报也不算错。 */
+  for (let off = 0; off < 8; off++) {
+    const day = cstDay(off);
+    const u = 'https://reportdocs.static.szse.cn/files/text/etf/ETF' + code + day + '.txt';
+    let txt = null;
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': HOLD_UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.ok) txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    } catch (e) { /* 换个日期再试 */ }
+    if (!txt) continue;
+    const items = parsePcfSzseTxt(txt);
+    if (items) return { ex: 'szse', day, items };
+  }
+  throw new Error('深交所 PCF 取不到（今天可能还没发布）');
+}
+
+/**
+ * 取一只 ETF 的当日 PCF。KV 缓存 12 小时，但 key 里带日期——
+ * 跨天第一次访问会自然失效，不依赖 TTL 的边界。
+ */
+async function getPcf(code, env) {
+  const day = cstDay();
+  const KVK = PCF_KV + code + '/' + day;
+  try {
+    if (env && env.WATCH) {
+      const hit = await env.WATCH.get(KVK, 'json');
+      if (hit && hit.items && hit.items.length) return hit;
+    }
+  } catch (e) { /* KV 读失败就走现场抓 */ }
+
+  /* 5 开头是上交所、1 开头（159/158）是深交所。
+
+     上交所这条要重试：并发抓六七只时实测会有一两只「TLS 完成后空回复」，
+     单发从来没有过。一次失败就让那只退回季报不值得，重试两次就够了
+     （PCF 是幂等 GET，重试没有副作用）。深交所本身就是按日期回溯，自带重试。 */
+  let pcf = null;
+  if (code.charAt(0) === '5') {
+    let lastErr = null;
+    for (let a = 0; a < 3; a++) {
+      try { pcf = await fetchPcfSse(code); break; } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 200 + a * 250));
+      }
+    }
+    if (!pcf) throw lastErr || new Error('PCF 失败');
+  } else {
+    pcf = await fetchPcfSzse(code);
+  }
+  try {
+    if (env && env.WATCH) {
+      await env.WATCH.put(KVK, JSON.stringify(pcf), { expirationTtl: PCF_TTL });
+    }
+  } catch (e) { /* 写不进 KV 不影响本次响应 */ }
+  return pcf;
+}
+
+/**
+ * 一次批量取行情，返回 { sym: {p, prev, chg} }。
+ * 500 只一批也可以（实测新浪 URL 2.7KB / 300 只 / 70ms 就返回），
+ * 但按 300 一批更稳，也留住了失败时「部分成功」的能力。
+ */
+async function priceMap(syms) {
+  const out = {}, uniq = [];
+  for (const s of syms) if (s && !out[s]) { out[s] = 1; uniq.push(s); }
+  const chunks = [];
+  for (let k = 0; k < uniq.length; k += 300) chunks.push(uniq.slice(k, k + 300));
+  const got = await Promise.all(chunks.map((c) => fetchHqRetry(c).catch(() => ({}))));
+  const q = {};
+  for (const g of got) Object.assign(q, g);
+  const res = {};
+  for (const s of uniq) {
+    const o = parseHq(s, q[s]);
+    if (o) res[s] = o;
+  }
+  return res;
+}
+
+/** PCF 成分 + 行情 → 带权重和贡献的明细行 */
+function rowsFromPcf(pcf, q) {
+  const base = [];
+  let sumMv = 0, hit = 0;
+  for (const it of pcf.items) {
+    const o = q[it.sym];
+    // 没有昨收就没法算市值，直接不进分母：宁可少算一只，也不能把权重摊歪
+    if (!o || !(o.prev > 0)) continue;
+    const mv = it.q * o.prev;
+    sumMv += mv;
+    base.push([it, o, mv]);
+    hit++;
+  }
+  if (!sumMv) return { rows: [], wsum: 0, hit: 0, ctr: 0 };
+  let ctr = 0;
+  const rows = base.map(([it, o, mv]) => {
+    const w = (mv / sumMv) * 100;
+    const c = (w / 100) * o.chg;
+    ctr += c;
+    return {
+      c: it.c, n: it.n, w: +w.toFixed(2),
+      p: +o.p.toFixed(3), chg: +o.chg.toFixed(2), ctr: +c.toFixed(3),
+    };
+  });
+  return { rows, wsum: 100, hit, ctr: +ctr.toFixed(3) };
+}
+
+/**
+ * 成分穿透入口。**PCF 优先，季报兜底**：
+ *
+ *   PCF  = 当日交易所公布的完整组合，权重是真实持仓比例，合计 100%，
+ *          「前 N 大能解释多少」这个问题不再成立（全都解释了）；
+ *   季报 = 交易所取不到时的退路（新上市、长假期间文件未生成、跨境品种等），
+ *          只有前十大，权重合计二十几个点，界面必须标明口径，否则用户会
+ *          把「前十大贡献 0.3%，ETF 涨 1%」当成算错。
+ *
+ * 两条路的响应都带 src / day 两个字段，前端据此决定表头和脚注怎么写。
+ */
 async function serveHold(ctx, code, env) {
+  let pcf = null, pcfErr = '';
+  try {
+    pcf = await getPcf(code, env);
+  } catch (e) {
+    pcfErr = String(e.message || e);
+  }
+  if (pcf && pcf.items && pcf.items.length) {
+    return serveHoldPcf(ctx, code, pcf);
+  }
+  return serveHoldReport(ctx, code, env, pcfErr);
+}
+
+async function serveHoldPcf(ctx, code, pcf) {
+  // 行情按 30 秒分桶：和涨速榜同口径，同一桶内多人打开只打一次上游
+  const stamp = fpOf(code + '|pcf|' + pcf.ex + pcf.day + '|' + pcf.items.length);
+  const bucket = Math.floor(Date.now() / 30000);
+  const ck = new Request('https://etf-board.internal/hold2/' + code + '/' + stamp + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(ck);
+      if (hit) return hit;
+    } catch (e) { /* 忽略 */ }
+  }
+
+  const q = await priceMap(pcf.items.map((x) => x.sym));
+  const r = rowsFromPcf(pcf, q);
+
+  /* 持仓拿到了、一条行情都没回来：多半是商品/货币类（清单里只有黄金合约或现金
+     替代），也可能上游整批失败。别回一张空表让人以为是加载中。 */
+  if (!r.rows.length) {
+    return json({
+      ok: false, code, src: 'pcf', day: pcf.day,
+      error: '这只 ETF 的申购赎回清单里没有可取的股票成分（黄金 / 债券 / 货币类常见），穿透不适用',
+    });
+  }
+
+  const body = json({
+    ok: true, code, src: 'pcf', ex: pcf.ex, day: pcf.day,
+    name: '', asof: pcf.day,
+    n: r.rows.length, total: pcf.items.length,
+    wsum: +r.wsum.toFixed(2), hit: r.hit,
+    rows: r.rows, ms: 0,
+  }, r.hit > 0 ? 30 : 0);
+  if (r.hit > 0 && cache && ctx && typeof ctx.waitUntil === 'function') {
+    try { ctx.waitUntil(cache.put(ck, body.clone())); } catch (e) { /* 忽略 */ }
+  }
+  return body;
+}
+
+async function serveHoldReport(ctx, code, env, pcfErr) {
   const KVK = 'hold-v2/' + code;
   let hold = null;
   try {
@@ -841,7 +1130,6 @@ async function serveHold(ctx, code, env) {
     } catch (e) { /* 写不进 KV 不影响本次响应 */ }
   }
 
-  // 行情按 30 秒分桶缓存：和涨速榜同口径，同一桶内多人打开只打一次上游
   const stamp = fpOf(code + '|' + hold.items.length + '|' + hold.asof);
   const bucket = Math.floor(Date.now() / 30000);
   const ck = new Request('https://etf-board.internal/hold/' + code + '/' + stamp + '/' + bucket, { method: 'GET' });
@@ -887,14 +1175,80 @@ async function serveHold(ctx, code, env) {
      第一次全空），如果照样缓存 30 秒，用户接下来半分钟看到的都是「权重有、
      涨跌幅没有」，刷新也没用。宁可不缓存，下一次请求重新打上游。 */
   const res = json({
-    ok: true, code, name: hold.name || '', asof: hold.asof || '',
+    ok: true, code, src: 'report', name: hold.name || '', asof: hold.asof || '',
     n: rows.length, wsum: +wsum.toFixed(2), hit,
-    rows, ms: 0, qErr: qErr ? qErr.slice(0, 160) : undefined,
+    rows, ms: 0,
+    pcfErr: pcfErr ? pcfErr.slice(0, 120) : undefined,
+    qErr: qErr ? qErr.slice(0, 160) : undefined,
   }, hit > 0 ? 30 : 0);
   if (hit > 0 && cache && ctx && typeof ctx.waitUntil === 'function') {
     try { ctx.waitUntil(cache.put(ck, res.clone())); } catch (e) { /* 忽略 */ }
   }
   return res;
+}
+
+/* ---------------------------------------------------------------- 自选「主要贡献」
+
+   自选表一行一只 ETF，看得到「涨了 0.8%」，看不到「是谁拉的」。这一栏补上：
+   每只 ETF 给贡献最大的 3 只成分股。
+
+   为什么按 |贡献| 排而不是按正贡献排：跌的时候想知道的是「谁在砸」，把三只
+   涨的票列出来对下跌的 ETF 毫无用处。取绝对值，涨跌两种行情都有信息。
+
+   成本控制：一次最多 10 只 ETF。每只的 PCF 走 KV（当日只抓一次），成分行情
+   合并去重后统一批量拉。10 只宽基全量约 5000 条成分，去重后 1000 出头，
+   分 4 批就能拉完；PCF 冷启动时 10 只各 1~3 个子请求，加上行情批次仍远低于
+   Cloudflare 免费版的 50 上限。
+*/
+const TOP3_MAX = 10;
+const TOP3_K = 3;
+
+async function serveTop3(ctx, codes, env) {
+  const pcfs = await Promise.all(codes.map(async (c) => {
+    try {
+      return [c, await getPcf(c, env)];
+    } catch (e) {
+      return [c, null];
+    }
+  }));
+
+  // 先把所有成分代码收齐再统一拉行情：宽基之间重叠极高，分开拉等于打十遍
+  const syms = [];
+  for (const [, p] of pcfs) {
+    if (p) for (const it of p.items) syms.push(it.sym);
+  }
+
+  const stamp = fpOf(codes.join(',') + '|' + syms.length);
+  const bucket = Math.floor(Date.now() / 60000);   // 1 分钟一桶：这一栏不需要 30 秒精度
+  const ck = new Request('https://etf-board.internal/top3/' + stamp + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(ck);
+      if (hit) return hit;
+    } catch (e) { /* 忽略 */ }
+  }
+
+  const q = await priceMap(syms);
+  const rows = {};
+  let any = false;
+  for (const [c, p] of pcfs) {
+    if (!p) { rows[c] = { ok: false }; continue; }
+    const r = rowsFromPcf(p, q);
+    if (!r.rows.length) { rows[c] = { ok: false }; continue; }
+    const items = r.rows.slice()
+      .sort((a, b) => Math.abs(b.ctr) - Math.abs(a.ctr))
+      .slice(0, TOP3_K)
+      .map((x) => ({ n: x.n, c: x.c, w: x.w, chg: x.chg, ctr: x.ctr }));
+    rows[c] = { ok: true, day: p.day, n: r.rows.length, ctr: r.ctr, items };
+    any = true;
+  }
+
+  const body = json({ ok: any, rows }, any ? 60 : 0);
+  if (any && cache && ctx && typeof ctx.waitUntil === 'function') {
+    try { ctx.waitUntil(cache.put(ck, body.clone())); } catch (e) { /* 忽略 */ }
+  }
+  return body;
 }
 
 /* ---------------------------------------------------------------- 涨速榜
@@ -1459,6 +1813,18 @@ export default {
       const code = (url.searchParams.get('code') || '').trim().replace(/^(sh|sz)/i, '');
       if (!/^\d{5,6}$/.test(code)) return json({ ok: false, error: 'code 非法' });
       return serveMin(ctx, code);
+    }
+
+    if (p === '/api/top3') {
+      const raw = (url.searchParams.get('codes') || '').trim();
+      const list = raw.split(',').map((x) => x.trim().replace(/^(sh|sz)/i, ''))
+        .filter((x) => /^\d{5,6}$/.test(x));
+      const uniq = [];
+      const seen = {};
+      for (const c of list) { if (!seen[c]) { seen[c] = 1; uniq.push(c); } }
+      if (!uniq.length) return json({ ok: false, error: 'codes 非法' });
+      if (uniq.length > TOP3_MAX) return json({ ok: false, error: '一次最多 ' + TOP3_MAX + ' 只' });
+      return serveTop3(ctx, uniq, env);
     }
 
     if (p === '/api/hold') {
