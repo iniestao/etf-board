@@ -24,6 +24,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const SRC = path.join(ROOT, 'worker', 'src');
 
+// 界面「同指数去重」和预热归并用的是同一份映射，自检里核对这一点
+const { IDX_GROUPS } = await import(path.join(SRC, 'idx_data.js'));
+const IX_OF = Object.create(null);
+for (const k in IDX_GROUPS) for (const c of IDX_GROUPS[k]) IX_OF[c] = k;
+
 let fails = 0;
 let checks = 0;
 const ok = (msg) => { checks++; console.log('  ✓ ' + msg); };
@@ -362,15 +367,19 @@ async function runContracts(base, pass) {
       i: w1.i, n: w1.n, got: w1.got, wrote: w1.wrote,
       built: !!w1.built, done: !!w1.done, pday: w1.pday || '',
     }));
-    if (!(w1.n > 500)) bad('/api/pcfwarm 的清单只有 ' + w1.n + ' 只，全市场应该一千多');
+    /* 归并后的清单量级：全市场 1600+、按指数去重后 400~500 组。低于 300 说明
+       映射错把一堆不同指数并成了一个（那比不归并更糟：并错的那只永远不预热）。 */
+    if (!(w1.n > 300)) bad('/api/pcfwarm 的清单只有 ' + w1.n + ' 只，归并后应该还有四五百组');
     /* 同指数只留龙头：清单必须比市场总数明显少，且组数不超过清单长度。
        两个数只在建计划那一轮返回，命中已有计划的轮次就跳过这条。 */
     if (w1.all) {
       (w1.all > w1.n && w1.grp <= w1.n && w1.dropped === w1.all - w1.grp)
-        ? ok('/api/pcfwarm 按指数归并：' + w1.all + ' 只 → ' + w1.grp + ' 组 → 预热 ' + w1.n
-          + ' 只（' + w1.exact + ' 只用真指数分组）')
+        ? ok('/api/pcfwarm 按跟踪指数归并：' + w1.all + ' 只 → ' + w1.grp + ' 组 → 预热 ' + w1.n
+          + ' 只（' + w1.exact + ' 只落在同指数多只的组里）')
         : bad('/api/pcfwarm 归并数目对不上：' + JSON.stringify({ all: w1.all, grp: w1.grp, n: w1.n, dropped: w1.dropped }));
-      if (!(w1.exact > 0)) bad('/api/pcfwarm 没有一只走真指数分组，全退回简称了');
+      if (!(w1.exact > w1.all * 0.6)) {
+        bad('/api/pcfwarm 只有 ' + w1.exact + '/' + w1.all + ' 只走指数映射，各成一组的太多');
+      }
     }
     await new Promise((res) => setTimeout(res, 1200));
     r = await rawRequest(base, '/api/pcfwarm', { cookie, timeout: 40000 });
@@ -460,9 +469,27 @@ if (!pass) {
     shardFiles.length
       ? ok('预热分片已落 KV：' + shardFiles.length + ' 片（' + day + '）')
       : bad('预热没有产生任何分片（pcfsh-v1/*' + day + '）');
-    const planFile = 'pcfpool-v3_2F' + day + '.json';
+    const planFile = 'pcfpool-v4_2F' + day + '.json';
     files.includes(planFile) ? ok('当天的预热顺序表已落 KV（' + planFile + '）')
       : bad('没有预热顺序表 ' + planFile);
+    // 一致性：预热清单里不该有两只属于同一个跟踪指数（那说明归并漏了）。
+    // 核对用的是界面同一份映射——预热和界面必须给同一个答案，否则会出现
+    // 「界面上显示 A、预热的却是 B」，A 点开照样等五秒。
+    try {
+      const plan = JSON.parse(fs.readFileSync(path.join(dir, planFile), 'utf8'));
+      const seen = new Map();
+      let dup = 0;
+      for (const c of plan.codes) {
+        const ix = IX_OF[c];
+        if (!ix) continue;
+        if (seen.has(ix)) dup++; else seen.set(ix, c);
+      }
+      dup === 0
+        ? ok('预热清单无同指数重复：' + plan.codes.length + ' 只覆盖 ' + seen.size + ' 个指数')
+        : bad('预热清单里同指数重复了 ' + dup + ' 次（归并漏了）');
+    } catch (e) {
+      bad('预热顺序表读不出来：' + (e && e.message));
+    }
     // 分片里存的必须是能读回的结构，不能是一串字符串
     if (shardFiles.length) {
       try {

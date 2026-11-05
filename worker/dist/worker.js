@@ -1,3 +1,5 @@
+import { IDX_GROUPS } from './idx_data.js';
+
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
  * =========================================
@@ -1294,18 +1296,17 @@ async function serveTop3(ctx, codes, env) {
    的分片付几十毫秒 CPU。
 
    节奏：Cron 每分钟一轮，每轮处理「尽可能多的完整分片」（约 20~25 只）。
-   按指数归并后是 891 只，约 40 轮，从 09:05 开始，09:45 前铺完；成交额大的排在
-   前面，所以常用的那几百只在 09:30 开盘前就已经躺在 KV 里了（归并规则见
-   coreOf 上面那段，不在清单里的 ETF 走 getPcf 的现场拉）。
+   按跟踪指数归并后约一千只，四十来轮；07:00 开跑，08:00 前铺满一遍，09:30
+   开盘时全市场都在 KV 里（归并规则见 groupKeyOf 上面那段，被并掉的非龙头
+   走 getPcf 的现场拉）。
 
-   一条硬约束：**盘前清单没发布时不能写**。上交所的清单接口不带日期，抓早了
-   拿到的是昨天的组合，却会被当成今天的存进去，而且当天再也不会刷新。所以每轮
-   先读 510300 的基本信息，TRADING_DAY 不等于今天就直接跳过这一轮（1 个请求
-   的代价）。深交所的文件名自带日期，没这个风险。
+   不设「盘前不许写」的闸门：07:00 抓到的必然是上一交易日的清单，两天差别只在
+   调仓，盯市看不出来。每 5 分钟探一次 510300 的 TRADING_DAY，发现交易所换成
+   今天就把游标归零重抓一遍，成交额大的先换成新组合。
 */
 const PCFS_KV = 'pcfsh-v1/';
 const PCFW_KV = 'pcfwarm-v1/';
-const PCFP_KV = 'pcfpool-v3/';
+const PCFP_KV = 'pcfpool-v4/';
 const PCFS_TTL = 3 * 86400;       // 分片留 3 天：周末回来还能给周五的清单兜个底
 const WARM_PER_RUN = 20;          // 每轮至少这么多只（按整片取，允许超出）
 const WARM_PROBE = '510300';      // 沪深300ETF：盘前清单发布的风向标
@@ -1362,102 +1363,28 @@ async function pcfTradingDay(code) {
   return (x && String(x.TRADING_DAY || '').trim()) || '';
 }
 
-/* 一只指数常有一打 ETF 跟踪：沪深300 有 22 只、中证500 有 20 只、科创50 有 17 只。
-   它们穿透出来的成分几乎一样，全抓一遍等于把同一个答案抄二十遍，一天白烧一千多个
-   子请求。所以预热只取每个指数里成交额最大的那只，其余等真被点开时再现场拉
-   （getPcf 的三级读取里，「现场拉」这一级本来就是给这种长尾准备的）。
+/* 一只指数常有一打 ETF 跟踪：沪深300 有 29 只、中证A500 有 40 只、中证500 有 29 只。
+   它们穿透出来的成分几乎一样，全抓一遍等于把同一个答案抄二十遍，一天白烧一千多
+   个子请求。所以预热只取每个指数里成交额最大的那只，其余等真被点开时再现场拉
+   （getPcf 的三级读取里，「现场拉」那一级本来就是给这种长尾准备的）。
 
-   分组键要的是**跟踪指数**，不是简称。两个市场给的东西不一样：
-
-   | 市场 | 来源 | 键 |
-   |---|---|---|
-   | 沪市 | 上交所清单列表的 `ETF_FULLNAME`（基金合同里的标的指数全称） | 指数全称 |
-   | 深市 | PCF 文件头的「目标指数代码」 | 指数代码 |
-
-   沪市那条一次请求拿全 947 条，每天刷一次；深市没有批量接口（列表接口固定
-   10 条一页、771 只 = 78 页，大页直接被 WAF 掐断），只能在抓清单时顺手把代码
-   记下来，攒几天就齐了。两条都没有时才退回简称匹配（coreOf）。 */
-const IDX_KV = 'idxmap-v1';
-
-/** 基金全称 → 标的指数名。
- *  华泰柏瑞沪深300交易型开放式指数证券投资基金 ＋ 华泰柏瑞基金管理有限公司 → 沪深300
- *  上证180公司治理交易型开放式指数证券投资基金（全称里没有公司名）→ 上证180公司治理 */
-function idxFromFullName(full, comp) {
-  let s = String(full || '').replace(/[\s（）()]/g, '');
-  if (!s) return '';
-  const c = String(comp || '').replace(/资产管理.*$/, '').replace(/基金管理.*$/, '').replace(/基金.*$/, '');
-  if (c && c.length >= 2 && s.indexOf(c) === 0 && s.length > c.length + 2) s = s.slice(c.length);
-  const cut = s.search(/交易型|ETF|证券投资基金/);
-  if (cut > 0) s = s.slice(0, cut);
-  return s;
-}
-
-async function fetchSseEtfNames() {
-  const u = 'https://query.sse.com.cn/commonQuery.do?isPagination=true&pageHelp.pageSize=1000'
-    + '&pageHelp.pageNo=1&sqlId=COMMON_SSE_PL_ETFGGSGSHQD_L';
-  const r = await fetch(u, {
-    headers: {
-      'User-Agent': HOLD_UA, Accept: '*/*',
-      Referer: 'https://www.sse.com.cn/disclosure/fund/etflist/',
-    },
-    signal: AbortSignal.timeout(12000),
-  });
-  if (!r.ok) throw new Error('SSE list HTTP ' + r.status);
-  const j = await r.json();
-  const d = (j && j.pageHelp && j.pageHelp.data) || [];
-  const m = {};
-  for (const x of d) {
-    const c = String(x.FUNDID2 || '').trim();
-    if (!/^\d{6}$/.test(c)) continue;
-    const k = idxFromFullName(x.ETF_FULLNAME, x.FUND_COMP_NAME);
-    if (k && k.length >= 2) m[c] = k;
-  }
-  if (!Object.keys(m).length) throw new Error('上交所清单列表为空');
+   分组用的是**界面「同指数去重」那份映射**（idx_data.js，天天基金基金档案的
+   「跟踪标的」字段，247 组 / 1449 只），不另建一套。理由很直接：预热的目的就是
+   让「界面上看得到的那些」点开就有成分，所以「哪个代码属于哪个指数」必须和界面
+   是同一个答案。之前去上交所扒 ETF_FULLNAME、去深交所 PCF 文件头攒指数代码，
+   等于把同一件事再做一遍，两份映射一旦不一致就会出现「界面显示 A、预热的却是 B」，
+   A 点开照样等五秒——这比不预热更糟，因为它看起来像缓存失效。 */
+const IX_OF = (() => {
+  const m = Object.create(null);
+  for (const k in IDX_GROUPS) for (const c of IDX_GROUPS[k]) m[c] = k;
   return m;
-}
+})();
 
-/** 指数映射：{d: 建表日, sh: {code: 指数名}, sz: {code: 指数代码}} */
-async function loadIdxMap(env) {
-  const day = cstDay();
-  let m = null;
-  try { m = await env.WATCH.get(IDX_KV, 'json'); } catch (e) { /* 重建 */ }
-  const sh = (m && m.sh) || {};
-  const sz = (m && m.sz) || {};
-  if (m && m.d === day && Object.keys(sh).length) return m;
-  let fresh = sh;
-  try { fresh = await fetchSseEtfNames(); } catch (e) { /* 拉不到就沿用旧表，总比没有强 */ }
-  const out = { d: day, sh: fresh, sz };
-  try { await env.WATCH.put(IDX_KV, JSON.stringify(out), { expirationTtl: 8 * 86400 }); } catch (e) { /* 忽略 */ }
-  return out;
-}
-
-/** 把这一轮从深市清单里学到的「代码 → 目标指数代码」并进映射表 */
-async function saveSzIdx(env, m, add) {
-  if (!add || !Object.keys(add).length) return;
-  let changed = false;
-  for (const c of Object.keys(add)) {
-    if (m.sz[c] !== add[c]) { m.sz[c] = add[c]; changed = true; }
-  }
-  if (!changed) return;
-  try { await env.WATCH.put(IDX_KV, JSON.stringify(m), { expirationTtl: 8 * 86400 }); } catch (e) { /* 忽略 */ }
-}
-
-/** 简称为主的兜底分组键：{核心}ETF{基金公司}，取 ETF 之前那段。规则刻意保守——
- *  宁可多分几组（多抓一只），也不要误并：误并的代价是那只 ETF 永远没预热。 */
-function coreOf(name) {
-  let s = String(name || '').replace(/[\s\-—_]/g, '').replace(/[（(][^）)]*[）)]/g, '');
-  const i = s.toUpperCase().indexOf('ETF');
-  if (i > 0) s = s.slice(0, i);
-  return s.replace(/ETF|基金|指数|LOF|联接|证券投资基金/gi, '');
-}
-
-function groupKeyOf(code, name, m) {
-  const sh = m && m.sh && m.sh[code];
-  if (sh) return 'i:' + sh;
-  const sz = m && m.sz && m.sz[code];
-  if (sz) return 'x:' + sz;
-  const core = coreOf(name);
-  return core.length >= 2 ? 'n:' + core : '#' + code;
+/** 预热分组键：映射里有就按指数分，没有的（新上市、货币/债券漏网）各算一组。
+ *  不退回简称猜——猜错了会把不同指数并成一个，代价是其中一只永远不预热。 */
+function groupKeyOf(code) {
+  const ix = IX_OF[code];
+  return ix ? 'i:' + ix : '#' + code;
 }
 
 /** 当天的预热顺序：每指数一只 → 成交额降序 → 按分片聚拢（片间按片内最大成交额排） */
@@ -1484,8 +1411,13 @@ async function buildWarmPlan(day, env) {
       /* 债券 / 货币 ETF 的申购赎回清单里没有股票成分（只有现金替代和债券），
          抓了也是白抓——实测成交额前十里有一半是这类，一轮二十只就废掉七八个
          子请求。名字里带这些字的一律跳过；真要看它们的成分也没意义，
-         穿透算的是「哪只票在拉」，债券基金没有这个答案。 */
-      if (/债|货币|短融|添益|日利|现金|保证金|理财/.test(String(x.name || ''))) continue;
+         穿透算的是「哪只票在拉」，债券基金没有这个答案。
+
+         「自由现金流」「自由现金」是因子策略，名字里的「现金」不是现金管理，
+         被误伤过一次——界面上它们明明在，点开却要等五秒现场拉。 */
+      const nm = String(x.name || '');
+      if (/债|货币|短融|添益|日利|保证金|理财/.test(nm)) continue;
+      if (nm.indexOf('现金') >= 0 && !/自由现金|现金流/.test(nm)) continue;
       got.push({ c, a: +x.amount || 0, m: String(x.name || '') });
     }
   }
@@ -1493,13 +1425,11 @@ async function buildWarmPlan(day, env) {
 
   /* 同指数只留成交额最大的一只。用 Map 边遍历边比，天然保留最大者，
      顺便记下被并掉的只数，好在 /api/pcfwarm 里对账。 */
-  const idxm = await loadIdxMap(env);
   const byCore = new Map();
-  let exact = 0;      // 用真指数分到组的只数（剩下的是退回简称的）
+  let exact = 0;      // 走指数映射分到组的只数（剩下的是映射里没有、各算一组的）
   for (const x of got) {
-    const k = groupKeyOf(x.c, x.m, idxm);
-    const tag = k.charCodeAt(0);
-    if (tag !== 110 && tag !== 35) exact++;   // 'n:' 简称兜底、'#' 独立成组
+    const k = groupKeyOf(x.c);
+    if (k.charCodeAt(0) === 105) exact++;   // 'i:' 有指数映射、'#' 独立成组
     const cur = byCore.get(k);
     if (!cur || x.a > cur.a) byCore.set(k, x);
   }
@@ -1625,23 +1555,13 @@ async function warmRound(env) {
   const batch = plan.codes.slice(from, to);
 
   const res = {};
-  const szIdx = {};
   let ok = 0, fail = 0;
   await mapLimit(batch, 3, async (code) => {
     try {
       const p = await pcfForWarm(code);
-      if (p && p.items && p.items.length) {
-        res[code] = p; ok++;
-        if (p.idx) szIdx[code] = p.idx;
-      } else fail++;
+      if (p && p.items && p.items.length) { res[code] = p; ok++; } else fail++;
     } catch (e) { fail++; }
   });
-
-  /* 深市没有批量接口（列表接口固定 10 条一页、大页会被 WAF 掐断），跟踪指数只能
-     从清单文件里顺手攒。攒满一次全市场要几天，攒到之前那几只走简称兜底。 */
-  if (Object.keys(szIdx).length) {
-    try { await saveSzIdx(env, await loadIdxMap(env), szIdx); } catch (e) { /* 攒不下就明天再攒 */ }
-  }
 
   const shards = {};
   for (const code of Object.keys(res)) {
@@ -3059,6 +2979,9 @@ var BROAD = ['沪深300','中证300','中证500','中证1000','中证2000','中�
              '上证50','科创50','创业板','科创','上证','深证','中证','A50','A500','A100',
              '红利','价值','成长','超大盘','180','大盘','中小板','双创'];
 function calcGroup(n){
+  /* 「自由现金流」「300现金流」是因子策略，名字里的「现金」不是现金管理，
+     别被下面的 money 规则抓走（会被显示成「货币」，还会被速度榜排除）。 */
+  if (n.indexOf('现金流') >= 0 || n.indexOf('自由现金') >= 0) return 'broad';
   for (var i=0;i<RULES.length;i++){
     var ws = RULES[i][1];
     for (var j=0;j<ws.length;j++) if (n.indexOf(ws[j]) >= 0) return RULES[i][0];
@@ -4204,8 +4127,9 @@ var SPD_VOL_HOT = 1.5;         // 量比到这个倍数算「放量」
 var SPD_SHOW = 5;              // 每边显示几只
 /* 现金管理类日内振幅常年 0.0x%，挤进榜只会稀释信号。group() 已经把它们
    归到 money/bond，这里再按名称兜一道——有些短融 ETF 名称不带「货币」二字，
-   被分到了 industry，漏进池子就会一直霸占榜首（实测 551550、511150 都这样）。 */
-var SPD_SKIP = /短融|货币|日利|添益|现金|理财|保证金|快线/;
+   被分到了 industry，漏进池子就会一直霸占榜首（实测 551550、511150 都这样）。
+   「现金」要排除「现金流」：那是因子策略，日内波动正常，不该被挡。 */
+var SPD_SKIP = /短融|货币|日利|添益|现金(?!流)|理财|保证金|快线/;
 
 function spdPool(){
   if (!DATA.length) return [];
