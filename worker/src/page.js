@@ -62,6 +62,33 @@ background:var(--bg3)}
 .card .v{font-size:19px;font-weight:600;font-family:var(--mono);line-height:1.25}
 .card .v small{font-size:11px;font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
+/* ---------- 今日变化 + 组合体检 ---------- */
+.split{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:9px;align-items:start}
+@media(max-width:860px){.split{grid-template-columns:1fr}}
+.evtbox,.portbox{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 13px}
+.evt{display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed var(--line)}
+.evt:last-child{border-bottom:none;padding-bottom:1px}
+.evt i{width:6px;height:6px;border-radius:50%;margin-top:6px;flex:0 0 auto;background:#c3c9d4}
+.evt.lv3 i{background:#d93a3a}
+.evt.lv2 i{background:#e0a12a}
+.evt.lv1 i{background:#9aa3b2}
+.eb{min-width:0}
+.eb b{font-size:12.5px;font-weight:600}
+.eb .ek{margin-left:7px;font-size:10.5px;color:var(--txt2);background:var(--bg3);
+  border:1px solid var(--line);border-radius:4px;padding:0 5px;white-space:nowrap}
+.evt.lv3 .ek{color:#b02a2a;background:#fdecee;border-color:#f3c7c7}
+.evt.lv2 .ek{color:#a9660a;background:#fff6e5;border-color:#f0dcb4}
+.es{font-size:11px;color:var(--txt2);margin-top:3px;line-height:1.55}
+.eempty{padding:14px 2px 10px;font-size:12.5px;color:var(--txt2);line-height:1.7}
+.eempty span{color:var(--txt3);font-size:11px}
+.prow{display:flex;gap:16px;margin-bottom:2px}
+.pk{font-size:10.5px;color:var(--txt3);margin-bottom:2px}
+.pv{font-size:21px;font-weight:600;font-family:var(--mono);line-height:1.25}
+.pv small{font-size:10.5px;color:var(--txt3);font-weight:400;margin-left:2px}
+.pnote{font-size:11px;color:var(--txt2);line-height:1.65;border-top:1px dashed var(--line);
+  padding-top:8px;margin-top:9px}
+.pnote b{color:var(--txt)}
+
 /* ---------- 位置诊断 ---------- */
 /* 这一栏是整页唯一「不是行情软件」的东西：行情软件给报价，这里给位置和量能。
    位置条用蓝色深浅而不是红绿——红绿在这页已经被涨跌占用，再用一次就乱了。 */
@@ -363,6 +390,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
   <div class="card"><div class="k">全市场成交额</div><div class="v" id="cAmt">-</div><div class="s">合计</div></div>
   <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
+</div>
+
+<div class="sec">
+  <div class="sechd"><b>今日变化</b><span class="n" id="evtN"></span></div>
+  <div class="dnote">只看「相比昨天变了什么」，没发生事的标的不会出现——空白本身是信息。</div>
+  <div class="split">
+    <div class="evtbox" id="evtList"><div class="empty">正在读取历史…</div></div>
+    <div class="portbox" id="portBox"><div class="empty">组合体检需要至少 2 只自选</div></div>
+  </div>
 </div>
 
 <div class="sec" id="diagSec">
@@ -853,47 +889,75 @@ var DIAG_BUSY = 0;
 var DIAG_HTML = '';   // 上一次渲染的 HTML：一样就不重写，避免整块闪
 var DIAG_MAX = 3;     // 并发上限：一次拉太多会把 /api/hist 打出 429
 
-function diagFrom(raw, cur){
+/* 交易日进度：9:30–11:30 + 13:00–15:00 共 240 分钟。
+   盘中拿到的「今日成交额」是半截的，直接和 20 日均额比会系统性偏低，
+   早盘十点能显示成「缩量一半」，所以按已交易分钟折算。 */
+function dayProgress(){
+  var d = new Date(), t = d.getHours() * 60 + d.getMinutes();
+  if (t < 570) return 0;
+  if (t <= 690) return (t - 570) / 240;
+  if (t < 780) return 0.5;
+  if (t <= 900) return (120 + (t - 780)) / 240;
+  return 1;
+}
+
+/* 位置一律以「昨天」为锚：
+   区间取到昨天那根为止，今天只用实时价去比。这样昨天位置和今天位置是同一个
+   坐标系里的两个点，能直接相减做「今天变了什么」；否则区间跟着今天一起变，
+   位置永远在自己的区间里，看不出变化。 */
+function diagFrom(raw, it){
   if (!raw || !raw.col || !raw.col.close) return null;
   var cl = raw.col.close, hi = raw.col.high, lo = raw.col.low;
-  // 量能用成交额而不是成交量：同一指数换成另一只 ETF，份额和净值都不一样，
-  // 成交量没法横向比；成交额可以，而且和后端算量比的口径一致。
+  // 量能用成交额而不是成交量：同一指数换一只 ETF，份额和净值都不同，成交量没法比
   var vo = raw.col.amount || raw.col.volume;
   var n = raw.n, i;
-  if (!n || n < 60) return null;
-  var s = Math.max(0, n - 250);
+  if (!n || n < 80) return null;
+
+  var td = (function(){ var d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); })();
+  // 收盘后 Actions 会把今天写进 .bin，此时最后一根就是今天，锚点要往前挪一根
+  var e = (raw.dates && raw.dates[n - 1] === td) ? n - 2 : n - 1;
+  if (e < 60) return null;
+
+  var s = Math.max(0, e - 249);
   var hh = -1e18, ll = 1e18;
-  for (i = s; i < n; i++){
+  for (i = s; i <= e; i++){
     if (hi && hi[i] > hh) hh = hi[i];
     if (lo && lo[i] > 0 && lo[i] < ll) ll = lo[i];
   }
-  var c = cur > 0 ? cur : cl[n - 1];
-  if (c > hh) hh = c;
-  if (c < ll) ll = c;
+  var cur = (it && it.p > 0) ? it.p : cl[e];
+  if (cur > hh) hh = cur;
+  if (cur < ll) ll = cur;
   if (!(hh > ll)) return null;
-  var pos = (c - ll) / (hh - ll) * 100;
+  var pos = (cur - ll) / (hh - ll) * 100;
+  var posPrev = (cl[e] - ll) / (hh - ll) * 100;
 
-  var m = Math.min(21, n), path = 0, sq = 0, cnt = 0;
-  for (i = n - m + 1; i < n; i++){
+  var m = Math.min(21, e + 1), path = 0, sq = 0, cnt = 0;
+  for (i = e - m + 2; i <= e; i++){
     if (cl[i - 1] > 0){
       var rr = cl[i] / cl[i - 1] - 1;
       path += Math.abs(rr); sq += rr * rr; cnt++;
     }
   }
-  var r20 = cl[n - m] > 0 ? c / cl[n - m] - 1 : 0;
+  if (cl[e] > 0) path += Math.abs(cur / cl[e] - 1);
+  var r20 = cl[e - 20] > 0 ? cur / cl[e - 20] - 1 : 0;
   var pe = path > 1e-6 ? Math.max(-1, Math.min(1, r20 / path)) : 0;
 
+  // 20 日均额（到昨天为止），以及昨天的量能倍数
   var sum = 0, k = 0;
-  for (i = Math.max(0, n - 21); i < n - 1; i++){ if (vo && vo[i] > 0){ sum += vo[i]; k++; } }
+  for (i = Math.max(0, e - 19); i <= e; i++){ if (vo && vo[i] > 0){ sum += vo[i]; k++; } }
   var ma = k ? sum / k : 0;
-  var evr = (ma > 0 && vo && vo[n - 1] > 0) ? vo[n - 1] / ma : null;
+  var evrPrev = (ma > 0 && vo && vo[e] > 0) ? vo[e] / ma : null;
+  var evr = evrPrev;
+  var pr = dayProgress();
+  var liveAmt = (it && it.amt > 0) ? it.amt : null;
+  if (liveAmt && pr >= 0.12 && ma > 0) evr = (liveAmt / pr) / ma;
 
-  var h60 = -1e18;
-  for (i = Math.max(0, n - 60); i < n; i++) if (hi && hi[i] > h60) h60 = hi[i];
-  var d60 = h60 > 0 ? c / h60 - 1 : null;
+  // 20 日年化波动，只给「震出来的」提供个量化注脚
+  var vol20 = cnt > 1 ? Math.sqrt(sq / cnt) * Math.sqrt(252) * 100 : null;
 
-  return { pos:pos, pe:pe, r20:r20, evr:evr, d60:d60,
-           vol20: cnt > 1 ? Math.sqrt(sq / cnt) * Math.sqrt(252) * 100 : null, bars:n };
+  return { pos:pos, posPrev:posPrev, pe:pe, r20:r20, evr:evr, evrPrev:evrPrev,
+           dHi:hh > 0 ? cur / hh - 1 : null, dLo:ll > 0 ? cur / ll - 1 : null,
+           vol20:vol20, bars:n, anchor:e, hi:hh, lo:ll };
 }
 
 function diagTag(d){
@@ -909,6 +973,193 @@ function diagTag(d){
       : ['高位缩量','d3',2,'位置很高但没量：涨得没人接，追进去容易接最后一棒'];
   }
   return ['中位','d0',4,'位置中性：上下都留得住，等突破或破位再动手'];
+}
+
+/* ================= 今日变化 =================
+   行情软件的默认视图是「现在是什么样」。真正稀缺的是「相比昨天变了什么」——
+   只有变化才对应动作。这里把每只自选今天发生的事抽成一条条事件：
+   创一年新高/新低、穿过 80/20 分位、量能突变、贴到新高 1% 以内、溢价异常。
+   没事件的标的不出现，页面短下来本身就是信息。 */
+function buildEvents(){
+  var out = [];
+  for (var c in DIAG){
+    var d = DIAG[c];
+    if (!d || !d.ok) continue;
+    var nm = d.n || c, ev = d.evr, ep = d.evrPrev;
+    var evs = ev == null ? '-' : ev.toFixed(2);
+    var mine = [];
+    function add(lv, t, txt){ mine.push({ lv:lv, t:t, s:txt }); }
+
+    if (d.pos >= 99.5 && d.posPrev < 99.5){
+      add(3, '创一年新高', '位置 ' + d.pos.toFixed(0) + '%，量能 ×' + evs
+        + '。不放量的新高是常态，放量新高反而要防冲高回落');
+    } else if (d.posPrev < 80 && d.pos >= 80){
+      add(2, '升破 80 分位', '位置从 ' + d.posPrev.toFixed(0) + ' 抬到 ' + d.pos.toFixed(0)
+        + '，量能 ×' + evs + '，进入高位区');
+    }
+    if (d.pos <= 0.5 && d.posPrev > 0.5){
+      add(3, '创一年新低', '位置归零，量能 ×' + evs
+        + '。新低之后的第一根放量阳线才是信号，别在阴线里接');
+    } else if (d.posPrev > 20 && d.pos <= 20){
+      add(2, '跌破 20 分位', '位置从 ' + d.posPrev.toFixed(0) + ' 掉到 ' + d.pos.toFixed(0)
+        + '，量能 ×' + evs + '，进入低位区');
+    }
+    if (ev != null && ev >= 2 && (ep == null || ep < 1.4)){
+      add(2, '量能 2 倍', '今天成交额是 20 日均额的 ' + ev.toFixed(1) + ' 倍，昨天只有 '
+        + (ep == null ? '-' : ep.toFixed(2)) + ' 倍');
+    }
+    if (ev != null && ev <= 0.55 && ep != null && ep >= 1){
+      add(1, '量能腰斩', '量能从 ×' + ep.toFixed(2) + ' 掉到 ×' + ev.toFixed(2) + '，关注度退潮');
+    }
+    if (d.dHi != null && d.dHi > -0.012 && d.dHi < 0 && d.pos < 99){
+      add(1, '贴新高', '还差 ' + Math.abs(d.dHi * 100).toFixed(1) + '% 到一年高点，突破与否是分水岭');
+    }
+    var it = findItem(c);
+    if (it && it.pm != null && Math.abs(it.pm) >= 0.8){
+      add(it.pm > 0 ? 2 : 1, (it.pm > 0 ? '溢价 ' : '折价 ') + Math.abs(it.pm).toFixed(2) + '%',
+        '价格偏离 IOPV ' + it.pm.toFixed(2) + '%，超过 0.8% 通常是流动性或情绪问题，别当便宜捡');
+    }
+    if (!mine.length) continue;
+    var top = mine[0];
+    for (var q = 1; q < mine.length; q++) if (mine[q].lv > top.lv) top = mine[q];
+    // 事件多的排前面：同一只身上同时出现两件事，比单件事更值得看
+    out.push({ c:c, nm:nm, lv:top.lv, tags:mine.map(function(x){ return x.t; }),
+               s:top.s, k:mine.length * 10 + top.lv });
+  }
+  out.sort(function(a, b){ return b.k - a.k; });
+  return out;
+}
+
+function renderEvents(){
+  var box = document.getElementById('evtList');
+  if (!box) return;
+  var nEl = document.getElementById('evtN');
+  var done = 0;
+  for (var c in DIAG) if (DIAG[c] && DIAG[c].ok) done++;
+  if (!watch.length){
+    box.innerHTML = '<div class="empty">加自选后这里显示每天的变化</div>';
+    if (nEl) nEl.textContent = '';
+    return;
+  }
+  if (!done){
+    var busy = DIAG_Q.length + DIAG_BUSY;
+    box.innerHTML = '<div class="empty">'
+      + (busy ? '正在读取历史…' : '历史还没准备好，点右上角「重算」再试一次') + '</div>';
+    return;
+  }
+  var ev = buildEvents();
+  if (nEl) nEl.textContent = ev.length ? (ev.length + ' 只有动作') : '无';
+  var elSig = document.getElementById('cSig'), elSigs = document.getElementById('cSigs');
+  if (elSig){
+    elSig.innerHTML = ev.length + '<small>只</small>';
+    var tags = {};
+    for (var t = 0; t < ev.length; t++){
+      for (var u = 0; u < ev[t].tags.length; u++) tags[ev[t].tags[u]] = 1;
+    }
+    var ks = [];
+    for (var kk in tags) ks.push(kk);
+    elSigs.textContent = ks.length ? ('今日：' + ks.slice(0, 3).join(' · ')) : '自选里没有值得动手的变化';
+  }
+  if (!ev.length){
+    box.innerHTML = '<div class="eempty">自选里今天没有值得动手的变化。<br>'
+      + '<span>' + done + ' 只都在原来位置附近震荡，量能没有突变，也没贴到新高低。</span></div>';
+    return;
+  }
+  var h = '', cap = 6;
+  for (var i = 0; i < ev.length && i < cap; i++){
+    var e = ev[i], tg = '';
+    for (var j = 0; j < e.tags.length; j++) tg += '<span class="ek">' + esc(e.tags[j]) + '</span>';
+    h += '<div class="evt lv' + e.lv + '" data-c="' + e.c + '"><i></i><div class="eb">'
+      + '<b>' + esc(e.nm) + '</b>' + tg
+      + '<div class="es">' + esc(e.s) + '</div></div></div>';
+  }
+  if (ev.length > cap){
+    h += '<div class="es" style="padding:6px 0 0;color:var(--txt3)">还有 ' + (ev.length - cap)
+      + ' 只变化更小，没列出来</div>';
+  }
+  box.innerHTML = h;
+}
+
+/* ================= 组合体检 =================
+   自选列表看起来是 N 个仓位，实际承担的风险由相关性决定。
+   用最近 60 个共同交易日的日收益算两两相关，再用
+   n_eff = n / (1 + (n-1)·ρ̄) 折算成「有效独立仓位数」。
+   这是全页最不像行情软件的一块：行情软件永远只盯着单只标的。 */
+function corrOf(a, b){
+  var n = a.length, ma = 0, mb = 0, i;
+  for (i = 0; i < n; i++){ ma += a[i]; mb += b[i]; }
+  ma /= n; mb /= n;
+  var sa = 0, sb = 0, sab = 0, x, y;
+  for (i = 0; i < n; i++){
+    x = a[i] - ma; y = b[i] - mb;
+    sa += x * x; sb += y * y; sab += x * y;
+  }
+  return (sa > 0 && sb > 0) ? sab / Math.sqrt(sa * sb) : 0;
+}
+
+function portStats(){
+  var codes = [], c;
+  for (c in DIAG){ var d = DIAG[c]; if (d && d.ok && d.raw) codes.push(c); }
+  if (codes.length < 2) return null;
+  var maps = [], common = null, i, j;
+  for (i = 0; i < codes.length; i++){
+    var raw = DIAG[codes[i]].raw, m = {};
+    for (j = 1; j < raw.n; j++){
+      var p0 = raw.col.close[j - 1], p1 = raw.col.close[j];
+      if (p0 > 0 && p1 > 0) m[raw.dates[j]] = p1 / p0 - 1;
+    }
+    maps.push(m);
+    var ds = [];
+    for (var k in m) ds.push(k);
+    common = common ? common.filter(function(x){ return m[x] != null; }) : ds;
+  }
+  common.sort();
+  var use = common.slice(-60);
+  if (use.length < 20) return null;
+  var R = [];
+  for (i = 0; i < codes.length; i++){
+    var arr = [];
+    for (j = 0; j < use.length; j++) arr.push(maps[i][use[j]]);
+    R.push(arr);
+  }
+  var sum = 0, cnt = 0, best = { r:-2, a:'', b:'' }, worst = { r:2, a:'', b:'' };
+  for (i = 0; i < codes.length; i++){
+    for (j = i + 1; j < codes.length; j++){
+      var r = corrOf(R[i], R[j]);
+      sum += r; cnt++;
+      if (r > best.r) best = { r:r, a:codes[i], b:codes[j] };
+      if (r < worst.r) worst = { r:r, a:codes[i], b:codes[j] };
+    }
+  }
+  var avg = cnt ? sum / cnt : 0;
+  var neff = codes.length / (1 + (codes.length - 1) * Math.max(0, avg));
+  return { n:codes.length, avg:avg, neff:neff, best:best, worst:worst, days:use.length };
+}
+
+function renderPort(){
+  var box = document.getElementById('portBox');
+  if (!box) return;
+  var p = portStats();
+  if (!p){
+    box.innerHTML = '<div class="empty">组合体检需要至少 2 只自选</div>';
+    return;
+  }
+  var an = (findItem(p.best.a) || {}).n || p.best.a;
+  var bn = (findItem(p.best.b) || {}).n || p.best.b;
+  var wn = (findItem(p.worst.a) || {}).n || p.worst.a;
+  var wb = (findItem(p.worst.b) || {}).n || p.worst.b;
+  var tone = p.avg >= 0.75 ? '基本在赌同一个方向' : (p.avg >= 0.5 ? '同涨同跌的成分不小' : '分散度还可以');
+  var h = '<div class="prow">'
+    + '<div><div class="pk">有效独立仓位</div><div class="pv">' + p.neff.toFixed(1)
+    + '<small>/ ' + p.n + ' 只</small></div></div>'
+    + '<div><div class="pk">平均相关</div><div class="pv">' + p.avg.toFixed(2) + '</div></div>'
+    + '</div>'
+    + '<div class="pnote">看着是 <b>' + p.n + ' 个仓位</b>，按最近 ' + p.days
+    + ' 个交易日的相关性折算，实际只承担了 <b>' + p.neff.toFixed(1) + ' 个</b>仓位的风险，' + tone + '。'
+    + '<br>最像的两只：<b>' + esc(an) + '</b> × <b>' + esc(bn) + '</b>，相关 ' + p.best.r.toFixed(2)
+    + '；最不像的：<b>' + esc(wn) + '</b> × <b>' + esc(wb) + '</b>，' + p.worst.r.toFixed(2)
+    + '，想加分散度往这对的方向找。</div>';
+  box.innerHTML = h;
 }
 
 function diagCard(code){
@@ -933,8 +1184,8 @@ function diagCard(code){
     + '<div class="dchips">'
     + '<span class="dchip">量能 <b>' + (d.evr == null ? '-' : '×' + d.evr.toFixed(2)) + '</b></span>'
     + '<span class="dchip">20日 <b class="' + cc(d.r20) + '">' + fpc(d.r20 * 100) + '</b></span>'
-    + '<span class="dchip">路径 <b>' + d.pe.toFixed(2) + '</b></span>'
-    + '<span class="dchip">距60日高<b>' + (d.d60 == null ? '-' : fpc(d.d60 * 100)) + '</b></span>'
+    + '<span class="dchip">距高点<b>' + (d.dHi == null ? '-' : fpc(d.dHi * 100)) + '</b></span>'
+    + '<span class="dchip">距低点<b>' + (d.dLo == null ? '-' : fpc(d.dLo * 100)) + '</b></span>'
     + '</div>'
     + '<div class="dwhy">' + d.why + '；' + peTxt + '（路径效率 ' + d.pe.toFixed(2) + '）。</div>'
     + '</div>';
@@ -964,17 +1215,8 @@ function renderDiag(){
   var html = '';
   for (i = 0; i < list.length; i++) html += diagCard(list[i]);
   if (html !== DIAG_HTML){ DIAG_HTML = html; g.innerHTML = html; }
-  var sig = cnt.d4 + cnt.d2 + cnt.d3 + cnt.d1;
-  var elSig = document.getElementById('cSig'), elSigs = document.getElementById('cSigs');
-  if (elSig && have){
-    elSig.innerHTML = sig + '<small>只</small>';
-    var pp = [];
-    if (cnt.d4) pp.push('高位放量 ' + cnt.d4);
-    if (cnt.d3) pp.push('高位缩量 ' + cnt.d3);
-    if (cnt.d2) pp.push('低位放量 ' + cnt.d2);
-    if (cnt.d1) pp.push('低位缩量 ' + cnt.d1);
-    elSigs.textContent = pp.length ? pp.join(' · ') : '自选暂无信号，位置都在中段';
-  }
+  renderEvents();
+  renderPort();
   if (nEl){
     var p = [];
     if (cnt.d4) p.push(cnt.d4 + ' 只高位放量');
@@ -998,7 +1240,7 @@ function diagFetch(code){
   }).then(function(buf){
     var raw = parseHist(buf);
     var it = findItem(code);
-    var d = diagFrom(raw, it ? it.p : null);
+    var d = diagFrom(raw, it);
     if (!d) throw new Error('历史不足 60 根');
     var tg = diagTag(d);
     d.ok = true; d.c = code; d.n = (it && it.n) || raw.code || code;
@@ -1022,7 +1264,7 @@ function diagReprice(){
     var d = DIAG[c];
     if (!d || !d.ok || !d.raw) continue;
     var it = findItem(c);
-    var nd = diagFrom(d.raw, it ? it.p : null);
+    var nd = diagFrom(d.raw, it);
     if (!nd) continue;
     var tg = diagTag(nd);
     nd.ok = true; nd.c = c; nd.n = d.n; nd.raw = d.raw;
@@ -1049,6 +1291,17 @@ function diagInit(){
       var el = e.target;
       while (el && el !== g && !el.getAttribute('data-c')) el = el.parentNode;
       if (!el || el === g) return;
+      var c = el.getAttribute('data-c');
+      var it = findItem(c);
+      openHist(c, (it && it.n) || c);
+    });
+  }
+  var ev = document.getElementById('evtList');
+  if (ev){
+    ev.addEventListener('click', function(e){
+      var el = e.target;
+      while (el && el !== ev && !el.getAttribute('data-c')) el = el.parentNode;
+      if (!el || el === ev || !el.getAttribute('data-c')) return;
       var c = el.getAttribute('data-c');
       var it = findItem(c);
       openHist(c, (it && it.n) || c);
