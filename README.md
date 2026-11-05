@@ -114,6 +114,18 @@ PORT=3000 node server/app.mjs   # 起服务；口令在 server/.env 的 ACCESS_P
 node server/sync-data.mjs       # 手动同步最新 hist（--check 只看状态）
 ```
 
+**改口令**要两步，少一步不生效：
+
+```bash
+# 1. 改 server/.env 里的 ACCESS_PASS
+# 2. 重启进程——口令是启动时读进内存的，改文件不会热更新。
+#    线上实例由自启动脚本拉起，不能只 kill，得重新发布一次：
+node /root/.codebuddy/skills/sites/scripts/publish.js \
+  --dir /workspace/etf_board --start-cmd "node server/app.mjs" --language node
+```
+
+换口令后所有旧 Cookie 立即作废（Cookie 值本身是 HMAC(口令) 算出来的）。
+
 已发布地址（2026-11-05）：
 
 ```
