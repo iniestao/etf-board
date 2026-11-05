@@ -329,6 +329,49 @@ color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
 font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-select:none}
 .hsbar b:hover{color:var(--txt)}
 .hsbar b.on{background:var(--bg3);color:var(--txt);border-color:#c9d6ef}
+
+/* ---- 成分穿透 ----
+   一行 = 一只成分：权重、今日涨跌、贡献（权重×涨跌），中间一条以中线为 0 的
+   双向条。条不是为了好看：0.02 个百分点的贡献和 0.4 个用数字看只差一个字，
+   用长度看是一眼。条按当前表里最大 |贡献| 归一，所以每次打开尺度会变——
+   换来的是小票也能看见，代价是不能跨股票比长度。 */
+/* 高度必须自己封顶：flex-basis:0 在高度 auto 的父容器里算不出剩余空间，
+   面板会塌成只剩标题栏；不封顶则 30 行把底部的合计挤出屏幕。 */
+.hhold{display:none;flex:0 1 auto;max-height:calc(94vh - 132px);overflow-y:auto;padding:0 14px}
+.hhold.on{display:block}
+.hholdhd{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  font-size:10.5px;color:var(--txt3);padding:8px 0 7px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:var(--bg2);z-index:2}
+.hholdhd b{color:var(--txt);font-weight:600}
+.hhrow{display:grid;grid-template-columns:minmax(0,220px) 62px 66px minmax(70px,1fr) 62px;
+  gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12px}
+.hhrow:hover{background:#f7f9fc}
+.hhrk{display:none}
+.hhnm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.hhnm em{font-style:normal;font-size:9.5px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
+.hhw,.hhc,.hhctr{font-family:var(--mono);text-align:right;font-size:11.5px}
+.hhc.up{color:var(--up)}.hhc.dn{color:var(--down)}
+/* 贡献列也要红涨绿跌：不写这条时负贡献会掉回默认的深灰，跟「-0.16 是坏事」
+   这层意思对不上，整列看着像没上色 */
+.hhctr{font-weight:600}
+.hhctr.up{color:var(--up)}.hhctr.dn{color:var(--down)}
+.hhbar{position:relative;height:7px;background:#eaeef4;border-radius:4px}
+.hhbar:before{content:"";position:absolute;left:50%;top:0;width:1px;height:7px;background:#c9d2de}
+.hhbar u{position:absolute;top:0;height:7px;border-radius:3px}
+/* 合计行吸在底部：它是这一栏的结论（前 N 大解释了多少、剩下多少），
+   被 30 行挤到屏幕外就等于没给。 */
+.hhfoot{display:flex;flex-wrap:wrap;gap:14px;padding:9px 0 8px;font-size:11px;color:var(--txt2);
+  position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--line);z-index:1}
+.hhfoot b{font-family:var(--mono);font-weight:600}
+.hhfoot .k{color:var(--txt3)}
+.hhnote{padding:8px 0 2px;font-size:10.5px;color:var(--txt3);line-height:1.75}
+.hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:12px;line-height:1.9}
+@media(max-width:760px){
+  .hhrow{grid-template-columns:minmax(0,1fr) 48px 54px 52px;gap:6px;font-size:11.5px}
+  .hhbar{display:none}
+  .hhw,.hhc,.hhctr{font-size:11px}
+  .hhold{padding:0 12px 8px}
+}
 .hind .i.on{border-color:#c9d6ef;background:var(--bg3)}
 .hleg{display:flex;gap:16px;padding:7px 14px 0;font-size:11.5px;color:var(--txt2);flex-wrap:wrap}
 .hleg i{display:inline-block;width:8px;height:2px;vertical-align:3px;margin-right:4px}
@@ -628,7 +671,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       <span class="px" id="hPx">-</span>
       <span class="ch" id="hChg"></span>
       <div class="hmodes" id="hMode">
-        <b data-m="min">分时</b><b data-m="k">K线</b>
+        <b data-m="min">分时</b><b data-m="k">K线</b><b data-m="hold">成分</b>
       </div>
       <div class="htabs" id="hTabs">
         <span data-r="63">3M</span>
@@ -649,6 +692,10 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       </span>
     </div>
     <canvas id="histCv"></canvas>
+    <div class="hhold" id="hHold">
+      <div class="hholdhd" id="hHoldHd"></div>
+      <div id="hHoldBody"></div>
+    </div>
     <div class="hleg" id="hLeg"></div>
     <div class="hind" id="hInd"></div>
     <div class="hnote" id="hNote"></div>
@@ -2048,7 +2095,7 @@ var H = {
    用户手动切过就记住——K 线是深度分析时才会进的门。 */
 try {
   var _hmode = localStorage.getItem('etf_hmode');
-  if (_hmode === 'k' || _hmode === 'min') H.mode = _hmode;
+  if (_hmode === 'k' || _hmode === 'min' || _hmode === 'hold') H.mode = _hmode;
 } catch (e) { /* 隐私模式下 localStorage 会抛 */ }
 
 /* TypedArray 要求 byteOffset 是元素大小的整数倍，而 JSON header 长度不固定。
@@ -2283,23 +2330,42 @@ function hRefresh(){
   document.getElementById('hNote').textContent = note;
 }
 
-/* 分时 / K线 切换。force=true 表示「模式没变也要重新加载」——
+/* 分时 / K线 / 成分 切换。force=true 表示「模式没变也要重新加载」——
    新点开一只标的时必须走这条路，否则会因为模式相同而什么都不做，图停在上一只。 */
+var holdTimer = null;
 function setHMode(m, force){
-  m = (m === 'k') ? 'k' : 'min';
+  m = (m === 'k' || m === 'hold') ? m : 'min';
   if (!force && H.mode === m) return;
   H.mode = m;
   try { localStorage.setItem('etf_hmode', m); } catch (e) {}
   Array.prototype.forEach.call(document.querySelectorAll('#hMode b'), function(b){
     b.classList.toggle('on', b.getAttribute('data-m') === m);
   });
-  var isMin = m === 'min';
-  // 副图/叠加只对 K 线有意义；周期条（3M/6M/1Y）在分时下也没内容可选
-  document.getElementById('hSbar').style.display = isMin ? 'none' : '';
-  document.getElementById('hTabs').style.display = isMin ? 'none' : '';
+  var isK = m === 'k', isMin = m === 'min', isHold = m === 'hold';
+  // 副图/叠加/周期条只对 K 线有意义，分时和成分都没有它们
+  document.getElementById('hSbar').style.display = isK ? '' : 'none';
+  document.getElementById('hTabs').style.display = isK ? '' : 'none';
+  // 画布与它下面那几块（图例/指标卡/备注）在成分档整体让位给表格
+  document.getElementById('histCv').style.display = isHold ? 'none' : '';
+  document.getElementById('hLeg').style.display = isHold ? 'none' : '';
+  document.getElementById('hInd').style.display = isHold ? 'none' : '';
+  document.getElementById('hNote').style.display = isHold ? 'none' : '';
+  document.getElementById('hHold').classList.toggle('on', isHold);
   clearInterval(minTimer); minTimer = null;
+  clearInterval(holdTimer); holdTimer = null;
   H.hover = -1;
   if (!H.code) return;
+  if (isHold){
+    loadHold(H.code, false);
+    // 30 秒一轮：上游行情按 30 秒分桶缓存，更密的轮询只会反复命中同一个桶
+    holdTimer = setInterval(function(){
+      if (H.code && H.mode === 'hold'
+          && document.getElementById('histMask').classList.contains('on')) {
+        loadHold(H.code, true);
+      }
+    }, 30000);
+    return;
+  }
   if (isMin){
     loadMin(H.code);
     // 35 秒一轮：接口按 30 秒分桶缓存，更密的轮询只会反复命中同一个桶
@@ -2314,6 +2380,130 @@ function setHMode(m, force){
   }
 }
 
+/* ================= 成分穿透 =================
+   「ETF 涨了 0.4%，是哪几只票拉的？」——只有涨跌幅回答不了，得拆到底层。
+
+   /api/hold 给的是季报口径的前 N 大（宽基 40 只上下、行业 20 只、跨境 10 只），
+   带权重和实时涨跌。这里只做三件事：按贡献排序、画双向条、把「前 N 大能解释
+   多少 / 剩下的怎么解释」分开写清。不画图：这一栏的价值在排序，不在形态。
+
+   权重 × 涨跌 = 贡献（百分点）。ETF 的涨跌幅近似等于所有成分贡献之和，
+   差额来自没披露的仓位、现金、折溢价——所以「其余仓位」那是一个残差，
+   不是算错。
+*/
+function fpt(v){
+  if (v == null || !isFinite(v)) return '-';
+  // |v| < 0.005 会被 toFixed(2) 写成 -0.00，正负号在这儿没有意义，按 0 处理
+  var x = Math.abs(v) < 0.005 ? 0 : v;
+  return (x > 0 ? '+' : '') + x.toFixed(2);
+}
+
+function loadHold(code, silent){
+  var box = document.getElementById('hHoldBody');
+  if (!box) return;
+  if (!silent){
+    document.getElementById('hHoldHd').innerHTML = '';
+    box.innerHTML = '<div class="hempty">读取成分…</div>';
+  }
+  fetch('/api/hold?code=' + code).then(function(r){ return r.json(); }).then(function(j){
+    if (H.code !== code || H.mode !== 'hold') return;   // 用户已经切走了
+    if (!j || !j.ok){
+      box.innerHTML = '<div class="hempty">' + esc((j && j.error) || '读取失败') + '</div>';
+      return;
+    }
+    renderHold(j);
+  }).catch(function(e){
+    if (H.code !== code || H.mode !== 'hold') return;
+    box.innerHTML = '<div class="hempty">网络错误：' + esc(e.message || String(e)) + '</div>';
+  });
+}
+
+function renderHold(j){
+  var hd = document.getElementById('hHoldHd');
+  var box = document.getElementById('hHoldBody');
+  // 权重四舍五入到 0.00% 的条目不进表：季报里这种「持有但占比极低」的票
+  // 只占行高，贡献恒为 0.00，排在有行情的中间还会打断阅读
+  /* 先按权重取前 20 只，再按贡献排。宽基 ETF 的持仓明细能拉到 40 只，但尾部
+     十几只权重只有 0.0x%——贡献恒为 0.00，排进来只是把列表拉长到要滚动，
+     把底部的合计挤出屏幕。20 行正好一屏放得下，脚注里说明还剩多少只。 */
+  var all = (j.rows || []).filter(function(x){ return x.w >= 0.005; })
+    .sort(function(a, b){ return b.w - a.w; });
+  var rows = all.slice(0, 20);
+  var cut = all.length - rows.length;
+  var it = findItem(H.code);
+  var ec = (it && isFinite(it.chg)) ? it.chg : null;
+
+  // 有行情的按贡献从拉到砸；停牌/取不到行情的沉到底，别插在中间打断阅读
+  rows.sort(function(a, b){
+    if (a.ctr == null && b.ctr == null) return b.w - a.w;
+    if (a.ctr == null) return 1;
+    if (b.ctr == null) return -1;
+    return b.ctr - a.ctr;
+  });
+
+  var sum = 0, got = 0, mx = 0, wsum = 0, i, r;
+  for (i = 0; i < rows.length; i++){
+    r = rows[i];
+    wsum += r.w;
+    if (r.ctr == null) continue;
+    sum += r.ctr; got++;
+    if (Math.abs(r.ctr) > mx) mx = Math.abs(r.ctr);
+  }
+
+  hd.innerHTML = '<span>前 <b>' + rows.length + '</b> 大 · 权重合计 <b>'
+    + wsum.toFixed(1) + '%</b> · 截止 <b>' + esc(j.asof || '-') + '</b>'
+    + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
+    + '</span><span>贡献 = 权重 × 今日涨跌，单位百分点</span>';
+
+  var buf = [];
+  for (i = 0; i < rows.length; i++){
+    r = rows[i];
+    var wpc = (r.ctr == null || !mx || Math.abs(r.ctr) < 0.005) ? 0 : Math.abs(r.ctr) / mx * 50;
+    var bar = '';
+    if (wpc > 0){
+      bar = r.ctr > 0
+        ? '<u style="left:50%;width:' + wpc.toFixed(1) + '%;background:#d93a3a"></u>'
+        : '<u style="right:50%;width:' + wpc.toFixed(1) + '%;background:#0e9a61"></u>';
+    }
+    buf.push('<div class="hhrow" data-s="' + esc(r.c) + '" title="' + esc(r.n) + ' ' + r.c
+      + '　权重 ' + r.w.toFixed(2) + '%，今日 ' + (r.chg == null ? '-' : fpc(r.chg))
+      + '，贡献 ' + fpt(r.ctr) + ' 个百分点">'
+      + '<span class="hhnm">' + esc(r.n) + '<em>' + esc(r.c) + '</em></span>'
+      + '<span class="hhw">' + r.w.toFixed(2) + '%</span>'
+      + '<span class="hhc ' + cc(r.chg) + '">' + (r.chg == null ? '-' : fpc(r.chg)) + '</span>'
+      + '<span class="hhbar">' + bar + '</span>'
+      + '<span class="hhctr ' + cc(Math.abs(r.ctr || 0) < 0.005 ? 0 : r.ctr) + '">'
+      + fpt(r.ctr) + '</span>'
+      + '</div>');
+  }
+
+  var foot = '';
+  if (!got){
+    // 持仓拿到了、行情一条都没回来：说清是上游的问题，别让人以为持仓是空的
+    foot = '<div class="hhfoot"><span class="k">成分行情暂时没拿到（上游偶发空响应），'
+      + '30 秒后自动重试</span></div>';
+  }
+  foot += '<div class="hhfoot"><span class="k">前 ' + got + ' 大合计贡献</span>'
+    + '<span><b class="' + cc(sum) + '">' + (got ? fpt(sum) : '-') + '</b></span>';
+  // 一条行情都没有时不谈残差：那时 sum=0，「其余仓位 +3.50%」等于把 ETF 涨幅
+  // 整个算到未披露仓位上，纯属瞎猜
+  if (ec != null && got){
+    foot += '<span class="k">ETF 今日</span><span><b class="' + cc(ec) + '">' + fpc(ec) + '</b></span>'
+      + '<span class="k">其余 ' + Math.max(0, 100 - wsum).toFixed(1)
+      + '% 仓位（未披露持仓 / 现金 / 折溢价）约</span>'
+      + '<span><b class="' + cc(ec - sum) + '">' + fpt(ec - sum) + '</b></span>';
+  }
+  foot += '</div>';
+
+  var note = '<div class="hhnote">权重取自基金季报（持仓截止 ' + esc(j.asof || '-')
+    + '）。期间申赎、调仓会让实际权重偏离报表值，所以「其余仓位」是一个残差——'
+    + '里面既有没披露的持仓，也有现金拖累和折溢价，不要当成某一只票的涨跌。'
+    + (cut > 0 ? '另有 ' + cut + ' 只权重不足 0.1%，没列出来。' : '') + '</div>';
+
+  // 脚注排在合计行之前：合计是 sticky 吸底的，放在最后才不会被脚注顶开
+  box.innerHTML = buf.join('') + note + foot;
+}
+
 function openHist(code, name){
   H.code = code; H.name = name || code;
   H.d = null; H.m = null; H.hover = -1; H.ok = false; H.ext = false;
@@ -2324,6 +2514,9 @@ function openHist(code, name){
   document.getElementById('hLeg').innerHTML = '';
   document.getElementById('hInd').innerHTML = '';
   document.getElementById('hNote').textContent = '';
+  // 上一只的成分表先清掉：不清的话切到分时的瞬间还能看到它
+  document.getElementById('hHoldBody').innerHTML = '';
+  document.getElementById('hHoldHd').innerHTML = '';
   document.getElementById('histMask').classList.add('on');
 
   var x = findItem(code);
@@ -2405,6 +2598,7 @@ function loadK(code){
 function closeHist(){
   document.getElementById('histMask').classList.remove('on');
   clearInterval(minTimer); minTimer = null;
+  clearInterval(holdTimer); holdTimer = null;
   H.code = ''; H.d = null; H.m = null;
 }
 
@@ -2925,6 +3119,8 @@ function hLegendMin(idx){
 
 function hDraw(){
   if (H.mode === 'min') return hDrawMin();
+  // 成分档下画布是 display:none，再画只会白烧 CPU，还会把隐藏画布上的旧图刷新
+  if (H.mode === 'hold') return;
   var d = H.d;
   if (!d || !H.W) return;
   hSize();

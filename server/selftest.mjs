@@ -268,6 +268,31 @@ async function runContracts(base, pass) {
   const jspb = r.json();
   (jspb && jspb.ok === false) ? ok('/api/speed 非法 codes 被拒') : bad('/api/speed 非法 codes 没拒');
 
+  // 成分穿透：持仓（季报）与行情（实时）是两条链路，边界最容易翻车
+  let jh = null;
+  for (let i = 0; i < 2 && !(jh && jh.ok); i++) {
+    if (i) await new Promise((res) => setTimeout(res, 1200));
+    r = await rawRequest(base, '/api/hold?code=510300', { cookie });
+    jh = r.json();
+  }
+  if (jh && jh.ok && Array.isArray(jh.rows) && jh.rows.length) {
+    ok('/api/hold 510300 → ' + jh.rows.length + ' 只 / 权重合计 ' + jh.wsum + '% / ' + jh.asof);
+    if (!(jh.wsum > 0 && jh.wsum <= 100)) bad('/api/hold 权重合计越界：' + jh.wsum);
+    const badH = jh.rows.find((x) => !x.c || !x.n || !(x.w > 0));
+    badH ? bad('/api/hold 有异常行：' + JSON.stringify(badH).slice(0, 120))
+      : ok('/api/hold 每行含代码 / 名称 / 权重');
+    // 贡献必须等于 权重 × 涨跌。这两列会被拿来横向相加，差一点就会被当成算错
+    const badC = jh.rows.find((x) => x.ctr != null && Math.abs(x.ctr - (x.w * x.chg) / 100) > 0.01);
+    badC ? bad('/api/hold 贡献口径不一致：' + JSON.stringify(badC).slice(0, 120))
+      : ok('/api/hold 贡献 = 权重 × 涨跌');
+  } else {
+    bad('/api/hold 失败：' + r.text.slice(0, 160));
+  }
+
+  r = await rawRequest(base, '/api/hold?code=__bad__', { cookie });
+  const jhb = r.json();
+  (jhb && jhb.ok === false) ? ok('/api/hold 非法 code 被拒') : bad('/api/hold 非法 code 没拒');
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();

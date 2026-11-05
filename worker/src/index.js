@@ -674,6 +674,229 @@ async function serveMin(ctx, code) {
   }
 }
 
+/* ---------------------------------------------------------------- ETF 成分股穿透
+   「ETF 涨了 1%，是哪几只权重股拉的？」——只看 ETF 自己的涨跌幅回答不了。
+
+   数据分两段，来源不同、更新频率也差很远，必须分开缓存：
+
+   1) 成分与权重：天天基金「基金档案 → 股票投资明细」，季报口径。宽基通常给到
+      前 40 大、行业 ETF 前 20 上下、跨境前 10。**不是全部持仓**——季报只强制
+      披露前十大，更全的要等半年报/年报或交易所每日 PCF 清单（PCF 是 XML，
+      按日更新，解析成本高，暂时没接）。所以界面上必须写清「前 N 大 · 合计 x%」，
+      否则用户会以为剩下的仓位不存在，把「前十大贡献 0.3%，ETF 涨 1%」当成算错。
+      季报三个月才变一次，KV 存 3 天没有意义损失。
+
+   2) 实时涨跌幅：hq.sinajs.cn 一次批量，A 股 / 港股 / 美股同一套接口。返回是
+      GBK，要靠 TextDecoder('gbk') 解（Cloudflare 和 Node 都支持完整编码表）。
+      一次请求带几十只标的，所以这批不吃 Cloudflare 的「每请求 50 个子请求」
+      配额——那条限制是**子请求数**，不是标的数。
+
+   权重合计与「其余部分」的贡献是这一栏的重点：前 N 大能解释多少、剩下多少是
+   别的原因（其他持仓、折现溢价、现金），一眼分开看，比一个笼统的涨跌幅有用。
+*/
+const HOLD_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HOLD_MAX = 60;          // 单次最多拉多少只成分股行情（一只一个代码，不是子请求）
+const HOLD_KV_TTL = 3 * 86400;
+
+async function fetchHoldHtml(code) {
+  const url = 'https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code='
+    + code + '&topline=' + HOLD_MAX;
+  const r = await fetch(url, {
+    headers: { 'User-Agent': HOLD_UA, Referer: 'https://fundf10.eastmoney.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('HOLD HTTP ' + r.status);
+  return r.text();
+}
+
+/**
+ * 解析持仓表。页面里是多期表格纵向排列（本期 + 前几期），只取第一张——
+ * 混着取会把同一只票算三四遍，权重瞬间超过 100%。
+ *
+ * 每行的 secid 藏在行情链接里（/unify/r/0.300308、/unify/r/116.09999），
+ * 直接拿来当行情参数，省得自己判断沪/深/港/美。
+ */
+function parseHoldHtml(html) {
+  const i = html.indexOf('<tbody>');
+  if (i < 0) return null;
+  const j = html.indexOf('</tbody>', i);
+  const seg = html.slice(i + 7, j < 0 ? html.length : j);
+
+  const nm = (/<h4[^>]*>[\s\S]*?title='([^']*)'/.exec(html) || [])[1] || '';
+  const asof = (/截止至：[^>]*>([\d-]+)</.exec(html) || [])[1] || '';
+
+  const items = [], seen = {};
+  const re = /<tr>([\s\S]*?)<\/tr>/g;
+  let m;
+  while ((m = re.exec(seg))) {
+    const tr = m[1];
+    const sec = /\/unify\/r\/(\d+)\.([A-Za-z0-9.]+)/.exec(tr);
+    const wm = />\s*([\d.]+)%\s*</.exec(tr);
+    if (!sec || !wm) continue;
+    // 占比四舍五入到 0.00% 的条目直接丢：它们贡献恒为 0，只会占行高，
+    // 还会把「权重合计」的口径和行数搞乱
+    if (!(+wm[1] > 0)) continue;
+    const c = sec[2].toUpperCase();
+    if (seen[c]) continue;
+    seen[c] = 1;
+    // 第一个 <a> 是代码、第二个是名称，后面还有「股吧 / 行情」两个链接
+    const as = [];
+    const ar = /<a[^>]*>([^<]*)<\/a>/g;
+    let a;
+    while ((a = ar.exec(tr))) as.push(a[1].replace(/&nbsp;/g, ' ').trim());
+    const name = as.filter((x) => x && x.toUpperCase() !== c && !/^(股吧|行情|资讯)$/.test(x))[0] || '';
+    items.push({ s: sec[1] + '.' + sec[2], c, n: name, w: +wm[1] });
+  }
+  if (!items.length) return null;
+  return { name: nm, asof, items };
+}
+
+/** 东财 secid → 新浪代码。前缀：0 深、1 沪、116 港股、105/106/107 美股 */
+function sinaSymOf(secid) {
+  const k = String(secid).split('.');
+  if (k.length !== 2) return null;
+  const mk = k[0], c = k[1];
+  if (mk === '0') return 'sz' + c;
+  if (mk === '1') return 'sh' + c;
+  if (mk === '116') return 'hk' + c;
+  if (mk === '105' || mk === '106' || mk === '107') return 'gb_' + c.toLowerCase();
+  return null;                 // 90/128 是 B 股，203 是回购，这类不画
+}
+
+/**
+ * 单只行情字段是按市场分的，不能用一套下标套三个市场：
+ *   A 股  sh600519  → 0 名称 1 今开 2 昨收 3 现价 …
+ *   港股  hk00700   → 0 英文名 1 中文名 2 今开 3 昨收 4 高 5 低 6 现价 7 涨跌额 8 涨跌幅%
+ *   美股  gb_aapl   → 0 名称 1 现价 2 涨跌幅%
+ * 涨跌幅口径也不统一：A 股自己用现价/昨收算，港股美股直接取字段。
+ */
+function parseHq(sym, raw) {
+  if (!raw) return null;
+  const f = raw.split(',');
+  if (!f.length) return null;
+  if (sym.slice(0, 3) === 'gb_') {
+    const p = +f[1], chg = +f[2];
+    return p > 0 && isFinite(chg) ? { p, chg } : null;
+  }
+  if (sym.slice(0, 2) === 'hk') {
+    const p = +f[6], chg = +f[8];
+    return p > 0 && isFinite(chg) ? { p, chg } : null;
+  }
+  const p = +f[3], prev = +f[2];
+  if (!(p > 0) || !(prev > 0)) return null;
+  return { p, chg: (p / prev - 1) * 100 };
+}
+
+async function fetchHq(syms) {
+  if (!syms.length) return {};
+  const r = await fetch('https://hq.sinajs.cn/list=' + syms.join(','), {
+    headers: { 'User-Agent': HOLD_UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('HQ HTTP ' + r.status);
+  const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const out = {};
+  const re = /var hq_str_(\S+?)="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(text))) out[m[1]] = m[2];
+  /* 新浪这条链路会偶发「HTTP 200 但正文是 Forbidden / 空」——只解出 0 条却
+     不报错，前端就拿不到任何涨跌幅。这里当失败抛出，交给上层重试一次。 */
+  if (!Object.keys(out).length) throw new Error('HQ empty');
+  return out;
+}
+
+/** 一次批量行情，失败重试一次：股票行情是这一栏的全部内容，宁可多打一次上游 */
+async function fetchHqRetry(syms) {
+  for (let a = 0; ; a++) {
+    try {
+      return await fetchHq(syms);
+    } catch (e) {
+      if (a >= 1) throw e;
+      await new Promise((res) => setTimeout(res, 250));
+    }
+  }
+}
+
+async function serveHold(ctx, code, env) {
+  const KVK = 'hold-v2/' + code;
+  let hold = null;
+  try {
+    if (env && env.WATCH) hold = await env.WATCH.get(KVK, 'json');
+  } catch (e) { /* KV 读失败就走现场抓 */ }
+
+  if (!hold || !hold.items || !hold.items.length) {
+    try {
+      hold = parseHoldHtml(await fetchHoldHtml(code));
+    } catch (e) {
+      return json({ ok: false, code, error: '持仓读取失败：' + String(e.message || e) });
+    }
+    if (!hold) {
+      return json({ ok: false, code, error: '这只没有股票持仓明细（指数/债券/商品 ETF 常见）' });
+    }
+    try {
+      if (env && env.WATCH) {
+        await env.WATCH.put(KVK, JSON.stringify(hold), { expirationTtl: HOLD_KV_TTL });
+      }
+    } catch (e) { /* 写不进 KV 不影响本次响应 */ }
+  }
+
+  // 行情按 30 秒分桶缓存：和涨速榜同口径，同一桶内多人打开只打一次上游
+  const stamp = fpOf(code + '|' + hold.items.length + '|' + hold.asof);
+  const bucket = Math.floor(Date.now() / 30000);
+  const ck = new Request('https://etf-board.internal/hold/' + code + '/' + stamp + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(ck);
+      if (hit) return hit;
+    } catch (e) { /* 忽略 */ }
+  }
+
+  const list = hold.items.slice(0, HOLD_MAX);
+  const syms = [], pair = [];
+  for (const it of list) {
+    const sym = sinaSymOf(it.s);
+    if (!sym) continue;
+    syms.push(sym);
+    pair.push([it, sym]);
+  }
+
+  let q = {}, qErr = '';
+  try {
+    const chunks = [];
+    for (let k = 0; k < syms.length; k += 50) chunks.push(syms.slice(k, k + 50));
+    const got = await Promise.all(chunks.map((c) => fetchHqRetry(c).catch((e) => { qErr += String(e.message || e) + ' '; return {}; })));
+    for (const g of got) Object.assign(q, g);
+  } catch (e) { qErr = String(e.message || e); }
+
+  let wsum = 0, ctr = 0, hit = 0;
+  const rows = pair.map(([it, sym]) => {
+    const o = parseHq(sym, q[sym]);
+    const w = it.w;
+    wsum += w;
+    // 贡献：权重 × 涨跌幅（百分点）。ETF 涨跌幅 ≈ 各成分贡献之和 + 折溢价
+    const c = o ? (w / 100) * o.chg : null;
+    if (c != null) { ctr += c; hit++; }
+    return { c: it.c, n: it.n || it.c, w: +w.toFixed(2),
+      p: o ? +o.p.toFixed(3) : null, chg: o ? +o.chg.toFixed(2) : null,
+      ctr: c == null ? null : +c.toFixed(3) };
+  });
+
+  /* 行情一只都没拿到时不给缓存：新浪这条链路偶发一次空响应（实测港股那一批
+     第一次全空），如果照样缓存 30 秒，用户接下来半分钟看到的都是「权重有、
+     涨跌幅没有」，刷新也没用。宁可不缓存，下一次请求重新打上游。 */
+  const res = json({
+    ok: true, code, name: hold.name || '', asof: hold.asof || '',
+    n: rows.length, wsum: +wsum.toFixed(2), hit,
+    rows, ms: 0, qErr: qErr ? qErr.slice(0, 160) : undefined,
+  }, hit > 0 ? 30 : 0);
+  if (hit > 0 && cache && ctx && typeof ctx.waitUntil === 'function') {
+    try { ctx.waitUntil(cache.put(ck, res.clone())); } catch (e) { /* 忽略 */ }
+  }
+  return res;
+}
+
 /* ---------------------------------------------------------------- 涨速榜
    一分钟点只有「价格 + 这一分钟的量」，没有涨速字段（东财的 f22 在这台机器
    上 TLS 层就不通，见 README）。所以 3/5 分钟涨速只能自己从分时里回溯算。
@@ -1236,6 +1459,12 @@ export default {
       const code = (url.searchParams.get('code') || '').trim().replace(/^(sh|sz)/i, '');
       if (!/^\d{5,6}$/.test(code)) return json({ ok: false, error: 'code 非法' });
       return serveMin(ctx, code);
+    }
+
+    if (p === '/api/hold') {
+      const code = (url.searchParams.get('code') || '').trim().replace(/^(sh|sz)/i, '');
+      if (!/^\d{5,6}$/.test(code)) return json({ ok: false, error: 'code 非法' });
+      return serveHold(ctx, code, env);
     }
 
     if (p === '/api/speed') {
