@@ -568,6 +568,42 @@ async function serveWatch(request, env) {
  * 这里只负责把远端那份吐出去；拿不到就返回 ok:false，让前端继续用内嵌的——
  * 不把「没数据」包装成错误，页面才不会因为一次请求失败而空掉。
  */
+/**
+ * 全市场异动快照。
+ *
+ * 数据由 alpha/events.py 在收盘后算好，跟着 hist 目录发布到 data 分支——
+ * 之所以放在 hist/ 下面，是因为发布流水线只整目录复制 dist/hist，
+ * 单独复制一个顶层文件要改 workflow，而当前 token 没有 workflow 权限。
+ *
+ * 26KB，边缘缓存 30 分钟。它一天只变一次，缓存成本可以忽略。
+ */
+async function serveEvents(env, ctx) {
+  if (!histSource(env)) {
+    return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
+  }
+  const cache = caches.default;
+  const key = new Request('https://etf-board.internal/events/v1', { method: 'GET' });
+  const hit = await cache.match(key);
+  if (hit) return hit;
+
+  try {
+    const a = await readAsset(env, 'hist/events.json');
+    if (!a) return json({ ok: false, code: 'NOT_FOUND', error: '还没有异动快照' });
+    const txt = await a.text();
+    const res = new Response(txt, {
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=1800',
+      },
+    });
+    if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(key, res.clone()));
+    return res;
+  } catch (e) {
+    return json({ ok: false, code: 'FETCH_ERR', error: String(e.message || e) });
+  }
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -946,6 +982,10 @@ export default {
 
     if (p === '/api/research') {
       return serveResearch(env);
+    }
+
+    if (p === '/api/events') {
+      return serveEvents(env, ctx);
     }
 
     if (p === '/api/status') {

@@ -566,6 +566,42 @@ async function serveWatch(request, env) {
  * 这里只负责把远端那份吐出去；拿不到就返回 ok:false，让前端继续用内嵌的——
  * 不把「没数据」包装成错误，页面才不会因为一次请求失败而空掉。
  */
+/**
+ * 全市场异动快照。
+ *
+ * 数据由 alpha/events.py 在收盘后算好，跟着 hist 目录发布到 data 分支——
+ * 之所以放在 hist/ 下面，是因为发布流水线只整目录复制 dist/hist，
+ * 单独复制一个顶层文件要改 workflow，而当前 token 没有 workflow 权限。
+ *
+ * 26KB，边缘缓存 30 分钟。它一天只变一次，缓存成本可以忽略。
+ */
+async function serveEvents(env, ctx) {
+  if (!histSource(env)) {
+    return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
+  }
+  const cache = caches.default;
+  const key = new Request('https://etf-board.internal/events/v1', { method: 'GET' });
+  const hit = await cache.match(key);
+  if (hit) return hit;
+
+  try {
+    const a = await readAsset(env, 'hist/events.json');
+    if (!a) return json({ ok: false, code: 'NOT_FOUND', error: '还没有异动快照' });
+    const txt = await a.text();
+    const res = new Response(txt, {
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=1800',
+      },
+    });
+    if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(key, res.clone()));
+    return res;
+  } catch (e) {
+    return json({ ok: false, code: 'FETCH_ERR', error: String(e.message || e) });
+  }
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -946,6 +982,10 @@ export default {
       return serveResearch(env);
     }
 
+    if (p === '/api/events') {
+      return serveEvents(env, ctx);
+    }
+
     if (p === '/api/status') {
       return serveStatus(env);
     }
@@ -1031,6 +1071,57 @@ background:var(--bg3)}
 .card .v{font-size:19px;font-weight:600;font-family:var(--mono);line-height:1.25}
 .card .v small{font-size:11px;font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
+/* ---------- 全市场异动 ---------- */
+.mktwrap{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:9px;align-items:start}
+@media(max-width:880px){.mktwrap{grid-template-columns:1fr}}
+.mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 13px}
+.wbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:9px 0 7px;
+  background:#eef1f5;box-shadow:inset 0 0 0 1px #e3e6eb}
+.wbar i{display:block;height:8px}
+.wstat{display:flex;justify-content:space-between;gap:8px;font-size:10.5px;
+  color:var(--txt3);font-family:var(--mono);flex-wrap:wrap}
+.wstat b{color:var(--txt);font-weight:600}
+.mtabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
+.mtab{font-size:11px;padding:2px 8px;border-radius:5px;border:1px solid var(--line);
+  background:var(--bg3);color:var(--txt2);cursor:pointer;user-select:none;white-space:nowrap}
+.mtab:hover{border-color:#c9d6ef}
+.mtab.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8;font-weight:600}
+.mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10px;opacity:.7}
+.mhead,.mrow{display:grid;grid-template-columns:minmax(0,1fr) 44px 48px 46px 58px;
+  gap:8px;align-items:center}
+@media(max-width:560px){
+  /* 手机上一行放五列本来就紧，指数名让位给 ETF 名称，名称被截断更伤 */
+  .mn em{display:none}
+  .mhead,.mrow{grid-template-columns:minmax(0,1fr) 38px 34px 32px 50px;gap:5px}
+}
+.mhead{padding:0 0 5px;font-size:10px;color:var(--txt3);border-bottom:1px solid var(--line);
+  font-family:var(--mono);letter-spacing:.3px}
+.mhead span:not(:first-child){text-align:right}
+.mrow{padding:5px 0;border-bottom:1px dashed var(--line);cursor:pointer;font-size:12px}
+.mtag{font-size:10px;padding:1px 0;border-radius:4px;text-align:center;white-space:nowrap;
+  font-weight:600;letter-spacing:.2px}
+.mtag.t-up{background:#fdecee;color:#b02a2a;border:1px solid #f3c7c7}
+.mtag.t-warn{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
+.mtag.t-down{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
+.mtag.t-info{background:#eaf1ff;color:#1d4ed8;border:1px solid #b9cdf7}
+.mtag.t-mute{background:#f0f2f5;color:#6b7380;border:1px solid #e3e6eb}
+.mrow:last-child{border-bottom:none}
+.mrow:hover .mn{color:#1d4ed8}
+.mn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.mn em{font-style:normal;font-size:10px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
+.mnum{font-family:var(--mono);font-size:11.5px;text-align:right}
+.mnum small{font-size:9.5px;color:var(--txt3);margin-right:2px}
+.styl{display:grid;grid-template-columns:62px minmax(0,1fr) 44px 40px;
+  gap:8px;align-items:center;padding:3.5px 0;font-size:11.5px}
+.styl .sk{color:var(--txt2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.styl .sbar{height:6px;background:#eef1f5;border-radius:3px;position:relative;overflow:hidden}
+.styl .sbar u{position:absolute;left:0;top:0;height:6px;border-radius:3px;
+  background:linear-gradient(90deg,#c9dbff,#5c92ec)}
+.styl .sv{font-family:var(--mono);text-align:right;color:var(--txt);font-size:11px}
+.styl .sr{font-family:var(--mono);text-align:right;font-size:10.5px}
+.mfoot{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);
+  font-size:10.5px;color:var(--txt3);line-height:1.6}
+
 /* ---------- 今日变化 + 组合体检 ---------- */
 .split{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:9px;align-items:start}
 @media(max-width:860px){.split{grid-template-columns:1fr}}
@@ -1375,6 +1466,24 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <span class="sync" id="btnDiag" title="丢掉缓存，重新读一遍历史">重算</span></div>
   <div class="dnote">行情软件告诉你今天涨了多少；这一栏告诉你它站在近一年区间的什么位置、量能配不配合。</div>
   <div class="dgrid" id="diagGrid"><div class="empty">正在读取历史…</div></div>
+</div>
+
+<div class="sec" id="mktSec">
+  <div class="sechd"><b>全市场异动</b><span class="n" id="mktN">-</span>
+    <span class="sync" id="btnMkt" title="重新读一遍收盘快照">刷新</span></div>
+  <div class="dnote">跳出自己的自选池：全部指数今天谁创新高、谁在放量、谁在破位。一个指数只留流动性最好的那只 ETF。</div>
+  <div class="mkbox" style="margin-bottom:9px">
+    <div class="wstat" id="mktWidth"><span>读取中…</span></div>
+    <div class="wbar" id="mktBar"></div>
+    <div class="wstat" id="mktWidth2"></div>
+  </div>
+  <div class="mktwrap">
+    <div class="mkbox">
+      <div class="mtabs" id="mktTabs"></div>
+      <div id="mktList"><div class="empty">读取中…</div></div>
+    </div>
+    <div class="mkbox" id="mktStyle"><div class="empty">读取中…</div></div>
+  </div>
 </div>
 
 <div class="sec">
@@ -2129,6 +2238,215 @@ function renderPort(){
     + '；最不像的：<b>' + esc(wn) + '</b> × <b>' + esc(wb) + '</b>，' + p.worst.r.toFixed(2)
     + '，想加分散度往这对的方向找。</div>';
   box.innerHTML = h;
+}
+
+/* ================= 全市场异动 =================
+   自选是「我关心的」，这一栏是「市场发生了什么」。两者的区别不在于数量，
+   而在于**发现**：只看自选，永远只能在自己已经知道的池子里找机会。
+
+   数据来自收盘后算好的快照（alpha/events.py → /api/events），26KB，
+   一个指数只留流动性最好的那只 ETF。位置和量能的口径与自选里的诊断完全一致，
+   所以两块的数字可以直接横向比较。
+
+   盘中打开时用实时价就地重算位置——快照里带着一年高低点（已换算到原始价格
+   尺度），拿实时价一减就得到当下的位置，不用重新拉历史。
+*/
+var MKT = null, MKT_ERR = '', MKT_TAB = 'all';
+
+/* 顺序即重要性：突破和破位排在量能前面，因为前者有价格确认 */
+var MKT_TYPES = [
+  ['hi', '创新高'], ['up80', '上穿80'], ['near', '贴新高'],
+  ['lo', '创新低'], ['dn20', '跌破20'], ['vol', '放量'], ['dry', '缩量']
+];
+
+/* 「全部」把各类型按上面的优先级合并。同一只标的同时创新高又放量时只留一次，
+   留的是优先级更高的那条（突破比放量更值得先看）。 */
+var MKT_LABEL = {
+  hi:['新高', 't-up'], up80:['上穿', 't-up'], near:['贴高', 't-warn'],
+  lo:['新低', 't-down'], dn20:['跌破', 't-down'],
+  vol:['放量', 't-info'], dry:['缩量', 't-mute']
+};
+
+function mktRows(){
+  if (!MKT || !MKT.ev) return [];
+  if (MKT_TAB !== 'all'){
+    var one = MKT.ev[MKT_TAB] || [];
+    return one.map(function(r){ return { t:MKT_TAB, r:r }; });
+  }
+  var seen = {}, out = [];
+  for (var i = 0; i < MKT_TYPES.length; i++){
+    var k = MKT_TYPES[i][0], arr = MKT.ev[k] || [];
+    for (var j = 0; j < arr.length; j++){
+      if (seen[arr[j][0]]) continue;
+      seen[arr[j][0]] = 1;
+      out.push({ t:k, r:arr[j] });
+    }
+  }
+  return out;
+}
+
+function mktPos(r){
+  /* r = [code,name,idx,pos,posPrev,evr,r20,r1,hh,ll,amt] */
+  var hh = r[8], ll = r[9];
+  var it = findItem(r[0]);
+  var p = it && it.p > 0 ? it.p : null;
+  if (p && hh > ll && ll > 0){
+    return Math.max(0, Math.min(100, (p - ll) / (hh - ll) * 100));
+  }
+  return r[3];
+}
+
+function mktEvr(r){
+  var it = findItem(r[0]);
+  if (it && it.amt > 0 && r[10] > 0){
+    // 盘中：今日成交额按已交易时间折算，再和快照里的昨日量比相乘
+    var pr = dayProgress();
+    if (pr > 0.12 && pr < 1){
+      var base = r[10] / (r[5] || 1);
+      return (it.amt / 1e8) / pr / base;
+    }
+  }
+  return r[5];
+}
+
+function mktBar(){
+  var b = MKT.breadth, n = b.n || 1;
+  var hiPct = b.p80 / n * 100, loPct = b.p20 / n * 100;
+  var midPct = Math.max(0, 100 - hiPct - loPct);
+  document.getElementById('mktBar').innerHTML =
+    '<i style="width:' + hiPct.toFixed(1) + '%;background:#e8a0a0"></i>'
+    + '<i style="width:' + midPct.toFixed(1) + '%;background:#dfe4ec"></i>'
+    + '<i style="width:' + loPct.toFixed(1) + '%;background:#8fc9ae"></i>';
+
+  var w1 = document.getElementById('mktWidth');
+  w1.innerHTML = '<span>一年高位 <b>' + b.p80 + '</b> 只</span>'
+    + '<span>中位位置 <b>' + b.medPos + '</b></span>'
+    + '<span>一年低位 <b>' + b.p20 + '</b> 只</span>';
+
+  var w2 = document.getElementById('mktWidth2');
+  w2.innerHTML = '<span>上涨 <b>' + b.up + '</b> · 下跌 <b>' + b.dn + '</b>'
+    + (b.flat ? ' · 平 ' + b.flat : '') + '</span>'
+    + '<span>合计成交 <b>' + b.amt.toFixed(0) + '</b> 亿</span>';
+}
+
+function mktStyle(){
+  var box = document.getElementById('mktStyle');
+  if (!MKT.style || !MKT.style.length){
+    box.innerHTML = '<div class="empty">没有风格数据</div>';
+    return;
+  }
+  var h = '<div class="wstat" style="margin-bottom:6px"><span>风格地图</span>'
+    + '<span>位置 / 今日</span></div>';
+  for (var i = 0; i < MKT.style.length; i++){
+    var g = MKT.style[i];
+    h += '<div class="styl"><span class="sk" title="' + esc(g.k) + '">' + esc(g.k) + '</span>'
+      + '<div class="sbar"><u style="width:' + Math.max(2, Math.min(100, g.pos)).toFixed(0) + '%"></u></div>'
+      + '<span class="sv">' + g.pos.toFixed(0) + '</span>'
+      + '<span class="sr ' + cc(g.r1) + '">' + fpc(g.r1) + '</span></div>';
+  }
+  h += '<div class="mfoot">条形是这一组所有指数的位置中位数。'
+    + '一组 70 只全在低位、另一组 49 只在 35，说明钱在往哪儿去——'
+    + '单看指数涨跌幅看不出来，因为涨跌幅只反映今天。</div>';
+  box.innerHTML = h;
+}
+
+function mktList(){
+  var box = document.getElementById('mktList');
+  var rows = mktRows();
+  if (!rows.length){
+    box.innerHTML = '<div class="eempty">今天没有这一类事件。<br>'
+      + '<span>不是数据没加载，是真的没有——这种日子不用动手。</span></div>';
+    return;
+  }
+  var h = '<div class="mhead"><span>名称 / 跟踪指数</span><span>类型</span>'
+    + '<span>位置</span><span>量能</span><span>20日</span></div>';
+  var cap = 13;
+  for (var i = 0; i < rows.length && i < cap; i++){
+    var r = rows[i].r, tg = MKT_LABEL[rows[i].t] || ['', ''];
+    var pos = mktPos(r), ev = mktEvr(r);
+    h += '<div class="mrow" data-c="' + r[0] + '">'
+      + '<span class="mn">' + esc(r[1])
+      + (r[2] ? '<em>' + esc(r[2]) + '</em>' : '') + '</span>'
+      + '<span class="mtag ' + tg[1] + '">' + tg[0] + '</span>'
+      + '<span class="mnum">' + pos.toFixed(0) + '</span>'
+      + '<span class="mnum">' + (ev == null ? '-' : ev.toFixed(1)) + '</span>'
+      + '<span class="mnum ' + cc(r[6]) + '">' + fpc(r[6]) + '</span>'
+      + '</div>';
+  }
+  if (rows.length > cap){
+    h += '<div class="mfoot">另有 ' + (rows.length - cap) + ' 只变化更小，没列出来</div>';
+  }
+  box.innerHTML = h;
+}
+
+function mktTabs(){
+  var h = '<span class="mtab' + (MKT_TAB === 'all' ? ' on' : '')
+    + '" data-t="all">全部<u>' + (MKT ? mktRows().length : 0) + '</u></span>';
+  for (var i = 0; i < MKT_TYPES.length; i++){
+    var k = MKT_TYPES[i][0];
+    var n = (MKT.ev && MKT.ev[k]) ? MKT.ev[k].length : 0;
+    h += '<span class="mtab' + (k === MKT_TAB ? ' on' : '') + '" data-t="' + k + '">'
+      + MKT_TYPES[i][1] + '<u>' + n + '</u></span>';
+  }
+  document.getElementById('mktTabs').innerHTML = h;
+}
+
+function renderMkt(){
+  var nEl = document.getElementById('mktN');
+  if (!MKT){
+    document.getElementById('mktList').innerHTML =
+      '<div class="empty">' + esc(MKT_ERR || '还没有收盘快照，等今晚数据管道跑完') + '</div>';
+    document.getElementById('mktStyle').innerHTML =
+      '<div class="empty">—</div>';
+    document.getElementById('mktTabs').innerHTML = '';
+    if (nEl) nEl.textContent = '';
+    return;
+  }
+  mktBar(); mktStyle(); mktTabs(); mktList();
+  if (nEl){
+    nEl.textContent = MKT.n + ' 个指数 · ' + MKT.date + ' 收盘';
+  }
+}
+
+function loadMkt(){
+  fetch('/api/events').then(function(r){ return r.json(); }).then(function(j){
+    if (!j || j.ok === false) throw new Error((j && j.error) || '没有数据');
+    MKT = j; MKT_ERR = '';
+    renderMkt();
+  }).catch(function(e){
+    MKT = null; MKT_ERR = (e && e.message) || '读取失败';
+    renderMkt();
+  });
+}
+
+function mktInit(){
+  var t = document.getElementById('mktTabs');
+  if (t){
+    t.addEventListener('click', function(e){
+      var el = e.target;
+      while (el && el !== t && !el.getAttribute('data-t')) el = el.parentNode;
+      if (!el || el === t) return;
+      MKT_TAB = el.getAttribute('data-t');
+      mktTabs(); mktList();
+    });
+  }
+  var l = document.getElementById('mktList');
+  if (l){
+    l.addEventListener('click', function(e){
+      var el = e.target;
+      while (el && el !== l && !el.getAttribute('data-c')) el = el.parentNode;
+      if (!el || el === l) return;
+      var c = el.getAttribute('data-c');
+      var nm = '', rs = mktRows();
+      for (var i = 0; i < rs.length; i++){
+        if (rs[i].r[0] === c){ nm = rs[i].r[1]; break; }
+      }
+      openHist(c, nm || c);
+    });
+  }
+  var b = document.getElementById('btnMkt');
+  if (b) b.addEventListener('click', function(){ toast('正在重读快照…'); loadMkt(); });
+  loadMkt();
 }
 
 function diagCard(code){
@@ -3964,6 +4282,7 @@ if (RS_MODE){
   pullWatch();
   loadFull().then(function(){
     renderCards();
+    mktInit();
     diagInit();
     loadTXQuotes();
     schedule();

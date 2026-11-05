@@ -505,6 +505,19 @@ def main():
     export(panel, meta, inds, alphas, Path(args.out), a.notes)
     ic_df.to_csv(Path(args.out) / 'ic_report.csv', index=False, encoding='utf-8-sig')
     print(f'  IC 报告 {Path(args.out) / "ic_report.csv"}')
+
+    # 全市场异动快照：盯盘页「全市场异动」区块的数据源。
+    # 放在这里而不是 CI 里单开一步，是因为改 workflow 需要额外的 token 权限，
+    # 而这本来就是收盘后一次性算完的事，跟着因子重算走最省事。
+    print('\n全市场异动快照')
+    t = time.time()
+    try:
+        import events
+        events.run(args.db, args.out)
+        print(f'  耗时 {time.time()-t:.1f}s')
+    except Exception as e:            # 不让它拖垮整条数据管道
+        print(f'  ::warning:: 异动快照失败，页面会沿用上一份：{e}')
+
     print(f'\n完成，总耗时 {time.time()-t_all:.1f}s')
 
 
