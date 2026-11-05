@@ -612,6 +612,68 @@ async function serveEvents(env, ctx) {
   }
 }
 
+// ---------------------------------------------------------------- 日内分时
+/**
+ * 分时走新浪 minline：一次一天，含价格 / 均价 / 分钟量，约 14KB。
+ *
+ * 为什么不用东财 trends2（更「正宗」的行情接口）：实测裸域名
+ * push2his.eastmoney.com、push2.eastmoney.com 都在 TLS 握手完成后直接空回复，
+ * 沙箱和 Worker 两侧表现一致；分片域名 1./60.push2his 时好时坏，几十秒内
+ * 打几次就整体失灵。新浪这条与全量快照同源（probe 里 1718 只稳定返回），
+ * 链路风险最低——分时是高频调用的接口，不能压在一个会抽的源上。
+ *
+ * 返回紧凑数组：[时刻, 价, 均价, 分钟量]。240 个点用数组比对象数组省一半字节。
+ */
+async function fetchMin(code) {
+  const sym = (code[0] === '5' || code[0] === '6' ? 'sh' : 'sz') + code;
+  const url = 'https://quotes.sina.cn/cn/api/openapi.php/CN_MinlineService.getMinlineData'
+    + '?symbol=' + sym + '&kind=min';
+  const r = await fetch(url, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('SINA HTTP ' + r.status);
+  const j = await r.json();
+  const arr = j && j.result && Array.isArray(j.result.data) ? j.result.data : null;
+  if (!arr || !arr.length) throw new Error('MIN empty');
+  const pts = [];
+  for (const x of arr) {
+    const t = String(x.m || '').slice(0, 5);
+    const p = +x.p;
+    if (t.length !== 5 || !isFinite(p) || p <= 0) continue;
+    // 09:25 是集合竞价撮合价，横轴上没有它的位置（09:30 那根已经含开盘）
+    if (t < '09:30') continue;
+    const avg = +x.avg_p;
+    const v = +x.v;
+    pts.push([t, p, isFinite(avg) && avg > 0 ? avg : 0, isFinite(v) && v > 0 ? v : 0]);
+  }
+  if (!pts.length) throw new Error('MIN empty');
+  return pts;
+}
+
+async function serveMin(ctx, code) {
+  // 30 秒一桶：盘中够用，且同一桶内多人访问只打一次上游
+  const bucket = Math.floor(Date.now() / 30000);
+  const key = new Request('https://etf-board.internal/min/v2/' + code + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+  }
+  try {
+    const pts = await fetchMin(code);
+    const res = json({ ok: true, code, n: pts.length, pts, src: 'sina' }, 30);
+    if (cache && ctx && typeof ctx.waitUntil === 'function') {
+      try { ctx.waitUntil(cache.put(key, res.clone())); } catch (e) { /* 忽略 */ }
+    }
+    return res;
+  } catch (e) {
+    return json({ ok: false, code, error: String(e.message || e) });
+  }
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -1019,6 +1081,12 @@ export default {
       } catch (e) {
         return json({ ok: false, error: String(e.message || e), raw: [] });
       }
+    }
+
+    if (p === '/api/min') {
+      const code = (url.searchParams.get('code') || '').trim().replace(/^(sh|sz)/i, '');
+      if (!/^\d{5,6}$/.test(code)) return json({ ok: false, error: 'code 非法' });
+      return serveMin(ctx, code);
     }
 
     if (p === '/api/probe') {

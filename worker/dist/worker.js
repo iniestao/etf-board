@@ -610,6 +610,68 @@ async function serveEvents(env, ctx) {
   }
 }
 
+// ---------------------------------------------------------------- 日内分时
+/**
+ * 分时走新浪 minline：一次一天，含价格 / 均价 / 分钟量，约 14KB。
+ *
+ * 为什么不用东财 trends2（更「正宗」的行情接口）：实测裸域名
+ * push2his.eastmoney.com、push2.eastmoney.com 都在 TLS 握手完成后直接空回复，
+ * 沙箱和 Worker 两侧表现一致；分片域名 1./60.push2his 时好时坏，几十秒内
+ * 打几次就整体失灵。新浪这条与全量快照同源（probe 里 1718 只稳定返回），
+ * 链路风险最低——分时是高频调用的接口，不能压在一个会抽的源上。
+ *
+ * 返回紧凑数组：[时刻, 价, 均价, 分钟量]。240 个点用数组比对象数组省一半字节。
+ */
+async function fetchMin(code) {
+  const sym = (code[0] === '5' || code[0] === '6' ? 'sh' : 'sz') + code;
+  const url = 'https://quotes.sina.cn/cn/api/openapi.php/CN_MinlineService.getMinlineData'
+    + '?symbol=' + sym + '&kind=min';
+  const r = await fetch(url, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('SINA HTTP ' + r.status);
+  const j = await r.json();
+  const arr = j && j.result && Array.isArray(j.result.data) ? j.result.data : null;
+  if (!arr || !arr.length) throw new Error('MIN empty');
+  const pts = [];
+  for (const x of arr) {
+    const t = String(x.m || '').slice(0, 5);
+    const p = +x.p;
+    if (t.length !== 5 || !isFinite(p) || p <= 0) continue;
+    // 09:25 是集合竞价撮合价，横轴上没有它的位置（09:30 那根已经含开盘）
+    if (t < '09:30') continue;
+    const avg = +x.avg_p;
+    const v = +x.v;
+    pts.push([t, p, isFinite(avg) && avg > 0 ? avg : 0, isFinite(v) && v > 0 ? v : 0]);
+  }
+  if (!pts.length) throw new Error('MIN empty');
+  return pts;
+}
+
+async function serveMin(ctx, code) {
+  // 30 秒一桶：盘中够用，且同一桶内多人访问只打一次上游
+  const bucket = Math.floor(Date.now() / 30000);
+  const key = new Request('https://etf-board.internal/min/v2/' + code + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+  }
+  try {
+    const pts = await fetchMin(code);
+    const res = json({ ok: true, code, n: pts.length, pts, src: 'sina' }, 30);
+    if (cache && ctx && typeof ctx.waitUntil === 'function') {
+      try { ctx.waitUntil(cache.put(key, res.clone())); } catch (e) { /* 忽略 */ }
+    }
+    return res;
+  } catch (e) {
+    return json({ ok: false, code, error: String(e.message || e) });
+  }
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -1019,6 +1081,12 @@ export default {
       }
     }
 
+    if (p === '/api/min') {
+      const code = (url.searchParams.get('code') || '').trim().replace(/^(sh|sz)/i, '');
+      if (!/^\d{5,6}$/.test(code)) return json({ ok: false, error: 'code 非法' });
+      return serveMin(ctx, code);
+    }
+
     if (p === '/api/probe') {
       const t0 = Date.now();
       const emP = fetchEM().then((b) => {
@@ -1281,7 +1349,16 @@ box-shadow:0 18px 48px rgba(20,26,40,.16)}
 .hhd .cd{font-family:var(--mono);font-size:12px;color:var(--txt3)}
 .hhd .px{font-family:var(--mono);font-size:16px;font-weight:600;margin-left:4px}
 .hhd .ch{font-family:var(--mono);font-size:12.5px}
-.htabs{display:flex;gap:3px;margin-left:auto}
+.htabs{display:flex;gap:3px;margin-left:6px}
+/* 分时 / K线 切换：做成独立分段控件，和右边周期条分开——
+   两者语义不同（一个是「看什么」，一个是「看多长」），混在一排会读错 */
+.hmodes{display:flex;gap:2px;background:var(--bg3);border:1px solid var(--line);
+border-radius:6px;padding:2px;margin-left:auto}
+.hmodes b{padding:2px 10px;border-radius:4px;font-size:11.5px;font-weight:400;
+color:var(--txt2);cursor:pointer;user-select:none}
+.hmodes b:hover{color:var(--txt)}
+.hmodes b.on{background:#fff;color:var(--txt);font-weight:600;box-shadow:0 1px 2px rgba(20,26,40,.09)}
+.hmodes b[data-m="min"].on{color:var(--accent)}
 .htabs span{padding:3px 9px;border-radius:5px;font-size:11.5px;color:var(--txt2);
 cursor:pointer;border:1px solid transparent;user-select:none}
 .htabs span:hover{color:var(--txt)}
@@ -1316,12 +1393,18 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 @media(max-width:700px){
   /* 顶部一行装不下：名称/代码/价格/涨幅 + 4 个周期 + 关闭。
      不换行就会把面板撑得比屏幕还宽，连带右边价格轴一起被裁。 */
-  .hhd{flex-wrap:wrap;gap:5px 8px;padding:9px 10px}
+  /* 关闭按钮脱离 flex 流、钉在右上角。留在流里的话，它排在分段控件之后，
+     一行剩不下 26px 就整颗掉到第二行，顶部凭空多出一行高度。 */
+  .hhd{flex-wrap:wrap;gap:4px 6px;padding:9px 10px;padding-right:40px;position:relative}
   .hhd .cd{display:none}
-  .hhd .nm{font-size:13px}
+  /* 名称不截断时，长名字（沪深300ETF华泰柏瑞）会把关闭按钮挤到第二行，
+     面板顶部凭空多出一行，看着像渲染坏了 */
+  .hhd .nm{font-size:13px;max-width:28vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .htabs{margin-left:0;order:9}
   .htabs span{padding:2px 7px}
-  .hx{margin-left:auto;order:10}
+  .hmodes{margin-left:auto;order:8;padding:2px}
+  .hmodes b{padding:2px 5px;font-size:10px}
+  .hx{position:absolute;right:8px;top:10px;margin:0}
   .hsbar{padding:7px 10px 2px;gap:3px;overflow:hidden}
   .hsbar .lb{font-size:10px}
   .hsbar .lb+.sg+.lb{margin-left:5px}
@@ -1576,6 +1659,9 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       <span class="cd" id="hCode"></span>
       <span class="px" id="hPx">-</span>
       <span class="ch" id="hChg"></span>
+      <div class="hmodes" id="hMode">
+        <b data-m="min">分时</b><b data-m="k">K线</b>
+      </div>
       <div class="htabs" id="hTabs">
         <span data-r="63">3M</span>
         <span data-r="126">6M</span>
@@ -1584,7 +1670,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       </div>
       <button class="hx" id="hClose" title="关闭 (Esc)">×</button>
     </div>
-    <div class="hsbar">
+    <div class="hsbar" id="hSbar">
       <span class="lb">副图</span>
       <span class="sg" id="hSubs">
         <b data-s="rsi" class="on">RSI</b><b data-s="macd">MACD</b><b data-s="vr">量比</b><b data-s="hvol">波动率</b><b data-s="atr">ATR</b><b data-s="pb">BOLL%B</b>
@@ -2698,8 +2784,15 @@ var H = {
   code:'', name:'', d:null, range:250, hover:-1, ok:false,
   sub:'rsi', ov:{ ma:true, boll:false },
   cv:null, ctx:null, off:null, octx:null,
-  W:0, Ht:0, dpr:1, geo:null
+  W:0, Ht:0, dpr:1, geo:null,
+  mode:'min', m:null, mgeo:null
 };
+/* 默认分时：点开一只标的，第一反应是「今天怎么了」，而不是「过去一年怎么样」。
+   用户手动切过就记住——K 线是深度分析时才会进的门。 */
+try {
+  var _hmode = localStorage.getItem('etf_hmode');
+  if (_hmode === 'k' || _hmode === 'min') H.mode = _hmode;
+} catch (e) { /* 隐私模式下 localStorage 会抛 */ }
 
 /* TypedArray 要求 byteOffset 是元素大小的整数倍，而 JSON header 长度不固定。
    新版本写入时补过 4 字节对齐，旧文件没有——这里两条路都走。
@@ -2933,13 +3026,46 @@ function hRefresh(){
   document.getElementById('hNote').textContent = note;
 }
 
+/* 分时 / K线 切换。force=true 表示「模式没变也要重新加载」——
+   新点开一只标的时必须走这条路，否则会因为模式相同而什么都不做，图停在上一只。 */
+function setHMode(m, force){
+  m = (m === 'k') ? 'k' : 'min';
+  if (!force && H.mode === m) return;
+  H.mode = m;
+  try { localStorage.setItem('etf_hmode', m); } catch (e) {}
+  Array.prototype.forEach.call(document.querySelectorAll('#hMode b'), function(b){
+    b.classList.toggle('on', b.getAttribute('data-m') === m);
+  });
+  var isMin = m === 'min';
+  // 副图/叠加只对 K 线有意义；周期条（3M/6M/1Y）在分时下也没内容可选
+  document.getElementById('hSbar').style.display = isMin ? 'none' : '';
+  document.getElementById('hTabs').style.display = isMin ? 'none' : '';
+  clearInterval(minTimer); minTimer = null;
+  H.hover = -1;
+  if (!H.code) return;
+  if (isMin){
+    loadMin(H.code);
+    // 35 秒一轮：接口按 30 秒分桶缓存，更密的轮询只会反复命中同一个桶
+    minTimer = setInterval(function(){
+      if (H.code && H.mode === 'min'
+          && document.getElementById('histMask').classList.contains('on')) {
+        fetchMinOnce(H.code, false);
+      }
+    }, 35000);
+  } else {
+    loadK(H.code);
+  }
+}
+
 function openHist(code, name){
-  H.code = code; H.name = name || code; H.d = null; H.hover = -1; H.ok = false; H.ext = false;
+  H.code = code; H.name = name || code;
+  H.d = null; H.m = null; H.hover = -1; H.ok = false; H.ext = false;
   document.getElementById('hName').textContent = H.name;
   document.getElementById('hCode').textContent = code;
   document.getElementById('hPx').textContent = '-';
   document.getElementById('hChg').textContent = '';
-  document.getElementById('hLeg').innerHTML = '<span>加载中…</span>';
+  document.getElementById('hLeg').innerHTML = '';
+  document.getElementById('hInd').innerHTML = '';
   document.getElementById('hNote').textContent = '';
   document.getElementById('histMask').classList.add('on');
 
@@ -2951,6 +3077,13 @@ function openHist(code, name){
     ch.className = 'ch ' + cc(x.chg);
   }
   hSize();
+  setHMode(H.mode, true);
+}
+
+function loadK(code){
+  document.getElementById('hLeg').innerHTML = '<span>加载中…</span>';
+  document.getElementById('hInd').innerHTML = '';
+  document.getElementById('hNote').textContent = '';
 
   fetch('/api/hist?code=' + code).then(function(r){
     var ct = r.headers.get('Content-Type') || '';
@@ -3014,7 +3147,8 @@ function openHist(code, name){
 
 function closeHist(){
   document.getElementById('histMask').classList.remove('on');
-  H.code = ''; H.d = null;
+  clearInterval(minTimer); minTimer = null;
+  H.code = ''; H.d = null; H.m = null;
 }
 
 function findItem(code){
@@ -3172,7 +3306,360 @@ function subName(ctx, name, padL, yR, col){
   ctx.restore();
 }
 
+/* ================= 日内分时 =================
+   数据来自 /api/min（Worker 代理新浪 minline），每个交易日 240 个点，
+   含价格、当日成交额加权均价、分钟量。
+
+   横轴不用「有几个点画几格」：固定 240 格，午休那 90 分钟不占位，
+   盘中只画已经走过的部分。这样早盘打开图不会是一条被拉伸的怪线，
+   而且 10:30 永远在图的正中间——位置本身就是信息。
+
+   价格范围以昨收为中心上下对称。K 线那套「跟着最高最低自适应」在分时上
+   是错的：昨收会跑到图边角，一眼看不出此刻是涨是跌。 */
+
+var MC = {
+  line:'#2563eb', avg:'#d68910', base:'#b9c0cc', cross:'#8b93a1',
+  fillUp:'rgba(217,58,58,.06)', fillDn:'rgba(14,154,97,.06)',
+  volUp:'rgba(217,58,58,.42)', volDn:'rgba(14,154,97,.42)'
+};
+var MIN_SLOTS = 240;                 // 槽位 0..240
+var minTimer = null;
+
+/* 09:30→0，11:30→120，13:00 也→120（两段接起来），15:00→240 */
+function minSlot(t){
+  var v = (+t.slice(0, 2)) * 60 + (+t.slice(3, 5));
+  if (v <= 690) return Math.max(0, v - 570);
+  return 120 + Math.min(120, v - 780);
+}
+
+function loadMin(code){
+  var it = findItem(code);
+  H.m = { code:code, pre:(it && it.pc > 0 ? it.pc : 0), pts:[] };
+  document.getElementById('hLeg').innerHTML = '<span>加载中…</span>';
+  document.getElementById('hInd').innerHTML = '';
+  document.getElementById('hNote').textContent = '';
+  document.getElementById('hTabs').style.display = 'none';
+  document.getElementById('hSbar').style.display = 'none';
+  fetchMinOnce(code, true);
+}
+
+function fetchMinOnce(code, first){
+  fetch('/api/min?code=' + code).then(function(r){ return r.json(); }).then(function(j){
+    if (H.code !== code || H.mode !== 'min') return;   // 期间换了标的或切了模式
+    if (!j || !j.ok || !j.pts || !j.pts.length) throw new Error((j && j.error) || '分时无数据');
+    var it = findItem(code);
+    // 昨收优先取全市场快照（新浪 settlement，全天不变）；
+    // 拿不到才退回用当天第一个价格当基准，并在备注里说清楚
+    var pre = (it && it.pc > 0) ? it.pc : 0;
+    var guess = !pre;
+    if (!pre) pre = j.pts[0][1];
+    H.m = { code:code, pre:pre, pts:j.pts, guess:guess, src:j.src };
+    H.hover = -1;
+    hDraw();
+    hLegend(-1);
+    document.getElementById('hNote').textContent = minNote();
+  }).catch(function(e){
+    if (H.code !== code || H.mode !== 'min' || !first) return;
+    document.getElementById('hLeg').innerHTML = '';
+    document.getElementById('hNote').textContent =
+      '分时取不到：' + (e.message || e) + '。这条链路走新浪分时接口，'
+      + '上游偶发空回；切到「K线」不受影响，过一会儿再点回来即可。';
+    if (H.cv){
+      var g = H.cv.getContext('2d');
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, H.cv.width, H.cv.height);
+    }
+  });
+}
+
+function minNote(){
+  var m = H.m;
+  if (!m) return '';
+  var s = '共 ' + m.pts.length + ' 个分钟点，均价线是当日成交额加权（VWAP）；';
+  if (m.guess) s += '昨收未取到，基准用当日首个价格代替，涨跌幅仅供参考；';
+  s += '盘中未走到的时段留白，横轴刻度固定，方便和昨天同一时刻对比。';
+  return s;
+}
+
+function hDrawMin(){
+  hSize();
+  var W = H.W, Ht = H.Ht, ctx = H.octx, m = H.m;
+  if (!W) return;
+  ctx.clearRect(0, 0, W, Ht);
+  if (!m || !m.pts || !m.pts.length){
+    H.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    H.ctx.clearRect(0, 0, H.cv.width, H.cv.height);
+    return;
+  }
+
+  var pts = m.pts, pre = m.pre, n = pts.length, i;
+  var padL = 46, padR = 58, padT = 10, padB = 16;
+  var plotW = Math.max(40, W - padL - padR);
+  var bodyH = Ht - padT - padB;
+  var hV = Math.round(bodyH * 0.22);
+  var hP = bodyH - hV - 10;
+  var yP = padT, yV = padT + hP + 10;
+
+  var dmax = 0, hi = -Infinity, lo = Infinity, vs = [];
+  for (i = 0; i < n; i++){
+    var p = pts[i][1], a = pts[i][2], vv = pts[i][3];
+    if (p > hi) hi = p;
+    if (p < lo) lo = p;
+    if (Math.abs(p - pre) > dmax) dmax = Math.abs(p - pre);
+    if (a > 0 && Math.abs(a - pre) > dmax) dmax = Math.abs(a - pre);
+    if (vv > 0) vs.push(vv);
+  }
+  if (!(dmax > 0)) dmax = pre * 0.005 || 0.01;
+  dmax *= 1.1;
+  var pmin = pre - dmax, pmax = pre + dmax;
+
+  /* 量柱刻度取 95 分位而不是最大值：开盘第一分钟含集合竞价，量常是平时的
+     4~10 倍，用最大值当上限会让其余 239 根全部贴地，等于没画量。超出刻度
+     的柱截断到顶部并描一道白边，表示这根已经出界。 */
+  vs.sort(function(x, y){ return x - y; });
+  var vmax = vs.length ? vs[Math.min(vs.length - 1, Math.floor(vs.length * 0.95))] : 1;
+  if (!(vmax > 0)) vmax = 1;
+
+  function xOf(sl){ return padL + (sl / MIN_SLOTS) * plotW; }
+  function yOf(q){ return yP + hP * (pmax - q) / (pmax - pmin); }
+  function yVol(v){ return yV + hV * (1 - Math.min(v, vmax) / vmax); }
+
+  /* --- 网格按涨跌幅整档画（±0.5% / ±1% …），而不是把价格区间等分：
+     等分出来是 4.132 / 4.154 / 4.196 这种数，既不好读也对不上盘口整数位 --- */
+  var spanPct = pre > 0 ? dmax / pre * 100 : 1;
+  var stepPct = spanPct > 8 ? 5 : spanPct > 4 ? 2 : spanPct > 2 ? 1 : 0.5;
+  var kMax = pre > 0 ? Math.floor(spanPct / stepPct) : 1;
+  if (kMax < 1) kMax = 1;
+
+  ctx.font = '10px ui-monospace,Menlo,monospace';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 1;
+  for (var j = -kMax; j <= kMax; j++){
+    var pv = pre * (1 + j * stepPct / 100);
+    if (pv < pmin || pv > pmax) continue;
+    var yy = Math.round(yOf(pv)) + 0.5;
+    if (j !== 0){                       // 0 档由昨收虚线代表，不重复画
+      ctx.strokeStyle = HC.grid;
+      ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(padL + plotW, yy); ctx.stroke();
+    }
+    var upC = j > 0, dnC = j < 0;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = upC ? 'rgba(217,58,58,.85)' : dnC ? 'rgba(14,154,97,.85)' : HC.axis;
+    ctx.fillText((j > 0 ? '+' : '') + (j * stepPct).toFixed(2) + '%', padL - 6, yy);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = upC ? HC.up : dnC ? HC.dn : HC.axis;
+    ctx.fillText(pv.toFixed(pre < 10 ? 3 : 2), padL + plotW + 8, yy);
+  }
+
+  /* --- 昨收基准线 --- */
+  var yb = Math.round(yOf(pre)) + 0.5;
+  ctx.strokeStyle = MC.base; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padL, yb); ctx.lineTo(padL + plotW, yb); ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* --- 分钟量 --- */
+  var bw = Math.max(1, (plotW / (MIN_SLOTS + 1)) * 0.7);
+  for (i = 0; i < n; i++){
+    var v = pts[i][3];
+    if (!(v > 0)) continue;
+    var rise = i === 0 ? pts[i][1] >= pre : pts[i][1] >= pts[i - 1][1];
+    ctx.fillStyle = rise ? MC.volUp : MC.volDn;
+    var y0 = yVol(v), x0 = xOf(minSlot(pts[i][0])) - bw / 2;
+    ctx.fillRect(x0, y0, bw, Math.max(1, yV + hV - y0));
+    if (v > vmax){
+      ctx.fillStyle = 'rgba(255,255,255,.9)';
+      ctx.fillRect(x0, y0, bw, 1);
+    }
+  }
+
+  /* --- 涨跌两色填充：昨收以上红、以下绿。
+     和「现价涨了所以整块涂红」不同——分时图要看的是此刻在基准的哪一侧，
+     而不是收盘那一瞬间的方向。 --- */
+  function fillSide(yTop, yBot, color){
+    ctx.save();
+    ctx.beginPath(); ctx.rect(padL, yTop, plotW, Math.max(0, yBot - yTop)); ctx.clip();
+    ctx.beginPath();
+    ctx.moveTo(xOf(minSlot(pts[0][0])), yb);
+    for (var q = 0; q < n; q++) ctx.lineTo(xOf(minSlot(pts[q][0])), yOf(pts[q][1]));
+    ctx.lineTo(xOf(minSlot(pts[n - 1][0])), yb);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+  fillSide(yP, yb, MC.fillUp);
+  fillSide(yb, yV + hV, MC.fillDn);
+
+  /* --- 均价线（VWAP） --- */
+  var started = false;
+  ctx.strokeStyle = MC.avg; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (i = 0; i < n; i++){
+    if (!(pts[i][2] > 0)) continue;
+    var ax = xOf(minSlot(pts[i][0])), ay = yOf(pts[i][2]);
+    if (!started){ ctx.moveTo(ax, ay); started = true; } else ctx.lineTo(ax, ay);
+  }
+  ctx.stroke();
+
+  /* --- 价格线 --- */
+  ctx.strokeStyle = MC.line; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (i = 0; i < n; i++){
+    var lx = xOf(minSlot(pts[i][0])), ly = yOf(pts[i][1]);
+    if (i === 0) ctx.moveTo(lx, ly); else ctx.lineTo(lx, ly);
+  }
+  ctx.stroke();
+
+  /* --- 最新点：收盘后也保留，方便看收在哪 --- */
+  var lastP = pts[n - 1][1];
+  var up = lastP >= pre;
+  // 末端点往左收一格：15:00 那一点正好落在绘图区右边界，
+  // 光晕会压到右侧的价格刻度上，看起来像刻度被涂花了
+  var xe = Math.min(xOf(minSlot(pts[n - 1][0])), padL + plotW - 2), ye = yOf(lastP);
+  ctx.beginPath(); ctx.arc(xe, ye, 5, 0, Math.PI * 2);
+  ctx.fillStyle = up ? 'rgba(217,58,58,.16)' : 'rgba(14,154,97,.16)';
+  ctx.fill();
+  ctx.beginPath(); ctx.arc(xe, ye, 2.6, 0, Math.PI * 2);
+  ctx.fillStyle = up ? HC.up : HC.dn;
+  ctx.fill();
+
+  /* --- 时间轴 --- */
+  ctx.fillStyle = HC.axis; ctx.textBaseline = 'top';
+  ctx.font = '10px ui-monospace,Menlo,monospace';
+  var marks = plotW < 560
+    ? [[0, '09:30'], [120, '11:30'], [240, '15:00']]
+    : [[0, '09:30'], [60, '10:30'], [120, '11:30/13:00'], [180, '14:00'], [240, '15:00']];
+  for (var t = 0; t < marks.length; t++){
+    ctx.textAlign = t === 0 ? 'left' : (t === marks.length - 1 ? 'right' : 'center');
+    ctx.fillText(marks[t][1], xOf(marks[t][0]), yV + hV + 4);
+  }
+
+  H.mgeo = { padL:padL, plotW:plotW, yP:yP, hP:hP, yV:yV, hV:hV,
+             pmin:pmin, pmax:pmax, vmax:vmax, pre:pre, pts:pts };
+
+  H.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  H.ctx.clearRect(0, 0, H.cv.width, H.cv.height);
+  H.ctx.setTransform(H.dpr, 0, 0, H.dpr, 0, 0);
+  H.ctx.drawImage(H.off, 0, 0, W, Ht);
+  if (H.hover >= 0) hCrossMin(H.hover);
+}
+
+/* 鼠标 x → 最近的分时点索引。点数 ≤ 240，直接扫比二分更快也更不容易写错 */
+function minIdxAt(x){
+  var g = H.mgeo;
+  if (!g) return -1;
+  var s = (x - g.padL) / g.plotW * MIN_SLOTS;
+  var pts = g.pts, best = -1, bd = 1e9;
+  for (var i = 0; i < pts.length; i++){
+    var d = Math.abs(minSlot(pts[i][0]) - s);
+    if (d < bd){ bd = d; best = i; }
+  }
+  return best;
+}
+
+function hCrossMin(idx){
+  var g = H.mgeo, ctx = H.ctx, m = H.m;
+  if (!g || !m || !m.pts) return;
+  var pts = g.pts;
+  if (idx < 0 || idx >= pts.length) return;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, H.cv.width, H.cv.height);
+  ctx.setTransform(H.dpr, 0, 0, H.dpr, 0, 0);
+  ctx.drawImage(H.off, 0, 0, H.W, H.Ht);
+
+  var pt = pts[idx];
+  var slot = minSlot(pt[0]);
+  var x = Math.round(g.padL + (slot / MIN_SLOTS) * g.plotW) + 0.5;
+  var yTop = g.yP, yBot = g.yV + g.hV;
+
+  ctx.strokeStyle = MC.cross; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x, yBot); ctx.stroke();
+
+  var py = Math.round(g.yP + g.hP * (g.pmax - pt[1]) / (g.pmax - g.pmin)) + 0.5;
+  ctx.beginPath(); ctx.moveTo(g.padL, py); ctx.lineTo(g.padL + g.plotW, py); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 右侧价格牌
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(g.padL + g.plotW + 2, py - 7, 54, 14);
+  ctx.fillStyle = '#15181d';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.font = '10px ui-monospace,Menlo,monospace';
+  ctx.fillText(fnum(pt[1], 3), g.padL + g.plotW + 5, py);
+
+  // 该点的圆点
+  ctx.beginPath(); ctx.arc(x, py, 2.4, 0, Math.PI * 2);
+  ctx.fillStyle = MC.line; ctx.fill();
+
+  hLegendMin(idx);
+}
+
+function hLegendMin(idx){
+  var m = H.m, g = H.mgeo;
+  var leg = document.getElementById('hLeg');
+  var ind = document.getElementById('hInd');
+  if (!m || !m.pts || !m.pts.length){ leg.innerHTML = ''; ind.innerHTML = ''; return; }
+  var pts = m.pts, pre = m.pre, n = pts.length, i;
+
+  var hi = -Infinity, lo = Infinity, sumV = 0, last = pts[n - 1][1];
+  for (i = 0; i < n; i++){
+    if (pts[i][1] > hi) hi = pts[i][1];
+    if (pts[i][1] < lo) lo = pts[i][1];
+    if (pts[i][3] > 0) sumV += pts[i][3];
+  }
+  var pctOf = function(q){ return pre > 0 ? (q / pre - 1) * 100 : NaN; };
+  var volTxt = function(v){
+    if (!(v > 0)) return '-';
+    if (v >= 1e8) return (v / 1e8).toFixed(2) + ' 亿股';
+    if (v >= 1e4) return (v / 1e4).toFixed(0) + ' 万股';
+    return v + ' 股';
+  };
+  var posIn = (hi > lo) ? (last - lo) / (hi - lo) * 100 : 50;
+
+  if (idx >= 0 && idx < n){
+    var pt = pts[idx];
+    var dev = pt[2] > 0 ? (pt[1] / pt[2] - 1) * 100 : NaN;
+    leg.innerHTML =
+      '<span>时刻 <b>' + pt[0] + '</b></span>'
+      + '<span>价 <b class="' + cc(pctOf(pt[1])) + '">' + fnum(pt[1], 3) + '</b>'
+      + ' <b class="' + cc(pctOf(pt[1])) + '">' + fpc(pctOf(pt[1])) + '</b></span>'
+      + '<span>均价 <b>' + (pt[2] > 0 ? fnum(pt[2], 3) : '-') + '</b></span>'
+      + '<span>偏离 <b class="' + cc(dev) + '">' + (isFinite(dev) ? fpc(dev) : '-') + '</b></span>'
+      + '<span>分钟量 <b>' + volTxt(pt[3]) + '</b></span>';
+  } else {
+    leg.innerHTML =
+      '<span>现价 <b class="' + cc(pctOf(last)) + '">' + fnum(last, 3) + '</b>'
+      + ' <b class="' + cc(pctOf(last)) + '">' + fpc(pctOf(last)) + '</b></span>'
+      + '<span>日内高 <b>' + fnum(hi, 3) + '</b> <b class="up">' + fpc(pctOf(hi)) + '</b></span>'
+      + '<span>日内低 <b>' + fnum(lo, 3) + '</b> <b class="dn">' + fpc(pctOf(lo)) + '</b></span>'
+      + '<span>昨收 <b>' + fnum(pre, 3) + '</b></span>'
+      + '<span>振幅 <b>' + (pre > 0 ? fpc((hi - lo) / pre * 100) : '-') + '</b></span>';
+  }
+
+  // 小卡：把分时里真正能用的几个数摊开，凑不出 7 个就不凑
+  var vwap = 0;
+  for (i = 0; i < n; i++) if (pts[i][2] > 0) vwap = pts[i][2];
+  var devNow = vwap > 0 ? (last / vwap - 1) * 100 : NaN;
+  var card = function(k, v, s, cls){
+    return '<div class="i"><div class="k">' + k + '</div><div class="v ' + (cls || '') + '">'
+      + v + '</div><div class="s">' + (s || '') + '</div></div>';
+  };
+  var posTxt = posIn >= 70 ? '贴近日内高位' : posIn <= 30 ? '贴近日内低位' : '日内中枢';
+  ind.innerHTML =
+    card('日内位置', posIn.toFixed(0) + '%', posTxt)
+    + card('均价偏离', isFinite(devNow) ? fpc(devNow) : '-',
+        devNow > 0.15 ? '价在均价上' : devNow < -0.15 ? '价在均价下' : '贴着均价走', cc(devNow))
+    + card('振幅', pre > 0 ? fpc((hi - lo) / pre * 100) : '-', fnum(hi, 3) + ' / ' + fnum(lo, 3))
+    + card('分钟点数', String(n), n >= 240 ? '已走完整日' : '盘中 ' + Math.round(n / 240 * 100) + '%')
+    + card('成交额', (function(){
+        var it = findItem(H.code);
+        return it && it.amt > 0 ? famt(it.amt) : '-';
+      })(), '全市场快照口径');
+}
+
 function hDraw(){
+  if (H.mode === 'min') return hDrawMin();
   var d = H.d;
   if (!d || !H.W) return;
   hSize();
@@ -3303,6 +3790,7 @@ function hDraw(){
 }
 
 function hCross(idx){
+  if (H.mode === 'min') return hCrossMin(idx);
   var d = H.d, g = H.geo, ctx = H.ctx;
   if (!d || !g) return;
   var i0 = g.i0, i1 = g.i0 + g.cnt;
@@ -3337,6 +3825,7 @@ function hCross(idx){
 }
 
 function hLegend(idx){
+  if (H.mode === 'min') return hLegendMin(idx);
   var d = H.d;
   if (!d){ document.getElementById('hInd').innerHTML = ''; return; }
   hInd(idx);
@@ -4014,9 +4503,17 @@ document.addEventListener('keydown', function(e){
 });
 
 document.getElementById('histCv').addEventListener('mousemove', function(e){
-  var g = H.geo; if (!g || !H.d) return;
   var rect = this.getBoundingClientRect();
   var x = e.clientX - rect.left;
+  if (H.mode === 'min'){
+    if (!H.mgeo) return;
+    var mi = minIdxAt(x);
+    if (mi < 0 || mi === H.hover) return;
+    H.hover = mi;
+    hCrossMin(mi);
+    return;
+  }
+  var g = H.geo; if (!g || !H.d) return;
   var idx = g.i0 + Math.floor((x - g.padL) / g.bw);
   var rng = H.range || H.d.n;
   idx = Math.max(g.i0, Math.min(H.d.n - 1, idx));
@@ -4025,13 +4522,17 @@ document.getElementById('histCv').addEventListener('mousemove', function(e){
   hCross(idx);
 });
 document.getElementById('histCv').addEventListener('mouseleave', function(){
-  if (!H.geo) return;
+  if (!H.geo && !H.mgeo) return;
   H.hover = -1;
   H.ctx.setTransform(1,0,0,1,0,0);
   H.ctx.clearRect(0, 0, H.cv.width, H.cv.height);
   H.ctx.setTransform(H.dpr, 0, 0, H.dpr, 0, 0);
   H.ctx.drawImage(H.off, 0, 0, H.W, H.Ht);
   hLegend(-1);
+});
+
+Array.prototype.forEach.call(document.querySelectorAll('#hMode b'), function(b){
+  b.onclick = function(){ setHMode(b.getAttribute('data-m'), false); };
 });
 
 Array.prototype.forEach.call(document.querySelectorAll('#hTabs span'), function(t){
@@ -4056,7 +4557,9 @@ window.addEventListener('resize', function(){
   if (!document.getElementById('histMask').classList.contains('on')) return;
   clearTimeout(hResizeTimer);
   hResizeTimer = setTimeout(function(){
-    if (H.d){ H.hover = -1; hDraw(); hLegend(-1); }
+    // 分时用 H.m 而不是 H.d，两个都要认，否则改窗口大小后图会被拉变形
+    var ready = (H.mode === 'min') ? !!H.m : !!H.d;
+    if (ready){ H.hover = -1; hDraw(); hLegend(-1); }
   }, 140);
 });
 

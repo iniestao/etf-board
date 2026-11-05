@@ -221,6 +221,27 @@ async function runContracts(base, pass) {
   const je = r.json();
   (je && je.ok !== false) ? ok('/api/events ok，' + r.body.length + ' 字节') : bad('/api/events 失败：' + r.status + ' ' + r.text.slice(0, 160));
 
+  // 日内分时：走新浪 minline，是全站唯一「每次打开面板都要实时拉」的接口，
+  // 上游偶发空回。给它一次重试，免得一次抖动就把整轮自检判红。
+  let jm = null;
+  for (let i = 0; i < 2 && !(jm && jm.ok); i++) {
+    if (i) await new Promise((res) => setTimeout(res, 1500));
+    r = await rawRequest(base, '/api/min?code=510300', { cookie });
+    jm = r.json();
+  }
+  if (jm && jm.ok && Array.isArray(jm.pts) && jm.pts.length > 30) {
+    const p0 = jm.pts[0], pl = jm.pts[jm.pts.length - 1];
+    ok('/api/min 510300 → ' + jm.pts.length + ' 点，' + p0[0] + '–' + pl[0] + '，' + r.body.length + ' 字节');
+    const badPt = jm.pts.find((x) => !Array.isArray(x) || !/^\d\d:\d\d$/.test(x[0]) || !(x[1] > 0));
+    badPt ? bad('/api/min 有异常点：' + JSON.stringify(badPt)) : ok('/api/min 每点时刻与价格都合法');
+  } else {
+    bad('/api/min 失败：' + r.text.slice(0, 160));
+  }
+
+  r = await rawRequest(base, '/api/min?code=__bad__', { cookie });
+  const jmb = r.json();
+  (jmb && jmb.ok === false) ? ok('/api/min 非法 code 被拒') : bad('/api/min 非法 code 没拒');
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();
