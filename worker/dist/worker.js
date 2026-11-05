@@ -3009,21 +3009,35 @@ var SPD_SKIP = /短融|货币|日利|添益|现金|理财|保证金|快线/;
 
 function spdPool(){
   if (!DATA.length) return [];
-  var arr = [], i, x;
-  for (i = 0; i < DATA.length; i++){
-    x = DATA[i];
-    if (!(x.amt > 0)) continue;            // 当日没成交，分时是空的
-    if (x.g === 'bond' || x.g === 'money') continue;
-    if (SPD_SKIP.test(x.n)) continue;
-    arr.push(x);
+  var out = [], seen = {}, i, c, it;
+  function push(code){
+    if (seen[code] || out.length >= SPD_POOL_MAX) return;
+    seen[code] = 1; out.push(code);
   }
+  function usable(x){
+    return x && x.amt > 0 && x.g !== 'bond' && x.g !== 'money' && !SPD_SKIP.test(x.n);
+  }
+
+  /* 自选优先。盯盘时最先想知道的是自己手里那几只有没有突然动起来，
+     而它们大半不在成交额前 40（比如一只 8 亿的行业 ETF）。
+     用户主动加的债券/货币类仍然剔掉——那类涨速恒为 0.00%，占位没意义。 */
+  for (i = 0; i < watch.length; i++){
+    c = watch[i];
+    it = findItem(c);
+    // 快照里查不到（新上市、停牌）也照样试一次，服务端拿不到会滤掉
+    if (it ? usable(it) : true) push(c);
+  }
+
+  var arr = [];
+  for (i = 0; i < DATA.length; i++) if (usable(DATA[i])) arr.push(DATA[i]);
   // KEEP 表要等指数映射加载完才有；没加载时 !KEEP[ix] 为真，等于不去重，
   // 比「把同指数的票全藏掉」安全
   if (DEDUP){
     arr = arr.filter(function(x){ return !x.ix || !KEEP[x.ix] || KEEP[x.ix] === x.c; });
   }
   arr.sort(function(a, b){ return b.amt - a.amt; });
-  return arr.slice(0, SPD_POOL_MAX).map(function(x){ return x.c; });
+  for (i = 0; i < arr.length; i++) push(arr[i].c);
+  return out;
 }
 
 function spdFetch(force){
@@ -3169,7 +3183,8 @@ function renderSpeed(){
   if (note){
     // 「收盘了没有」按分时最后一根判断，不能复用 isOpen()——那个函数为了
     // 让收盘后的快照继续刷新，一直算到 16:10，拿它当收盘标志会晚一个多小时
-    note.innerHTML = '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
+    note.innerHTML = '池子 = 自选 + 当日成交额靠前的 ETF，同指数只留一只。'
+      + '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
       + '到 <b>' + SPD_VOL_HOT + '×</b> 标黄。收盘集合竞价那根按 4 分钟折算，'
       + '否则尾盘会凭空多出十倍放量。'
       + (spdClosed() ? '<br>已收盘：这里是<b>今天最后几分钟</b>的涨速，明天 9:30 才重新走动。' : '');
