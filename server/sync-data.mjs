@@ -1,47 +1,63 @@
 /**
- * 数据同步：把 GitHub data 分支上的产物拉到本地 dist/
- * ====================================================
- * Cloudflare 版每天由 Actions 把 dist/hist 推到 data 分支，Worker 现场回源读；
- * 沙箱版没有边缘网络，只能读本地磁盘，所以需要一个「把远端产物落到本地」的动作。
+ * 数据同步：把 GitHub data 分支上的 hist 拉到本地 dist/
+ * =====================================================
+ * Cloudflare 版每天由 Actions 把产物推到 data 分支，Worker 现场回源读；
+ * 沙箱版没有边缘网络，只能读本地磁盘，所以要有人把远端产物落到本地。
  *
- * 三种跑法：
- *   node server/sync-data.mjs            检查并同步（data 分支 commit 没变就直接跳过）
+ * 为什么不用 tarball 整包（codeload.github.com/…/tar.gz/data）：
+ * 实测沙箱出口到 codeload 只有 ~7KB/s，48MB 要接近两小时，没法用。
+ * 改成按文件走 jsDelivr CDN（它回源 GitHub 但走自己的节点），单文件 36KB 约 2 秒，
+ * 16 路并发把 1718 个文件压在几分钟内。CDN 不可用时自动退回 raw.githubusercontent。
+ *
+ * 用法：
+ *   node server/sync-data.mjs            检查并同步（mark 没变就跳过）
  *   node server/sync-data.mjs --force    强制重下
  *   node server/sync-data.mjs --check    只看状态，不动文件
- *
- * 也可以被 app.mjs 调用（AUTO_SYNC=1 时后台检查），所以这里把主流程导出成函数。
- *
- * 为什么用 codeload 的 tarball 而不是 git：沙箱和 CI 都不保证有仓库凭据，
- * 而 data 分支是公开的，一次 tarball 就是完整快照，不用处理增量 merge。
+ * 环境变量：
+ *   DATA_REPO / DATA_BRANCH   默认 iniestao/etf-board / data
+ *   DATA_CDN                  覆盖 CDN 基址
+ *   SYNC_CONCURRENCY          并发数，默认 16
+ *   GITHUB_TOKEN              有就用 API 查 commit（更准），没有就用 manifest 当指纹
  */
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveDirs } from './env.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = () => path.join(resolveDirs().state, 'last_sync.json');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function repoInfo() {
-  // 允许覆盖：私有 fork 或换仓库时不用改代码
-  const repo = process.env.DATA_REPO || 'iniestao/etf-board';
-  const branch = process.env.DATA_BRANCH || 'data';
-  return { repo, branch };
+  return {
+    repo: process.env.DATA_REPO || 'iniestao/etf-board',
+    branch: process.env.DATA_BRANCH || 'data',
+  };
+}
+
+function bases(repo, branch) {
+  const cdn = process.env.DATA_CDN || ('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch);
+  const raw = 'https://raw.githubusercontent.com/' + repo + '/' + branch;
+  return [cdn, raw];
+}
+
+async function getJson(url, timeout = 25000) {
+  const r = await fetch(url, {
+    headers: { 'user-agent': 'etf-board-sync', 'cache-control': 'no-cache' },
+    signal: AbortSignal.timeout(timeout),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' @ ' + url);
+  return r.json();
 }
 
 /**
  * 判断「远端数据有没有变」。
- *
- * 两条路，按可靠性递减：
- *   1. GitHub API 取 data 分支最新 commit —— 最准，但未认证只有 60 次/小时，
- *      沙箱出口 IP 常常是共享的，很容易 403（实测就撞上了）。有 token 才走这条。
- *   2. 直接读 raw 上的 manifest.json，用它自己的 generated_at 当指纹 ——
- *      不需要凭据、不会被限流，代价是 manifest 有几分钟 CDN 缓存（可接受，我们 6 小时才查一次）。
+ *   1. 有 token：API 取 data 分支最新 commit（最准）
+ *   2. 没 token：读 manifest.json，用它自己的 generated_at 当指纹
+ *      （未认证 API 只有 60 次/小时，沙箱出口是共享 IP，实测直接 403）
  */
-async function latestMarker(repo, branch) {
+async function remoteManifest(repo, branch) {
+  const [cdn] = bases(repo, branch);
   if (process.env.GITHUB_TOKEN) {
     try {
       const url = 'https://api.github.com/repos/' + repo + '/commits?sha=' + branch + '&per_page=1';
@@ -56,24 +72,15 @@ async function latestMarker(repo, branch) {
       if (r.ok) {
         const arr = await r.json();
         if (Array.isArray(arr) && arr.length) {
-          return {
-            mark: 'sha:' + arr[0].sha,
-            date: arr[0].commit && arr[0].commit.committer && arr[0].commit.committer.date,
-          };
+          const m = await getJson(cdn + '/manifest.json').catch(() => null);
+          if (m) return { ...m, mark: 'sha:' + arr[0].sha };
         }
       }
-    } catch { /* 落到 raw 路径 */ }
+    } catch { /* 落到 manifest 指纹 */ }
   }
-
-  const url = 'https://raw.githubusercontent.com/' + repo + '/' + branch + '/manifest.json';
-  const r = await fetch(url, {
-    headers: { 'user-agent': 'etf-board-sync', 'cache-control': 'no-cache' },
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!r.ok) throw new Error('读远端 manifest 失败 HTTP ' + r.status + '（配 GITHUB_TOKEN 可走 API）');
-  const j = await r.json();
-  const stamp = j.generated_at || j.last_trade_date || String(j.codes || '');
-  return { mark: 'raw:' + stamp + ':' + (j.codes || 0), date: j.last_trade_date || stamp };
+  const m = await getJson(cdn + '/manifest.json');
+  const stamp = m.generated_at || m.last_trade_date || String(m.codes || '');
+  return { ...m, mark: 'raw:' + stamp + ':' + (m.codes || 0) };
 }
 
 async function readState() {
@@ -86,94 +93,137 @@ async function writeState(obj) {
   await fsp.writeFile(f, JSON.stringify(obj, null, 2));
 }
 
-function run(cmd, args, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
-    let err = '';
-    p.stderr.on('data', (d) => { err += d; });
-    p.stdout.on('data', () => {});
-    p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(cmd + ' 退出码 ' + code + '：' + err.slice(0, 300)))));
+/** 单文件下载：按基址顺序试 + 退避重试，落盘走 tmp+rename（不留半个文件） */
+async function fetchOne(urls, dst) {
+  let lastErr;
+  for (const url of urls) {
+    for (let t = 0; t < 3; t++) {
+      try {
+        const r = await fetch(url, {
+          headers: { 'user-agent': 'etf-board-sync' },
+          signal: AbortSignal.timeout(40000),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length < 32) throw new Error('内容过短(' + buf.length + 'B)');
+        const tmp = dst + '.' + process.pid + '.tmp';
+        await fsp.writeFile(tmp, buf);
+        await fsp.rename(tmp, dst);
+        return buf.length;
+      } catch (e) {
+        lastErr = e;
+        if (t < 2) await sleep(400 * (t + 1));
+      }
+    }
+  }
+  throw lastErr || new Error('下载失败');
+}
+
+/** 固定 N 路并发的取任务池 */
+async function pool(items, n, worker, onProgress) {
+  let idx = 0;
+  let done = 0;
+  const results = { ok: 0, fail: [], bytes: 0 };
+  const runners = new Array(Math.min(n, items.length)).fill(0).map(async () => {
+    while (idx < items.length) {
+      const it = items[idx++];
+      try {
+        const b = await worker(it);
+        results.ok++;
+        results.bytes += b || 0;
+      } catch (e) {
+        results.fail.push({ item: it, error: String((e && e.message) || e) });
+      }
+      done++;
+      if (onProgress && done % 100 === 0) onProgress(done, items.length, results);
+    }
   });
+  await Promise.all(runners);
+  return results;
 }
 
 /**
  * @param {{force?:boolean, check?:boolean, log?:(s:string)=>void}} opts
- * @returns {Promise<{changed:boolean, mark?:string, date?:string, skipped?:string, files?:number}>}
  */
 export async function syncData(opts = {}) {
   const log = opts.log || ((s) => console.log(s));
-  const { dist, state } = resolveDirs();
+  const { dist } = resolveDirs();
   const { repo, branch } = repoInfo();
+  const label = (m) => String(m || '').replace(/^(sha|raw):/, '').slice(0, 24);
 
-  const remote = await latestMarker(repo, branch);
+  const man = await remoteManifest(repo, branch);
   const local = await readState();
-  const haveHist = fs.existsSync(path.join(dist, 'hist'));
-  const label = (m) => String(m || '').replace(/^sha:/, '').replace(/^raw:/, '').slice(0, 24);
+  const histDir = path.join(dist, 'hist');
+  const haveHist = fs.existsSync(histDir);
 
-  if (!opts.force && haveHist && local && (local.mark === remote.mark || local.sha === remote.mark)) {
-    log('已是最新：' + label(remote.mark) + '（' + (remote.date || '') + '），跳过');
-    return { changed: false, mark: remote.mark, date: remote.date, skipped: 'up-to-date' };
+  if (!opts.force && haveHist && local && (local.mark === man.mark || local.sha === man.mark)) {
+    log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），跳过');
+    return { changed: false, mark: man.mark, skipped: 'up-to-date' };
   }
   if (opts.check) {
-    log('远端 ' + label(remote.mark) + '（' + (remote.date || '') + '）'
+    log('远端 ' + label(man.mark) + '（' + (man.last_trade_date || '') + '）'
       + ' / 本地 ' + (local ? label(local.mark || local.sha) : '无') + ' → 需要同步');
-    return { changed: true, mark: remote.mark, date: remote.date, skipped: 'check-only' };
+    return { changed: true, mark: man.mark, skipped: 'check-only' };
   }
 
-  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'etf-sync-'));
-  try {
-    const url = 'https://codeload.github.com/' + repo + '/tar.gz/refs/heads/' + branch;
-    log('下载 ' + url + ' …（hist 约 48MB，GitHub 在国内可能偏慢）');
-    const tgz = path.join(tmp, 'data.tgz');
-    await run('curl', ['-fsSL', '--retry', '3', '--retry-delay', '2', '--max-time', '600', '-o', tgz, url]);
-    const size = (await fsp.stat(tgz)).size;
-    log('下载完成 ' + (size / 1048576).toFixed(1) + 'MB，解包中…');
-    await run('tar', ['-xzf', tgz, '-C', tmp]);
+  const codes = (man.items || []).map((x) => x.code).filter(Boolean);
+  if (!codes.length) throw new Error('远端 manifest 里没有 items，无法确定要拉哪些文件');
 
-    const top = (await fsp.readdir(tmp, { withFileTypes: true })).find((d) => d.isDirectory());
-    if (!top) throw new Error('压缩包里没有顶层目录');
-    const src = path.join(tmp, top.name);
+  await fsp.mkdir(histDir, { recursive: true });
+  const [cdn, raw] = bases(repo, branch);
+  const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
+  const t0 = Date.now();
+  log('开始同步 ' + codes.length + ' 个 hist 文件（并发 ' + conc + '）');
 
-    // hist 整目录替换：先落临时名再换，避免中途失败留下半个目录
-    const histSrc = path.join(src, 'hist');
-    const histDst = path.join(dist, 'hist');
-    if (!fs.existsSync(histSrc)) throw new Error('压缩包里没有 hist/');
-    await fsp.mkdir(dist, { recursive: true });
-    const histNew = histDst + '.new';
-    await fsp.rm(histNew, { recursive: true, force: true });
-    await fsp.cp(histSrc, histNew, { recursive: true });
-    await fsp.rm(histDst, { recursive: true, force: true });
-    await fsp.rename(histNew, histDst);
+  const res = await pool(codes, conc, (code) => fetchOne(
+    [cdn + '/hist/' + code + '.bin', raw + '/hist/' + code + '.bin'],
+    path.join(histDir, code + '.bin'),
+  ), (done, total, r) => {
+    log('  ' + done + '/' + total + '  ' + (r.bytes / 1048576).toFixed(1) + 'MB  '
+      + ((Date.now() - t0) / 1000).toFixed(0) + 's  失败 ' + r.fail.length);
+  });
 
-    for (const f of ['manifest.json', 'research.json']) {
-      const s = path.join(src, f);
-      if (fs.existsSync(s)) await fsp.copyFile(s, path.join(dist, f));
-    }
-
-    const files = (await fsp.readdir(histDst)).length;
-    await writeState({ mark: remote.mark, date: remote.date, synced_at: new Date().toISOString(), files, repo, branch });
-    log('同步完成：' + files + ' 个 hist 文件（' + label(remote.mark) + '）');
-    return { changed: true, mark: remote.mark, date: remote.date, files };
-  } finally {
-    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  // 顶层两个文件顺带更新（events.json 在 hist/ 里，已随上面一起拉下来）
+  for (const f of ['manifest.json', 'research.json']) {
+    try {
+      const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
+      if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));
+    } catch { /* 拿不到就保留旧的 */ }
   }
+
+  const sec = ((Date.now() - t0) / 1000).toFixed(0);
+  const files = (await fsp.readdir(histDir)).length;
+  if (res.fail.length) {
+    log('完成但有 ' + res.fail.length + ' 个失败（' + sec + 's）：' + res.fail.slice(0, 5).map((x) => x.item).join(', '));
+    log('失败的文件保留旧版本；mark 不更新，下次同步会重试');
+    return { changed: true, mark: null, failed: res.fail.length, files };
+  }
+
+  await writeState({
+    mark: man.mark,
+    last_trade_date: man.last_trade_date,
+    synced_at: new Date().toISOString(),
+    files,
+    repo,
+    branch,
+  });
+  log('同步完成：' + files + ' 个文件 / ' + (res.bytes / 1048576).toFixed(1) + 'MB / ' + sec + 's（' + label(man.mark) + '）');
+  return { changed: true, mark: man.mark, files };
 }
 
-/** app.mjs 用的后台静默版：绝不抛错，绝不阻塞请求 */
+/** app.mjs 用的后台版：绝不抛错，绝不阻塞请求 */
 export function syncInBackground(log = () => {}) {
-  const p = syncData({ log }).catch((e) => log('后台同步失败（不影响页面）：' + (e && e.message || e)));
-  if (p && typeof p.catch === 'function') p.catch(() => {});
-  return p;
+  return syncData({ log }).catch((e) => log('后台同步失败（页面继续用旧数据）：' + ((e && e.message) || e)));
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   const flags = new Set(process.argv.slice(2));
   try {
-    await syncData({ force: flags.has('--force'), check: flags.has('--check') });
+    const r = await syncData({ force: flags.has('--force'), check: flags.has('--check') });
+    if (r && r.failed) process.exit(2);
   } catch (e) {
-    console.error('同步失败：' + (e && e.message || e));
+    console.error('同步失败：' + ((e && e.message) || e));
     process.exit(1);
   }
 }
