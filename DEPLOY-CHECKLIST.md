@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 线上地址 | https://etf-board.171098509.workers.dev |
+| 线上地址 | https://etf-board.iniestao.workers.dev |
 | GitHub 仓库 | https://github.com/iniestao/etf-board（公开） |
 | Cloudflare 账号 | `d4661207d82c2945cc023c3cd208362c` |
 | Worker 名 | `etf-board` |
@@ -105,7 +105,7 @@ npx wrangler tail etf-board --format pretty
 **验证线上**：
 
 ```bash
-ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.workers.dev
+ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.iniestao.workers.dev
 ```
 
 不带 `ACCESS_PASS` 只能跑到「首页 401 站点上锁」，后面接口全是 401。
@@ -149,7 +149,7 @@ Dashboard → Workers → `etf-board` → Settings → Variables and Secrets →
 最后自检（**带上口令**）：
 
 ```bash
-ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.171098509.workers.dev
+ACCESS_PASS=你的口令 node tools/verify.mjs https://etf-board.iniestao.workers.dev
 ```
 
 应该看到 9 项全过（本地实测 9/9）。
@@ -328,7 +328,7 @@ boll_up 0.0000%  boll_low 0.0000%  atr14 0.0000%  hvol20 0.0003%  vol_ratio5 0.0
 | 版本 etag | `2aa974c4075ad551f3b3c392a8d2002177b47ac19e3921548dcd5e4082c2f451` |
 | 部署方式 | `PUT /accounts/{id}/workers/scripts/etf-board`（multipart：`metadata` + `worker.js`） |
 | 绑定 | `HIST_BASE`（plain）、`WATCH`（KV）、`ACCESS_PASS`（secret，重发同值） |
-| 站点 | `https://etf-board.171098509.workers.dev` |
+| 站点 | `https://etf-board.iniestao.workers.dev` |
 
 ### 线上自检（真实运行时，service binding 调用）
 
