@@ -117,18 +117,24 @@ node server/sync-data.mjs       # 手动同步最新 hist（--check 只看状态
 已发布地址（2026-11-05）：
 
 ```
-https://a011023d6360fca2d.app.workbuddy.host/?sharecode=D2BP5INJ7S
+https://etfboardx1.app.workbuddy.host/?sharecode=D2BP5INJ7S
 ```
 
 两条硬约束，缺一条链接就打不开：
 
-- `?sharecode=` 是**平台层**凭据，每个请求都要带，少了直接 403（不是我们的门禁拦的）
+- `?sharecode=` 是**平台层**凭据，每个请求都要带，少了直接 403（不是我们的门禁拦的）。
+  所以给别人链接时**必须整条复制**，只发域名会打不开。
 - 进去后还要输 `server/.env` 里的 `ACCESS_PASS`，这是我们自己的门禁
+
+域名为什么叫 `etfboardx1` 而不是 `etf-board`：平台的友好域名在**首次发布成功那一刻**
+就绑死在这个运行实例上，之后再改 appName 不生效（实测 cancel release 后重发也一样）。
+当时试 `etf-board` 返回的是已绑定的旧域名，说明该名字没被接受，`etfboardx1` 是第一个
+可用的，也就成了最终域名。这个不可逆——除非换一个全新的运行环境重新首次发布。
 
 打线上做回归要同时给两个：
 
 ```bash
-BASE=https://a011023d6360fca2d.app.workbuddy.host \
+BASE=https://etfboardx1.app.workbuddy.host \
 SHARECODE=D2BP5INJ7S \
 ACCESS_PASS=<server/.env 里的值> \
 node server/selftest.mjs
