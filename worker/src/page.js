@@ -1,6 +1,7 @@
 import { IDX_GROUPS } from './idx_data.js';
 import { RESEARCH } from './research_data.js';
 import { ALPHA_META } from './alpha_meta.js';
+import { LAB } from './lab_data.js';
 
 // 注入到 HTML 里的紧凑映射：{ "沪深300": ["510300", ...], ... }
 // 18KB 一次随页面下发，比再开一个 /api 接口划算——省一次 RTT，也省 Worker 的 CPU 配额。
@@ -15,6 +16,10 @@ const RESEARCH_JS = JSON.stringify(RESEARCH);
 // 公式由 tools/gen_alpha_meta.py 从 alpha101.py 的 AST 生成，
 // 所以页面上写的和实际在算的永远是同一份。
 const ALPHA_META_JS = JSON.stringify(ALPHA_META);
+
+// 第二批因子：468 个指数（同指数只留流动性最好的一只）、100 个新因子 + Alpha101 同池，
+// 约 20KB。比上面那套大，主要是 201 行的两期统计和 90 个月末净值点。
+const LAB_JS = JSON.stringify(LAB);
 
 export const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -225,6 +230,28 @@ font-family:var(--mono);text-align:right;white-space:nowrap}
 border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 .rsnote b{color:var(--txt)}
 .rsnote .warn{border-left-color:var(--up)}
+/* ---- 第二批因子：净值图、敏感性网格 ---- */
+.labchart{background:var(--bg3);border:1px solid var(--line);border-radius:8px;
+padding:10px 12px 6px;margin-top:10px}
+.labchart svg{display:block;width:100%;height:auto;overflow:visible}
+.labchart .cap{font-size:10.5px;color:var(--txt3);line-height:1.6;margin-top:6px}
+.lablg{display:flex;gap:14px;font-size:10.5px;color:var(--txt2);margin-bottom:4px;flex-wrap:wrap}
+.lablg i{display:inline-block;width:15px;height:2.5px;vertical-align:middle;margin-right:5px;border-radius:2px}
+/* 两期热力表并排，窄屏自动上下叠 */
+.labgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.labgrid .box{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+.labgrid .box h5{font-size:10.5px;color:var(--txt3);font-weight:500;margin-bottom:6px}
+.labgrid table{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
+.labgrid th{font-size:10px;color:var(--txt3);font-weight:400;text-align:center;padding:3px 2px}
+.labgrid td{text-align:center;padding:4px 2px;border-radius:3px}
+.labgrid td.n{color:var(--txt3)}
+.labtabs{display:flex;gap:6px;margin:0 0 9px;flex-wrap:wrap}
+.labtabs button{padding:4px 11px;font-size:11px;border-radius:14px;background:var(--bg3);
+border:1px solid var(--line);color:var(--txt2);cursor:pointer;font-family:inherit}
+.labtabs button.on{background:rgba(76,141,255,.15);border-color:var(--accent);color:var(--txt)}
+.labtbl td.nm{text-align:left;font-family:inherit;color:var(--txt3);white-space:normal;
+font-size:10.5px;line-height:1.5;max-width:270px}
+.labtbl td.fam{text-align:left;font-family:inherit;color:var(--txt3);font-size:10px;white-space:nowrap}
 /* ---- 因子明细：点一行展开构造方式 ---- */
 .fxtbl tr.fxr{cursor:pointer}
 .fxtbl tr.fxr.on td{background:rgba(59,130,246,.10)}
@@ -272,6 +299,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   .rstwrap>.btbl{min-width:620px}
   .rstwrap>.fxtbl{min-width:540px}
   .rstwrap>.indtbl{min-width:0}
+  .rstwrap>.ytbl{min-width:0}
+  .rstwrap>.labtbl{min-width:680px}
   /* 表格右侧被裁一半的样子容易被当成本站坏了，标一句「能滑」。
      只对会横向滚动的那几张表显示，指标说明表换了行不需要。 */
   .rssec:has(.rstwrap>table:not(.indtbl)) > h4::after{
@@ -285,7 +314,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <h1>ETF 全市场盯盘 <em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
   <span class="dot" id="d-src"><i></i><span id="srcName">连接中</span></span>
-  <a id="btnRs" href="/research" title="101 个 Alpha 因子的 IC 检验与样本外回测结果">因子研究</a>
+  <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
 </header>
 
 <div class="cards">
@@ -409,6 +438,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 var IDX_GROUPS = ${IDX_JS};
 var RESEARCH = ${RESEARCH_JS};
 var ALPHA_META = ${ALPHA_META_JS};
+var LAB = ${LAB_JS};
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -1617,11 +1647,261 @@ function rsPct(v, d){
   if (v == null || !isFinite(v)) return '-';
   return (v > 0 ? '+' : '') + (v * 100).toFixed(d == null ? 2 : d) + '%';
 }
+/* ---------- 第二批因子：指数去重池 ----------
+   上面那一套是 1617 只 ETF 的「个股口径」：同一指数常有 3~4 只 ETF，
+   在横截面里各占一行，等于同一件事投了 3~4 票，IC 被同质化噪声稀释。
+   这一批先按指数去重（每天留 20 日均额最大的那只，收益累乘拼接），
+   再跑 100 个新因子 + 101 个 Alpha101，口径完全一致。
+   数据由 factor_lab/export_lab.py 生成，构建时固化成 lab_data.js。 */
+
+function labSvg(nav){
+  if (!nav || nav.length < 2) return '';
+  var W = 1000, H = 300, PL = 10, PR = 10, PT = 12, PB = 24;
+  var lo = Infinity, hi = -Infinity, i;
+  for (i = 0; i < nav.length; i++){
+    lo = Math.min(lo, nav[i][1], nav[i][2]);
+    hi = Math.max(hi, nav[i][1], nav[i][2]);
+  }
+  var pad = (hi - lo) * 0.08 || 0.1;
+  lo -= pad; hi += pad;
+  function X(k){ return PL + k / (nav.length - 1) * (W - PL - PR); }
+  function Y(v){ return PT + (hi - v) / (hi - lo) * (H - PT - PB); }
+  function d(col){
+    var s = '';
+    for (var k = 0; k < nav.length; k++){
+      s += (k ? 'L' : 'M') + X(k).toFixed(1) + ' ' + Y(nav[k][col]).toFixed(1);
+    }
+    return s;
+  }
+  var g = '';
+  // 年份分隔线 + 年份标签：90 个月末点不标年份就看不出横轴是什么
+  var lastY = '';
+  for (i = 0; i < nav.length; i++){
+    var y = nav[i][0].slice(0, 4);
+    if (y !== lastY){
+      lastY = y;
+      g += '<line x1="' + X(i).toFixed(1) + '" y1="' + PT + '" x2="' + X(i).toFixed(1)
+        + '" y2="' + (H - PB) + '" stroke="#262c37" stroke-width="1"/>'
+        + '<text x="' + (X(i) + 3).toFixed(1) + '" y="' + (H - 7)
+        + '" fill="#5a6373" font-size="11">' + y + '</text>';
+    }
+  }
+  // 三条水平参考线（净值刻度）
+  for (var q = 0; q <= 2; q++){
+    var vv = lo + (hi - lo) * q / 2;
+    g += '<line x1="' + PL + '" y1="' + Y(vv).toFixed(1) + '" x2="' + (W - PR)
+      + '" y2="' + Y(vv).toFixed(1) + '" stroke="#262c37" stroke-width="1" stroke-dasharray="3 4"/>'
+      + '<text x="' + PL + '" y="' + (Y(vv) - 4).toFixed(1)
+      + '" fill="#4a5260" font-size="10">' + vv.toFixed(2) + '</text>';
+  }
+  var last = nav[nav.length - 1];
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img">'
+    + g
+    + '<path d="' + d(2) + '" fill="none" stroke="#8b93a3" stroke-width="1.6" opacity=".85"/>'
+    + '<path d="' + d(1) + '" fill="none" stroke="#ff4d4f" stroke-width="2.2"/>'
+    + '<circle cx="' + X(nav.length - 1).toFixed(1) + '" cy="' + Y(last[1]).toFixed(1)
+    + '" r="3.5" fill="#ff4d4f"/>'
+    + '</svg>';
+}
+
+/* 超额热力格：正红负绿（A 股习惯），透明度按幅度缩放，上限 0.45 免得糊成一片 */
+function labHeat(v){
+  if (v == null || !isFinite(v)) return '<td class="n">-</td>';
+  var a = Math.min(0.45, 0.08 + Math.abs(v) * 1.9);
+  var bg = v >= 0 ? 'rgba(255,77,79,' + a.toFixed(2) + ')'
+                  : 'rgba(0,196,140,' + a.toFixed(2) + ')';
+  return '<td style="background:' + bg + '">' + (v > 0 ? '+' : '') + (v * 100).toFixed(1) + '</td>';
+}
+
+function renderLab(){
+  var L = LAB;
+  if (!L) return '';
+  var E = L.pe.all, C = L.counts, U = L.universe;
+  var newAlive = C.alive - (C.fam_alive['Alpha101'] || 0);
+  var h = '';
+
+  h += '<div class="rssec"><h4>第二批 · 指数去重后的 ' + C.n_new + ' 个新因子</h4>';
+
+  h += '<div class="rsnote">'
+    + '上面那套是 <b>' + U.n_etf + ' 只 ETF 的个股口径</b>——同一指数常有 3~4 只 ETF，'
+    + '在横截面里各占一行，等于同一件事投了 3~4 票，算出来的 IC 被同质化噪声稀释。'
+    + '这一批先按指数去重：<b>' + U.n_etf + ' 只 → ' + U.n_idx + ' 个指数</b>'
+    + '（股票 + 商品，剔除债券与货币），每天在指数内留 20 日均成交额最大的一只，'
+    + '收益按累乘拼接，不是直接取价格——否则换券那天会出现假跳空。'
+    + '<br>然后在这 ' + U.n_idx + ' 个指数上，用同一套分段（' + L.window[0] + ' ~ ' + L.window[1]
+    + '，2023 年底切分）跑 ' + C.n_new + ' 个新因子和 ' + C.n_alpha + ' 个 Alpha101。'
+    + '</div>';
+
+  h += '<div class="rsk" style="margin-top:10px">'
+    + rsCard('标的池', U.n_idx, U.n_etf + ' 只 ETF 去重')
+    + rsCard('因子数', C.n_new + C.n_alpha, '新 ' + C.n_new + ' + Alpha ' + C.n_alpha)
+    + rsCard('两期都显著', C.alive, '新 ' + newAlive + ' + Alpha ' + (C.fam_alive['Alpha101'] || 0), 'down')
+    + rsCard('PE 策略年化', rsPct(E.ann), '基准 ' + rsPct(E.b_ann), E.ann > 0 ? 'up' : 'down')
+    + rsCard('夏普', E.sharpe.toFixed(2), '基准 ' + E.b_sharpe.toFixed(2))
+    + rsCard('最大回撤', rsPct(E.mdd, 1), '基准 ' + rsPct(E.b_mdd, 1))
+    + '</div>';
+
+  // ---- 净值 ----
+  h += '<div class="labchart">'
+    + '<div class="lablg">'
+    + '<span><i style="background:#ff4d4f"></i>PE 单因子（做多前 20%）</span>'
+    + '<span><i style="background:#8b93a3"></i>' + U.n_idx + ' 个指数等权</span>'
+    + '<span style="margin-left:auto;color:var(--txt3)">持有 20 日 · 双边各 5bp</span></div>'
+    + labSvg(L.pe.nav)
+    + '<div class="cap">净值 ' + L.pe.nav[0][0] + ' 起算，末值策略 '
+    + L.pe.nav[L.pe.nav.length - 1][1].toFixed(2) + ' / 基准 '
+    + L.pe.nav[L.pe.nav.length - 1][2].toFixed(2)
+    + '。平均持仓 ' + Math.round(E.holding) + ' 只，年换手 ' + E.to.toFixed(1) + ' 倍。</div>'
+    + '</div>';
+
+  // ---- 分年度 ----
+  // ytbl：只有 4 列，窄屏下别跟着 480px 的下限一起横滚
+  h += '<div class="rstwrap" style="margin-top:10px"><table class="rstbl ytbl">'
+    + '<thead><tr><th>年度</th><th>PE 策略</th><th>指数等权</th><th>超额</th></tr></thead><tbody>';
+  for (var i = 0; i < L.pe.yearly.length; i++){
+    var r = L.pe.yearly[i];
+    var tag = (i === 0 ? '2019*' : (i === L.pe.yearly.length - 1 ? r[0] + '*' : String(r[0])));
+    h += '<tr><td>' + tag + '</td>'
+      + '<td class="' + cc(r[1]) + '">' + rsPct(r[1]) + '</td>'
+      + '<td>' + rsPct(r[2]) + '</td>'
+      + '<td class="' + cc(r[3]) + '"><b>' + rsPct(r[3]) + '</b></td></tr>';
+  }
+  h += '</tbody></table></div>'
+    + '<div class="cap" style="font-size:10.5px;color:var(--txt3);margin-top:5px">'
+    + '* 2019 从 6 月起、2026 到 11 月止，都不是完整年度。'
+    + '超额全在下跌年：2022 赢 28 个点、2026 赢 22 个点，2020 输 13 个点。</div>';
+
+  // ---- 敏感性 ----
+  var HOLDS = [10, 20, 30], WINS = [10, 20, 40, 60, 120];
+  function grid(field){
+    var s = '<table><thead><tr><th>窗口\\持有</th>';
+    for (var j = 0; j < HOLDS.length; j++) s += '<th>' + HOLDS[j] + ' 日</th>';
+    s += '</tr></thead><tbody>';
+    for (var a = 0; a < WINS.length; a++){
+      s += '<tr><td class="n">' + WINS[a] + ' 日</td>';
+      for (var b = 0; b < HOLDS.length; b++){
+        var val = null;
+        for (var k = 0; k < L.sens.length; k++){
+          var t = L.sens[k];
+          if (t[0] === WINS[a] && t[1] === HOLDS[b] && Math.abs(t[2] - 0.2) < 1e-6){
+            val = field === 'a' ? t[3] : t[4];
+            break;
+          }
+        }
+        s += labHeat(val);
+      }
+      s += '</tr>';
+    }
+    return s + '</tbody></table>';
+  }
+  h += '<div class="labgrid" style="margin-top:12px">'
+    + '<div class="box"><h5>样本内 2021–2023 超额（%）· 持仓前 20%</h5>' + grid('a') + '</div>'
+    + '<div class="box"><h5>样本外 2024–2026 超额（%）· 持仓前 20%</h5>' + grid('b') + '</div>'
+    + '</div>'
+    + '<div class="cap" style="font-size:10.5px;color:var(--txt3);margin-top:6px">'
+    + '45 组参数里 33 组样本外超额为正，但只有 <b>10~20 日窗口</b>有效，40 日以上衰减到零。'
+    + '它抓的是月度尺度的路径质量，拉到季度就不成立——这不是一个「万能」因子。</div>';
+
+  h += '</div>';   // rssec
+
+  // ---- 201 个因子 ----
+  var rows = L.cross.slice();
+  rows.sort(function(x, y){
+    var a1 = x[7] == null ? -9 : x[7], b1 = y[7] == null ? -9 : y[7];
+    return b1 - a1;
+  });
+  var LIMIT = 25;
+  h += '<div class="rssec"><h4>' + C.n_new + ' 个新因子 vs ' + C.n_alpha + ' 个 Alpha101 · 按样本外超额排序</h4>';
+  h += '<div class="labtabs" id="labTabs">'
+    + '<button data-m="all" class="on">全部 ' + rows.length + '</button>'
+    + '<button data-m="sig">两期都显著 ' + C.alive + '</button>'
+    + '<button data-m="new">只看新因子 ' + C.n_new + '</button>'
+    + '<button data-m="alp">只看 Alpha101 ' + C.n_alpha + '</button>'
+    + '</div>';
+  h += '<div class="rstwrap"><table class="rstbl labtbl" id="labTbl"><thead><tr>'
+    + '<th>因子</th><th style="text-align:left">含义 / 家族</th>'
+    + '<th>内 IC</th><th>t</th><th>内超额</th>'
+    + '<th>外 IC</th><th>t</th><th>外超额</th></tr></thead><tbody>';
+  for (var m = 0; m < rows.length; m++){
+    var x = rows[m];
+    var isNew = x[1] !== 'Alpha101';
+    var sigOk = (x[3] != null && x[3] > 2 && x[4] != null && x[4] > 0
+                 && x[6] != null && x[6] > 1.5 && x[7] != null && x[7] > 0) ? 1 : 0;
+    var nm = x[8] || (ALPHA_META[x[0]] && ALPHA_META[x[0]].nm) || '';
+    h += '<tr data-s="' + sigOk + '" data-n="' + (isNew ? 1 : 0) + '"'
+      + (m >= LIMIT ? ' class="labx" style="display:none"' : '') + '>'
+      + '<td><b' + (sigOk ? ' style="color:#ff8b7a"' : '') + '>' + esc(x[0]) + '</b></td>'
+      + '<td class="nm">' + esc(nm) + '<br><span class="fam">' + esc(x[1]) + '</span></td>'
+      + '<td class="' + cc(x[2]) + '">' + (x[2] == null ? '-' : x[2].toFixed(4)) + '</td>'
+      + '<td>' + (x[3] == null ? '-' : x[3].toFixed(2)) + '</td>'
+      + '<td class="' + cc(x[4]) + '">' + rsPct(x[4]) + '</td>'
+      + '<td class="' + cc(x[5]) + '">' + (x[5] == null ? '-' : x[5].toFixed(4)) + '</td>'
+      + '<td>' + (x[6] == null ? '-' : x[6].toFixed(2)) + '</td>'
+      + '<td class="' + cc(x[7]) + '"><b>' + rsPct(x[7]) + '</b></td></tr>';
+  }
+  h += '</tbody></table></div>';
+  if (rows.length > LIMIT){
+    h += '<div class="rsmore"><button id="labMore" data-open="0">展开全部 '
+      + rows.length + ' 个</button></div>';
+  }
+  h += '<div class="rsnote" style="margin-top:8px">'
+    + '<b>样本内筛不出样本外。</b>这 ' + rows.length + ' 个因子里，样本内显著的有 ' + C.sig_in
+    + ' 个，但其中只有 ' + C.alive + ' 个在样本外还站得住；反过来，样本外有效的 '
+    + (C.alive + C.only_out) + ' 个里有 ' + C.only_out + ' 个样本内根本看不出（t&lt;2 或超额为负）。'
+    + '样本内最显著的 <b>MOM_12_1</b>（t=4.5）样本外超额 <b>−4.1%</b>——'
+    + 'IC 靠空头端撑起来，而 ETF 融不到券，多头拿不到。<br>'
+    + '<b>所以这张表要倒过来读：</b>看样本外那一列，别用样本内排序去挑。'
+    + '</div></div>';
+
+  return h;
+}
+
+function labBind(){
+  var tabs = document.getElementById('labTabs');
+  var tbl = document.getElementById('labTbl');
+  if (!tabs || !tbl) return;
+  var body = tbl.tBodies[0];
+  function apply(mode){
+    var shown = 0;
+    for (var i = 0; i < body.rows.length; i++){
+      var r = body.rows[i];
+      var ok = mode === 'all' ? true
+        : (mode === 'sig' ? r.getAttribute('data-s') === '1'
+        : (mode === 'new' ? r.getAttribute('data-n') === '1'
+        : r.getAttribute('data-n') === '0'));
+      // 筛选后全部展开；回到「全部」时恢复前 25 行
+      var vis = ok && (mode !== 'all' || i < 25);
+      r.style.display = vis ? '' : 'none';
+      if (vis) shown++;
+    }
+    var more = document.getElementById('labMore');
+    if (more) more.style.display = mode === 'all' ? '' : 'none';
+    var btns = tabs.getElementsByTagName('button');
+    for (var j = 0; j < btns.length; j++){
+      btns[j].className = btns[j].getAttribute('data-m') === mode ? 'on' : '';
+    }
+    return shown;
+  }
+  tabs.onclick = function(e){
+    var b = e.target;
+    if (b.tagName !== 'BUTTON') return;
+    apply(b.getAttribute('data-m'));
+  };
+  var more = document.getElementById('labMore');
+  if (more){
+    more.onclick = function(){
+      for (var i = 0; i < body.rows.length; i++) body.rows[i].style.display = '';
+      more.style.display = 'none';
+    };
+  }
+}
+
 function renderRs(){
   var R = RESEARCH;
   if (!R) return;
   document.getElementById('rsSub').textContent =
-    R.window[0] + ' ~ ' + R.window[1] + ' · 因子 ' + R.ic.n
+    R.window[0] + ' ~ ' + R.window[1] + ' · Alpha101 ' + R.ic.n
+    + (LAB ? ' + 新因子 ' + LAB.counts.n_new : '')
     + ' · 生成 ' + String(R.generated_at || '').replace('T', ' ').slice(0, 16);
 
   var h = '';
@@ -1714,6 +1994,9 @@ function renderRs(){
   }
   h += '</tbody></table></div></div>';
 
+  // ---- 第二批：指数去重池（201 个因子的两期对照 + PE 策略） ----
+  h += renderLab();
+
   // ---- 指标说明 ----
   var IND = [
     ['MA20', '20 日移动平均', '价格在均线上方偏强；偏离超过 ±5% 容易回归'],
@@ -1755,12 +2038,19 @@ function renderRs(){
     + '<b>ETF 上尤其弱的原因：</b>Alpha101 是给个股设计的，衡量的是「这只股票会跑赢同行多少」。'
     + 'ETF 是一篮子股票，成分股的 alpha 互相抵消，剩下的主要是风格暴露（大小盘、成长价值），'
     + '而风格暴露靠资产配置就能拿到，不需要 101 个因子。<br><br>'
-    + '<b>所以这个页面的价值在盯盘和 K 线，不在选股信号。</b>'
-    + '因子部分保留下来是为了留个记录：这些数跑过，结论是负的，别再重复试一遍。'
+    + '<b>但换个池子，结论变了一半。</b>上面这套是 ' + '1717 只 ETF 的个股口径，'
+    + '压到 468 个指数后（同指数只留流动性最好的那只），Alpha101 有 6 个、'
+    + '新因子有 3 个在两期里都站得住。其中 PE 单独做多前 20%，2019-06 以来年化 12.68%、'
+    + '等权基准 5.44%——代价是 2020 年跑输 13 个点、2025 年只赢 1.6 个点，超额全在下跌年。'
+    + '详见下面「第二批」那一节。<br><br>'
+    + '<b>所以这个页面的价值在盯盘和 K 线，选股信号只是副产物。</b>'
+    + '因子部分留两个记录：个股口径的 101 个跑过了、结论是负的；'
+    + '指数口径的换了池子才有信号，而且只活在特定年份。'
     + '</div><div class="rssrc">完整推导见仓库 docs/FACTORS.md（620 行）</div></div>';
 
   document.getElementById('rsBody').innerHTML = h;
   rsBind();
+  labBind();
 }
 
 /* 因子详情行。数据来自 ALPHA_META——构建时由 tools/gen_alpha_meta.py
