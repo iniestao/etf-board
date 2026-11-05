@@ -122,11 +122,16 @@ background:var(--bg3)}
 .spdrow:hover .spdnm{color:#1d4ed8}
 /* 给名字一个下限：不然「银行ETF华宝」和「沪深300ETF华泰柏瑞」两种长度
    会让走势线在每一行都往右挪一点，一列 spark 看着像锯齿。 */
-.spdnm{flex:0 0 auto;min-width:126px;max-width:210px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.spdnm em{font-style:normal;font-size:9.5px;color:var(--txt3);margin-left:4px;font-family:var(--mono)}
-.spk{display:block;flex:0 0 auto;overflow:visible}
-.spdv{flex:0 0 56px;margin-left:auto;font-family:var(--mono);font-size:12px;
+/* 名字列给死宽度：名字长短不一时，走势线的左端会一行一行往右挪，
+   一列 spark 参差错开，看着比数据本身还乱（这也是「比例怪」的一半原因）。
+   死宽度 + 名字省略号，代码不缩——代码是拿来复制搜索的，比名字后半截有用。 */
+.spdnm{flex:0 0 168px;display:flex;align-items:baseline;gap:4px;min-width:0;font-weight:500}
+.spdnm .nmx{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spdnm em{flex:0 0 auto;font-style:normal;font-size:9.5px;color:var(--txt3);font-family:var(--mono)}
+/* 走势线往右靠、紧贴两个数值：名字短的行中间留白，比「线飘在名字后面、
+   数值孤零零在最右」稳。涨速/量比两个数成一组，才是「右块」。 */
+.spk{display:block;flex:0 0 auto;margin-left:auto;overflow:visible}
+.spdv{flex:0 0 56px;font-family:var(--mono);font-size:12px;
   text-align:right;font-weight:600}
 .spdq{flex:0 0 40px;font-family:var(--mono);font-size:11px;text-align:right;color:var(--txt2)}
 .spdq.hot{color:#a9660a;font-weight:600}
@@ -139,7 +144,7 @@ background:var(--bg3)}
   /* 手机上挤不下走势线，让位给名字——名字被截成两三个字更伤 */
   .spdrow{gap:6px}
   .spdrow .spk{display:none}
-  .spdnm{flex:1 1 auto;min-width:0;max-width:none}
+  .spdnm{flex:1 1 auto;min-width:0}
   .spdv{flex:0 0 52px;font-size:11.5px}
   .spdq{flex:0 0 36px;font-size:10.5px}
 }
@@ -1385,9 +1390,16 @@ function mktBar(){
     + '<i style="width:' + midPct.toFixed(1) + '%;background:#dfe4ec"></i>'
     + '<i style="width:' + loPct.toFixed(1) + '%;background:#8fc9ae"></i>';
 
+  /* 位置是 0–100 的百分位刻度，取整显示：小数点后那位（15.8）在这个尺度上
+     没有意义，只会让人以为是价格或倍数。和左右两边的「只数」并列时，
+     必须把单位写出来才对得上——「中位位置 16%」。
+     口径写进 title：不是涨幅、不是价格，是收盘价落在近一年高低区间的第几成。 */
   var w1 = document.getElementById('mktWidth');
+  var med = (b.medPos == null || !isFinite(b.medPos)) ? '-' : Math.round(b.medPos) + '%';
   w1.innerHTML = '<span>一年高位 <b>' + b.p80 + '</b> 只</span>'
-    + '<span>中位位置 <b>' + b.medPos + '</b></span>'
+    + '<span title="全部 ETF 的位置中位数：位置 = (现价 − 近一年最低) ÷ (近一年最高 − 近一年最低)。'
+    + '越接近 0% 越贴一年低位，越接近 100% 越贴一年高位">中位位置 <b>'
+    + med + '</b></span>'
     + '<span>一年低位 <b>' + b.p20 + '</b> 只</span>';
 
   var w2 = document.getElementById('mktWidth2');
@@ -1831,24 +1843,59 @@ function spdPct(v){
 /* 迷你线：横轴是最近 20 分钟，与「涨速」的窗口不是一回事，所以颜色按窗口
    方向给、形状按 20 分钟给——「一路阴跌最后两分钟拉起来」这种形态才看得见。
    颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量（--up/--down 改主题时
-   这里要跟着改）。 */
-function spdSpark(vals, up){
+   这里要跟着改）。
+
+   纵向尺度是这一栏最容易画错的地方。原先每行按自己的 min/max 拉满，结果
+   0.18% 的横盘和 0.45% 的急拉画出来一样高、一样陡——一列全是同形状的锯齿，
+   看起来「比例很怪」，而且丢掉了「动得多不多」这个信息。
+   现在：
+   - 中线 = 20 分钟前的价格，虚线画出来当基准，「贴着中线 = 没怎么动」；
+   - 全池共用一把尺子（spdScale），幅度按同一比例换算，行与行之间可比；
+   - 超尺的顶到边，短的自然就矮——10 只里谁走得最远一眼能排出来。 */
+function spdSpark(vals, up, sc){
   if (!vals || vals.length < 3) return '<span class="spk"></span>';
-  var w = 58, h = 18, pad = 1.5, mn = Infinity, mx = -Infinity, i;
-  for (i = 0; i < vals.length; i++){
-    if (vals[i] < mn) mn = vals[i];
-    if (vals[i] > mx) mx = vals[i];
-  }
-  var rng = (mx - mn) || (mx * 0.002) || 0.001;
-  var d = '';
+  var w = 88, h = 24, pad = 3, i;
+  var base = vals[0];
+  if (!(base > 0)) return '<span class="spk"></span>';
+  // sc 是相对幅度（基准价的百分比），缺省 0.25% 不至于把线画成一条直杠
+  var rng = base * (sc > 0 ? sc : 0.0025);
+  var mid = h / 2, half = mid - pad, d = '';
   for (i = 0; i < vals.length; i++){
     var x = pad + (i / (vals.length - 1)) * (w - pad * 2);
-    var y = h - pad - ((vals[i] - mn) / rng) * (h - pad * 2);
+    var y = mid - ((vals[i] - base) / rng) * half;
+    if (y < pad) y = pad;
+    if (y > h - pad) y = h - pad;
     d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
   }
+  // 2px 虚线基准线：没有它，「线偏上还是偏下」就没有参照，读起来还是怪
   return '<svg class="spk" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">'
+    + '<line x1="' + pad + '" y1="' + mid + '" x2="' + (w - pad) + '" y2="' + mid
+    + '" stroke="#bfc8d4" stroke-width="1" stroke-dasharray="2.5 2.5"/>'
     + '<path d="' + d + '" fill="none" stroke="' + (up ? '#d93a3a' : '#0e9a61')
     + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+
+/* 全池共用一把纵向尺子：取每只「20 分钟内相对起点最大偏离」的 75 分位。
+   0.06% 是下限（那种一根直线的心电图没必要占满），0.8% 是上限（有一只暴涨
+   时不至于把其余 39 只全压成直线）。实测盘中这个分位落在 0.3%–0.5%。 */
+function spdScale(rows){
+  var a = [], i, j, pv, base, m, dv;
+  for (i = 0; i < rows.length; i++){
+    pv = rows[i].pv;
+    if (!pv || pv.length < 3) continue;
+    base = pv[0];
+    if (!(base > 0)) continue;
+    m = 0;
+    for (j = 1; j < pv.length; j++){
+      dv = Math.abs(pv[j] - base) / base;
+      if (dv > m) m = dv;
+    }
+    if (m > 0) a.push(m);
+  }
+  if (!a.length) return 0.0025;
+  a.sort(function(x, y){ return x - y; });
+  var q = a[Math.min(a.length - 1, Math.floor(a.length * 0.75))];
+  return Math.min(0.008, Math.max(0.0006, q));
 }
 
 function renderSpeed(){
@@ -1881,6 +1928,9 @@ function renderSpeed(){
   }
   up.sort(function(a, b){ return b.v - a.v; });
   dn.sort(function(a, b){ return a.v - b.v; });
+  // 尺子按整个池子算，不按这两栏算：左右两栏、切换 3/5 分钟都得同一把尺，
+  // 否则「急涨第一名」和「急跌第一名」的波形幅度没法放在一起看
+  var SC = spdScale(SPD.rows);
 
   function rowHtmlOf(o){
     var x = o.r, it = findItem(x.c);
@@ -1890,8 +1940,9 @@ function renderSpeed(){
     // 直接跳 15:00，3 分钟实际跨了 4 分钟），也可能是午后刚开盘窗口还没走满
     var far = Math.abs(x.sp - SPD.w) >= 2;
     return '<div class="spdrow" data-c="' + x.c + '">'
-      + '<div class="spdnm" title="' + nm + '  ' + x.c + '">' + nm + '<em>' + x.c + '</em></div>'
-      + spdSpark(x.pv, o.v >= 0)
+      + '<div class="spdnm" title="' + nm + '  ' + x.c + '">'
+        + '<span class="nmx">' + nm + '</span><em>' + x.c + '</em></div>'
+      + spdSpark(x.pv, o.v >= 0, SC)
       + '<div class="spdv" style="color:' + (o.v >= 0 ? 'var(--up)' : 'var(--down)') + '">'
         + (far ? '~' : '') + spdPct(o.v) + '</div>'
       + '<div class="spdq' + (hot ? ' hot' : '') + '" title="量比：最近 ' + SPD.w
@@ -1933,6 +1984,8 @@ function renderSpeed(){
       + '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
       + '到 <b>' + SPD_VOL_HOT + '×</b> 标黄。收盘集合竞价那根按 4 分钟折算，'
       + '否则尾盘会凭空多出十倍放量。'
+      + '小走势线是<b>最近 20 分钟</b>的价格，虚线是 20 分钟前的位置——'
+      + '贴着虚线就是没怎么动，离得远才是真在走。'
       + (spdClosed() ? '<br>已收盘：这里是<b>今天最后几分钟</b>的涨速，明天 9:30 才重新走动。' : '');
   }
 }
