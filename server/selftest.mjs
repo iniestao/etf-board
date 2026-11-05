@@ -293,6 +293,17 @@ async function runContracts(base, pass) {
   const jhb = r.json();
   (jhb && jhb.ok === false) ? ok('/api/hold 非法 code 被拒') : bad('/api/hold 非法 code 没拒');
 
+  /* 非龙头必须还能出成分：预热收窄只影响快慢，不影响有没有。
+     510310 与 510300 同属沪深300，但成交额小得多，按新规则不进预热清单。 */
+  r = await rawRequest(base, '/api/hold?code=510310', { cookie, timeout: 30000 });
+  const j310 = r.json();
+  if (j310 && j310.ok && Array.isArray(j310.rows) && j310.rows.length > 50) {
+    ok('/api/hold 非龙头 510310 → ' + j310.rows.length + ' 只 / ' + (j310.src || '?')
+      + ' / 权重 ' + j310.wsum + '%');
+  } else {
+    bad('/api/hold 非龙头 510310 拿不到成分：' + r.text.slice(0, 160));
+  }
+
   // 交易所 PCF：口径变了就要能看出来，不然「前 20 大 26%」和「全部 279 只 100%」
   // 混在一起，看的人会以为某天算错了
   if (jh && jh.ok) {
@@ -352,6 +363,13 @@ async function runContracts(base, pass) {
       built: !!w1.built, wait: !!w1.wait, done: !!w1.done,
     }));
     if (!(w1.n > 500)) bad('/api/pcfwarm 的清单只有 ' + w1.n + ' 只，全市场应该一千多');
+    /* 同指数只留龙头：清单必须比市场总数明显少，且组数不超过清单长度。
+       两个数只在建计划那一轮返回，命中已有计划的轮次就跳过这条。 */
+    if (w1.all) {
+      (w1.all > w1.n && w1.grp <= w1.n && w1.dropped === w1.all - w1.grp)
+        ? ok('/api/pcfwarm 按指数归并：' + w1.all + ' 只 → ' + w1.grp + ' 组 → 预热 ' + w1.n + ' 只')
+        : bad('/api/pcfwarm 归并数目对不上：' + JSON.stringify({ all: w1.all, grp: w1.grp, n: w1.n, dropped: w1.dropped }));
+    }
     await new Promise((res) => setTimeout(res, 1200));
     r = await rawRequest(base, '/api/pcfwarm', { cookie, timeout: 40000 });
     w2 = r.json();
@@ -438,7 +456,7 @@ if (!pass) {
     shardFiles.length
       ? ok('预热分片已落 KV：' + shardFiles.length + ' 片（' + day + '）')
       : bad('预热没有产生任何分片（pcfsh-v1/*' + day + '）');
-    const planFile = 'pcfpool-v1_2F' + day + '.json';
+    const planFile = 'pcfpool-v2_2F' + day + '.json';
     files.includes(planFile) ? ok('当天的预热顺序表已落 KV（' + planFile + '）')
       : bad('没有预热顺序表 ' + planFile);
     // 分片里存的必须是能读回的结构，不能是一串字符串

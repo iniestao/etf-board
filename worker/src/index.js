@@ -1288,9 +1288,10 @@ async function serveTop3(ctx, codes, env) {
    在文本里把这一只的 JSON 抠出来——不 JSON.parse 整个分片，免得为一只是 7 只
    的分片付几十毫秒 CPU。
 
-   节奏：Cron 每分钟一轮，每轮处理「尽可能多的完整分片」（约 20~30 只）。
-   1718 只大约 86 轮，从 09:05 开始，10:30 前后铺完全市场；成交额大的排在
-   前面，所以常用的那几百只在 09:30 开盘前就已经躺在 KV 里了。
+   节奏：Cron 每分钟一轮，每轮处理「尽可能多的完整分片」（约 20~25 只）。
+   按指数归并后是 891 只，约 40 轮，从 09:05 开始，09:45 前铺完；成交额大的排在
+   前面，所以常用的那几百只在 09:30 开盘前就已经躺在 KV 里了（归并规则见
+   coreOf 上面那段，不在清单里的 ETF 走 getPcf 的现场拉）。
 
    一条硬约束：**盘前清单没发布时不能写**。上交所的清单接口不带日期，抓早了
    拿到的是昨天的组合，却会被当成今天的存进去，而且当天再也不会刷新。所以每轮
@@ -1299,7 +1300,7 @@ async function serveTop3(ctx, codes, env) {
 */
 const PCFS_KV = 'pcfsh-v1/';
 const PCFW_KV = 'pcfwarm-v1/';
-const PCFP_KV = 'pcfpool-v1/';
+const PCFP_KV = 'pcfpool-v2/';
 const PCFS_TTL = 3 * 86400;       // 分片留 3 天：周末回来还能给周五的清单兜个底
 const WARM_PER_RUN = 20;          // 每轮至少这么多只（按整片取，允许超出）
 const WARM_PROBE = '510300';      // 沪深300ETF：盘前清单发布的风向标
@@ -1356,8 +1357,24 @@ async function pcfTradingDay(code) {
   return (x && String(x.TRADING_DAY || '').trim()) || '';
 }
 
-/** 当天的预热顺序：成交额降序 → 按分片聚拢（片间按片内最大成交额排） */
-async function buildWarmPlan(day) {
+/* 一只指数常有一打 ETF 跟踪：沪深300 有 22 只、中证500 有 20 只、科创50 有 17 只。
+   它们穿透出来的成分几乎一样，全抓一遍等于把同一个答案抄二十遍，一天白烧一千多个
+   子请求。所以预热只取每个指数里成交额最大的那只，其余等真被点开时再现场拉
+   （getPcf 的三级读取里，「现场拉」这一级本来就是给这种长尾准备的）。
+
+   判定同指数靠简称：`{核心}ETF{基金公司}`，取 ETF 之前那段，去掉括号里的份额/币种
+   标注和「基金/指数/LOF/联接」这些通用词。规则刻意保守——宁可多分几组（多抓一只），
+   也不要误并：误并的代价是那只 ETF 永远没预热，每次点开都现场拉。核心词短于两个字
+   的（「酒」「金」这种）直接按代码各算一组，不参与归并。 */
+function coreOf(name) {
+  let s = String(name || '').replace(/[\s\-—_]/g, '').replace(/[（(][^）)]*[）)]/g, '');
+  const i = s.toUpperCase().indexOf('ETF');
+  if (i > 0) s = s.slice(0, i);
+  return s.replace(/ETF|基金|指数|LOF|联接|证券投资基金/gi, '');
+}
+
+/** 当天的预热顺序：每指数一只 → 成交额降序 → 按分片聚拢（片间按片内最大成交额排） */
+async function buildWarmPlan(day, env) {
   const got = [];
   const pages = Array.from({ length: 20 }, (_, i) => i + 1);
   const parts = await mapLimit(pages, 4, async (pg) => {
@@ -1382,12 +1399,43 @@ async function buildWarmPlan(day) {
          子请求。名字里带这些字的一律跳过；真要看它们的成分也没意义，
          穿透算的是「哪只票在拉」，债券基金没有这个答案。 */
       if (/债|货币|短融|添益|日利|现金|保证金|理财/.test(String(x.name || ''))) continue;
-      got.push({ c, a: +x.amount || 0 });
+      got.push({ c, a: +x.amount || 0, m: String(x.name || '') });
     }
   }
   if (!got.length) throw new Error('取不到 ETF 列表');
-  const byShard = new Map();
+
+  /* 同指数只留成交额最大的一只。用 Map 边遍历边比，天然保留最大者，
+     顺便记下被并掉的只数，好在 /api/pcfwarm 里对账。 */
+  const byCore = new Map();
   for (const x of got) {
+    const core = coreOf(x.m);
+    const k = core.length >= 2 ? core : ('#' + x.c);   // 核心词太短就各算一组
+    const cur = byCore.get(k);
+    if (!cur || x.a > cur.a) byCore.set(k, x);
+  }
+  const leaders = [...byCore.values()];
+  const dropped = got.length - leaders.length;
+
+  /* 自选无条件进清单：用户天天看的那几十只，不该因为是「同指数里的非龙头」
+     而在盘中第一次点开时等一次现场拉。自选取不到不影响主流程。 */
+  const amt = new Map(got.map((x) => [x.c, x.a]));
+  const keep = new Map(leaders.map((x) => [x.c, x]));
+  try {
+    if (env && env.WATCH) {
+      const raw = await env.WATCH.get(WATCH_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(arr)) {
+        for (const c of arr) {
+          const code = String(c);
+          if (/^\d{6}$/.test(code) && !keep.has(code)) keep.set(code, { c: code, a: amt.get(code) || 0, m: '' });
+        }
+      }
+    }
+  } catch (e) { /* 自选读失败：这轮就只预热龙头 */ }
+
+  const picked = [...keep.values()];
+  const byShard = new Map();
+  for (const x of picked) {
     const k = shardOf(x.c);
     if (!byShard.has(k)) byShard.set(k, []);
     byShard.get(k).push(x);
@@ -1397,7 +1445,7 @@ async function buildWarmPlan(day) {
   groups.sort((a, b) => b[0].a - a[0].a);
   const codes = [];
   for (const g of groups) for (const x of g) codes.push(x.c);
-  return { day, n: codes.length, codes };
+  return { day, n: codes.length, codes, grp: byCore.size, dropped, all: got.length };
 }
 
 /** 预热阶段抓一只：上交所重试 2 次，深交所只认今天的文件 */
@@ -1425,7 +1473,7 @@ async function warmRound(env) {
   try { plan = await env.WATCH.get(PCFP_KV + day, 'json'); } catch (e) { /* 重建 */ }
   let built = false;
   if (!plan || !plan.codes || !plan.codes.length) {
-    plan = await buildWarmPlan(day);
+    plan = await buildWarmPlan(day, env);
     built = true;
     try {
       await env.WATCH.put(PCFP_KV + day, JSON.stringify(plan), { expirationTtl: PCFS_TTL });
@@ -1435,10 +1483,10 @@ async function warmRound(env) {
   let st = null;
   try { st = await env.WATCH.get(PCFW_KV + day, 'json'); } catch (e) { /* 从头开始 */ }
   if (!st || typeof st.i !== 'number' || st.n !== plan.n) st = { i: 0, n: plan.n, ok: 0, fail: 0, t: 0 };
-  if (st.i >= plan.n) return { ok: true, done: true, day, i: st.i, n: st.n };
+  if (st.i >= plan.n) return { ok: true, done: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped };
 
   // 建计划这一轮不抓清单：18 页列表已经吃掉不少子请求，再抓二十几只容易撞上限
-  if (built) return { ok: true, built: true, day, i: st.i, n: st.n };
+  if (built) return { ok: true, built: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped, all: plan.all };    
 
   /* 闸门：清单没发布时不能写。上交所的成分接口不带日期，抓早了拿到的是昨天
      的组合，却会被当成今天的存进去，而且当天再也不会刷新。
@@ -1456,7 +1504,7 @@ async function warmRound(env) {
   if (tday !== day) {
     const cst = new Date(Date.now() + 8 * 3600e3);
     const hm = cst.getUTCHours() * 100 + cst.getUTCMinutes();
-    if (hm < 930) return { ok: true, wait: true, day, sse: tday, i: st.i, n: st.n };
+    if (hm < 930) return { ok: true, wait: true, day, sse: tday, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped };
   }
 
   // 从游标开始，按整片累加到 WARM_PER_RUN 只以上（片不切，保证每片只写一次）
@@ -1495,7 +1543,10 @@ async function warmRound(env) {
 
   st = { i: to, n: plan.n, ok: st.ok + ok, fail: st.fail + fail, t: Date.now() };
   try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
-  return { ok: true, day, i: st.i, n: st.n, got: ok, fail, wrote, done: st.i >= st.n };
+  return {
+    ok: true, day, i: st.i, n: st.n, got: ok, fail, wrote, done: st.i >= st.n,
+    grp: plan.grp, dropped: plan.dropped, all: plan.all,
+  };
 }
 
 /* ---------------------------------------------------------------- 涨速榜

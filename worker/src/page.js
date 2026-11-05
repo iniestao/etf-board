@@ -2504,11 +2504,20 @@ function fpt(v){
 function loadHold(code, silent){
   var box = document.getElementById('hHoldBody');
   if (!box) return;
+  var slow = null;
   if (!silent){
     document.getElementById('hHoldHd').innerHTML = '';
     box.innerHTML = '<div class="hempty">读取成分…</div>';
+    /* 盘前只预热了每个指数里成交额最大的那只，其余要现场抓交易所清单（3–6 秒）。
+       超过两秒还没回来就换个说法，免得看着像卡死。 */
+    slow = setTimeout(function(){
+      if (H.code !== code || H.mode !== 'hold') return;
+      var e = box.querySelector('.hempty');
+      if (e) e.textContent = '这只不是同指数的龙头，成分要现场抓取，约 3–6 秒…';
+    }, 2000);
   }
   fetch('/api/hold?code=' + code).then(function(r){ return r.json(); }).then(function(j){
+    clearTimeout(slow);
     if (H.code !== code || H.mode !== 'hold') return;   // 用户已经切走了
     if (!j || !j.ok){
       box.innerHTML = '<div class="hempty">' + esc((j && j.error) || '读取失败') + '</div>';
@@ -2517,6 +2526,7 @@ function loadHold(code, silent){
     H.hj = j;
     renderHold(j);
   }).catch(function(e){
+    clearTimeout(slow);
     if (H.code !== code || H.mode !== 'hold') return;
     box.innerHTML = '<div class="hempty">网络错误：' + esc(e.message || String(e)) + '</div>';
   });
