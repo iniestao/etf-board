@@ -114,6 +114,46 @@ PORT=3000 node server/app.mjs   # 起服务；口令在 server/.env 的 ACCESS_P
 node server/sync-data.mjs       # 手动同步最新 hist（--check 只看状态）
 ```
 
+已发布地址（2026-11-05）：
+
+```
+https://a011023d6360fca2d.app.workbuddy.host/?sharecode=D2BP5INJ7S
+```
+
+两条硬约束，缺一条链接就打不开：
+
+- `?sharecode=` 是**平台层**凭据，每个请求都要带，少了直接 403（不是我们的门禁拦的）
+- 进去后还要输 `server/.env` 里的 `ACCESS_PASS`，这是我们自己的门禁
+
+打线上做回归要同时给两个：
+
+```bash
+BASE=https://a011023d6360fca2d.app.workbuddy.host \
+SHARECODE=D2BP5INJ7S \
+ACCESS_PASS=<server/.env 里的值> \
+node server/selftest.mjs
+```
+
+线上实测（2026-11-05，收盘后）：
+
+| 项 | 耗时 |
+|---|---|
+| 首页 230KB | 142ms |
+| `/api/hist` 单只 K 线 36KB | 91–142ms（5 次，**稳定**） |
+| 未登录 / 错口令 | 401 / 302，门禁正常 |
+
+对比 Cloudflare 版：命中边缘缓存时 50–100ms，但缓存过期或首次访问要回源 GitHub raw，
+实测那段是 0.66–18.2s。**沙箱版的优势不是更快，是不再有那个长尾。**
+
+### 发布与更新
+
+```bash
+node /root/.codebuddy/skills/sites/scripts/publish.js \
+  --dir /workspace/etf_board --start-cmd "node server/app.mjs" --language node
+```
+
+发布是覆盖式的：链接不变，内容立即换成新的。改完代码记得先本地自检，再发布。
+
 ---
 
 ## 一、两条链路，互不影响

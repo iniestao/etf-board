@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -118,23 +119,44 @@ function scanRuntime() {
 }
 
 // ---------------------------------------------------------------- 2. 接口契约
+// 发布平台在第一次请求通过 sharecode 校验后会下发 __wb_rsc 会话 cookie，
+// 之后的请求要带着它，否则一律 403。这是平台层的，和我们自己的口令 cookie 分开存。
+let PLAT_COOKIE = '';
+
+function absorbPlatformCookie(res) {
+  const sc = res.headers['set-cookie'] || [];
+  for (const c of (Array.isArray(sc) ? sc : [sc])) {
+    const kv = String(c).split(';')[0];
+    if (kv.startsWith('__wb_rsc=')) PLAT_COOKIE = kv;
+  }
+}
+
 function rawRequest(base, pathname, { method = 'GET', body, cookie, timeout = 20000 } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(pathname, base);
-    const req = http.request({
+    // 发布平台的访问控制：链接上的 sharecode 是每个请求都要带的凭据，
+    // 少了它平台直接 403。之前这里用 http 模块打 443，被网关 302 掉，
+    // 所有断言都看到 302（踩过一次）。所以按协议选模块，并带上平台 cookie。
+    if (process.env.SHARECODE && !u.searchParams.get('sharecode')) {
+      u.searchParams.set('sharecode', process.env.SHARECODE);
+    }
+    const mod = u.protocol === 'https:' ? https : http;
+    const jar = [cookie, PLAT_COOKIE].filter(Boolean).join('; ');
+    const req = mod.request({
       hostname: u.hostname,
-      port: u.port,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname + u.search,
       method,
       timeout,
       headers: {
         ...(body ? { 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(body) } : {}),
-        ...(cookie ? { cookie } : {}),
+        ...(jar ? { cookie: jar } : {}),
       },
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
+        absorbPlatformCookie(res);
         const buf = Buffer.concat(chunks);
         resolve({
           status: res.statusCode,
