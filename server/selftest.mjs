@@ -341,6 +341,29 @@ async function runContracts(base, pass) {
   const jtb = r.json();
   (jtb && jtb.ok === false) ? ok('/api/top3 非法 codes 被拒') : bad('/api/top3 非法 codes 没拒');
 
+  /* PCF 每日预热：这是「盘中不现场拉清单」的前提，所以至少得证明两件事——
+     一轮跑得动（能取列表、能写分片），以及连跑两轮游标会往前推。 */
+  let w1 = null, w2 = null;
+  r = await rawRequest(base, '/api/pcfwarm', { cookie, timeout: 40000 });
+  w1 = r.json();
+  if (w1 && w1.ok) {
+    ok('/api/pcfwarm 一轮：' + JSON.stringify({
+      i: w1.i, n: w1.n, got: w1.got, wrote: w1.wrote,
+      built: !!w1.built, wait: !!w1.wait, done: !!w1.done,
+    }));
+    if (!(w1.n > 500)) bad('/api/pcfwarm 的清单只有 ' + w1.n + ' 只，全市场应该一千多');
+    await new Promise((res) => setTimeout(res, 1200));
+    r = await rawRequest(base, '/api/pcfwarm', { cookie, timeout: 40000 });
+    w2 = r.json();
+    if (!(w2 && w2.ok)) bad('/api/pcfwarm 第二轮失败：' + r.text.slice(0, 160));
+    else if (w2.wait) ok('/api/pcfwarm 第二轮：清单还没发布（wait），符合盘前预期');
+    else if (w2.done) ok('/api/pcfwarm 第二轮：当天已预热完（done）');
+    else if (w2.i > w1.i) ok('/api/pcfwarm 游标前进 ' + w1.i + ' → ' + w2.i + '/' + w2.n);
+    else bad('/api/pcfwarm 连跑两轮游标没动：' + JSON.stringify(w2));
+  } else {
+    bad('/api/pcfwarm 失败：' + r.text.slice(0, 160));
+  }
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();
@@ -386,8 +409,10 @@ scanRuntime();
 let close = async () => {};
 let base = BASE;
 let pass = PASS;
+let localRef = null;
 if (!BASE) {
   const local = await startLocal();
+  localRef = local;
   close = () => new Promise((r) => local.server.close(r));
   base = local.base;
   pass = local.pass;
@@ -402,6 +427,32 @@ if (!pass) {
     await runContracts(base, pass);
   } catch (e) {
     bad('契约测试异常中断', e && e.message || String(e));
+  }
+  // 预热的分片只有本地能翻（线上 KV 没有 list 接口），所以这条只在本地位面验
+  if (localRef) {
+    const dir = path.join(localRef.meta.state, 'kv');
+    const day = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '');
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { /* 目录还没有 */ }
+    const shardFiles = files.filter((f) => f.startsWith('pcfsh-v1_2F' + day));
+    shardFiles.length
+      ? ok('预热分片已落 KV：' + shardFiles.length + ' 片（' + day + '）')
+      : bad('预热没有产生任何分片（pcfsh-v1/*' + day + '）');
+    const planFile = 'pcfpool-v1_2F' + day + '.json';
+    files.includes(planFile) ? ok('当天的预热顺序表已落 KV（' + planFile + '）')
+      : bad('没有预热顺序表 ' + planFile);
+    // 分片里存的必须是能读回的结构，不能是一串字符串
+    if (shardFiles.length) {
+      try {
+        const one = JSON.parse(fs.readFileSync(path.join(dir, shardFiles[0]), 'utf8'));
+        const k = Object.keys(one)[0];
+        (k && one[k] && Array.isArray(one[k].items) && one[k].items.length)
+          ? ok('分片内容可读：' + shardFiles[0].slice(0, 28) + '… 含 ' + k + '（' + one[k].items.length + ' 只成分）')
+          : bad('分片内容不可用：' + JSON.stringify(one).slice(0, 120));
+      } catch (e) {
+        bad('分片解析失败：' + (e && e.message));
+      }
+    }
   }
 }
 await close();

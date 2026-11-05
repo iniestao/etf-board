@@ -356,6 +356,7 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
   font-size:10.5px;color:var(--txt3);padding:8px 0 7px;border-bottom:1px solid var(--line);
   position:sticky;top:0;background:var(--bg2);z-index:2}
 .hholdhd b{color:var(--txt);font-weight:600}
+.hcollapse{font-style:normal;cursor:pointer;color:#2f6fd0;border-bottom:1px dashed #9dbbeb}
 .hhrow{display:grid;grid-template-columns:minmax(0,220px) 62px 66px minmax(70px,1fr) 62px;
   gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12px}
 .hhrow:hover{background:#f7f9fc}
@@ -378,6 +379,12 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .hhfoot b{font-family:var(--mono);font-weight:600}
 .hhfoot .k{color:var(--txt3)}
 .hhnote{padding:8px 0 2px;font-size:10.5px;color:var(--txt3);line-height:1.75}
+/* 展开按钮：整行居中，视觉上明显是「表格到此为止」的分界，不是又一条成分 */
+.hhmore{display:flex;justify-content:center;padding:9px 0 4px}
+.hhmore b{font-size:11px;font-weight:500;color:var(--acc,#2f6fd0);cursor:pointer;
+  padding:5px 14px;border:1px solid #cfdcf0;border-radius:14px;background:var(--bg2)}
+.hhmore b:hover{background:#eef4fe;border-color:#9dbbeb}
+.hhmore b:active{transform:translateY(1px)}
 .hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:12px;line-height:1.9}
 @media(max-width:760px){
   .hhrow{grid-template-columns:minmax(0,1fr) 48px 54px 52px;gap:6px;font-size:11.5px}
@@ -1153,6 +1160,10 @@ function renderWatch(){
   body.innerHTML = html;
   document.getElementById('watchN').innerHTML = watch.length + ' 只'
     + (miss ? ('，' + miss + ' 只未取到') : '')
+    // 贡献列只算前 30 只（后端硬上限 + 上游并发限制），超了要说一声，
+    // 否则第 31 行起一直是「-」，看着像坏了
+    + (watch.length > 30 ? '<span class="syn" title="「主要贡献」列只算自选的前 30 只（按自选顺序），'
+      + '再往后是长尾，滚到那里时这一列早就不在视野里了">贡献列前 30</span>' : '')
     + (WATCH_CLOUD ? '<span class="syn" title="已与云端同步，换设备也是这份列表">云端</span>' : '');
   ensureTop3();
   paintTop3();     // tbody 刚被整块重写，单元格是新的，得重画一遍
@@ -2181,7 +2192,7 @@ var H = {
   sub:'rsi', ov:{ ma:true, boll:false },
   cv:null, ctx:null, off:null, octx:null,
   W:0, Ht:0, dpr:1, geo:null,
-  mode:'min', m:null, mgeo:null
+  mode:'min', m:null, mgeo:null, holdAll:false, hj:null
 };
 /* 默认分时：点开一只标的，第一反应是「今天怎么了」，而不是「过去一年怎么样」。
    用户手动切过就记住——K 线是深度分析时才会进的门。 */
@@ -2503,6 +2514,7 @@ function loadHold(code, silent){
       box.innerHTML = '<div class="hempty">' + esc((j && j.error) || '读取失败') + '</div>';
       return;
     }
+    H.hj = j;
     renderHold(j);
   }).catch(function(e){
     if (H.code !== code || H.mode !== 'hold') return;
@@ -2520,11 +2532,16 @@ function renderHold(j){
   var isPcf = j.src === 'pcf';
 
   /* 先按权重取前 N 只，再按贡献排。权重 0.00% 的条目不进表——贡献恒为 0，
-     只占行高。PCF 全量能到 500 只（中证500），全铺出来要点几十屏，所以按权重
-     截到前 40（PCF）/ 20（季报），脚注里说明还剩多少只、占多少权重。 */
+     只占行高。
+
+     行数分两档：默认只列权重前 20，脚注写清还剩多少只、占多少权重，想看全量
+     就点一下「展开全部」。PCF 是全量清单，中证500 那只有 500 个成分，一上来就
+     铺 500 行等于把「今天谁在拉」这件事埋进几十屏的滚动里——20 行刚好一屏，
+     按贡献排完，前几只就是答案。展开后仍然是同一份数据，不重新请求。 */
   var all = (j.rows || []).filter(function(x){ return x.w >= 0.005; })
     .sort(function(a, b){ return b.w - a.w; });
-  var rows = all.slice(0, isPcf ? 40 : 20);
+  var lim = Math.min(H.holdAll ? all.length : 20, all.length);
+  var rows = all.slice(0, lim);
   var cut = all.length - rows.length;
   var cutW = 0;
   for (var q0 = rows.length; q0 < all.length; q0++) cutW += all[q0].w;
@@ -2553,8 +2570,10 @@ function renderHold(j){
   if (isPcf){
     hd.innerHTML = '<span>全部 <b>' + all.length + '</b> 只 · 权重合计 <b>100%</b>'
       + ' · 交易所 PCF <b>' + esc(dayTxt) + '</b>'
-      + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>' : '')
+      + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>（可展开）' : '')
       + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
+      // 展开后表头给一个「收起」：几百行滚到底才能收，太远了
+      + (H.holdAll ? ' · <i class="hcollapse" data-holdm="0">收起</i>' : '')
       + '</span><span>权重 = 股数 × 昨收归一化 · 贡献 = 权重 × 今日涨跌（百分点）</span>';
   } else {
     hd.innerHTML = '<span>前 <b>' + rows.length + '</b> 大 · 权重合计 <b>'
@@ -2591,17 +2610,23 @@ function renderHold(j){
     foot = '<div class="hhfoot"><span class="k">成分行情暂时没拿到（上游偶发空响应），'
       + '30 秒后自动重试</span></div>';
   }
-  foot += '<div class="hhfoot"><span class="k">前 ' + got + ' 大合计贡献</span>'
+  // 「合计贡献」只统计列出来的行，所以标签跟着行数走：展开前是「前 20 只」，
+  // 展开后是「全部 N 只」——同一个数字配上两种口径的标签，才会被读成算错
+  foot += '<div class="hhfoot"><span class="k">'
+    + (H.holdAll ? '全部 ' + got + ' 只合计贡献'
+      : (cut > 0 ? '列出 ' + got + ' 只合计贡献' : '前 ' + got + ' 只合计贡献')) + '</span>'
     + '<span><b class="' + cc(sum) + '">' + (got ? fpt(sum) : '-') + '</b></span>';
   // 一条行情都没有时不谈残差：那时 sum=0，「其余仓位 +3.50%」等于把 ETF 涨幅
   // 整个算到未披露仓位上，纯属瞎猜
   if (ec != null && got){
-    foot += '<span class="k">ETF 今日</span><span><b class="' + cc(ec) + '">' + fpc(ec) + '</b></span>'
-      + '<span class="k">' + (isPcf
+    foot += '<span class="k">ETF 今日</span><span><b class="' + cc(ec) + '">' + fpc(ec) + '</b></span>';
+    if (!isPcf || cut > 0){
+      foot += '<span class="k">' + (isPcf
         ? '其余 ' + cut + ' 只（权重 ' + cutW.toFixed(1) + '%）约'
         : '其余 ' + Math.max(0, 100 - wsum).toFixed(1) + '% 仓位（未披露持仓 / 现金 / 折溢价）约')
-      + '</span>'
-      + '<span><b class="' + cc(ec - sum) + '">' + fpt(ec - sum) + '</b></span>';
+        + '</span>'
+        + '<span><b class="' + cc(ec - sum) + '">' + fpt(ec - sum) + '</b></span>';
+    }
   }
   foot += '</div>';
 
@@ -2622,13 +2647,26 @@ function renderHold(j){
       + (cut > 0 ? '另有 ' + cut + ' 只权重不足 0.1%，没列出来。' : '') + '</div>';
   }
 
+  /* 展开/收起按钮。渲染完 20 行之后还剩多少只、占多少权重都写在按钮上——
+     「展开」两个字不说清代价，点下去才发现在一屏几百行里找不着北。 */
+  var more = '';
+  if (cut > 0){
+    more = '<div class="hhmore"><b data-holdm="1">展开全部 ' + all.length + ' 只'
+      + '（还有 ' + cut + ' 只 · 合计权重 ' + cutW.toFixed(1) + '%）</b></div>';
+  } else if (H.holdAll && all.length > 20){
+    more = '<div class="hhmore"><b data-holdm="0">收起，只看权重前 20</b></div>';
+  }
+
   // 脚注排在合计行之前：合计是 sticky 吸底的，放在最后才不会被脚注顶开
-  box.innerHTML = buf.join('') + note + foot;
+  box.innerHTML = buf.join('') + more + note + foot;
 }
 
 function openHist(code, name){
   H.code = code; H.name = name || code;
   H.d = null; H.m = null; H.hover = -1; H.ok = false; H.ext = false;
+  // 展开状态跟着标的走：换一只就回到 20 行，否则上一只的「展开」会让人以为
+  // 这一只的权重结构也是几百行
+  H.holdAll = false;
   document.getElementById('hName').textContent = H.name;
   document.getElementById('hCode').textContent = code;
   document.getElementById('hPx').textContent = '-';
@@ -4116,6 +4154,20 @@ document.getElementById('histCv').addEventListener('mouseleave', function(){
 
 Array.prototype.forEach.call(document.querySelectorAll('#hMode b'), function(b){
   b.onclick = function(){ setHMode(b.getAttribute('data-m'), false); };
+});
+
+/* 展开/收起：用上一次的响应重画，不重新请求——PCF 盘中也变不了，
+   为了一次折叠去等 300ms 甚至撞一次上游超时都不值得。
+   监听挂在整块 #hHold 上：表头和底部按钮用的是同一个 data-holdm。 */
+document.getElementById('hHold').addEventListener('click', function(e){
+  var b = e.target && e.target.closest ? e.target.closest('[data-holdm]') : null;
+  if (!b) return;
+  H.holdAll = b.getAttribute('data-holdm') === '1';
+  if (H.hj){
+    renderHold(H.hj);
+    // 收起时滚回顶部：不然停在 300 行处的滚动位置会落到一段空白上
+    if (!H.holdAll) document.getElementById('hHold').scrollTop = 0;
+  }
 });
 
 Array.prototype.forEach.call(document.querySelectorAll('#hTabs span'), function(t){

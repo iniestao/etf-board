@@ -57,3 +57,16 @@ HIST_BASE = "https://raw.githubusercontent.com/iniestao/etf-board/data"
 [[kv_namespaces]]
 binding = "WATCH"
 id = "433b04a19510470ca9e54a778cd2b598"
+
+# ---------------------------------------------------------------- 每日 PCF 预热
+# 交易所的申购赎回清单（PCF）每天开盘前换一次、盘中不变。所以不在盘中现场拉，
+# 而是每天早上按成交额从大到小全量抓一遍存进 KV，盘中只读 KV。
+#
+# Cron 用的是 **UTC**，下面这行 = 北京时间 09:00–15:59，周一到周五。
+# 每轮 20~30 只，1718 只大约 86 轮（约一个半小时），成交额大的排在前面，
+# 常用的那几百只在 09:30 开盘前就预热完了；之后的轮次只读一次进度就返回。
+#
+# 部署后可在 Dashboard → Workers → etf-board → Settings → Trigger Events
+# 里看到它；命令行 `npx wrangler deploy` 也会自动注册。
+[triggers]
+crons = ["* 1-7 * * 1-5"]

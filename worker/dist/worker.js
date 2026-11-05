@@ -934,10 +934,14 @@ function parsePcfSzseTxt(txt) {
   return items.length ? items : null;
 }
 
-async function fetchPcfSzse(code) {
+async function fetchPcfSzse(code, days) {
   /* 文件按日命名，取不到就往回找 8 天：盘前文件还没生成、周末、长假都取不到。
-     每一次尝试是一个子请求，所以上限压到 8——真遇到长假，回退季报也不算错。 */
-  for (let off = 0; off < 8; off++) {
+     每一次尝试是一个子请求，所以上限压到 8——真遇到长假，回退季报也不算错。
+
+     预热时传 days=2：那时候只可能用到「今天」这一份，找不到就说明还没发布，
+     回头再试就行，没必要为了长尾的一只把子请求烧掉 8 次。 */
+  const maxOff = days > 0 ? days : 8;
+  for (let off = 0; off < maxOff; off++) {
     const day = cstDay(off);
     const u = 'https://reportdocs.static.szse.cn/files/text/etf/ETF' + code + day + '.txt';
     let txt = null;
@@ -956,8 +960,8 @@ async function fetchPcfSzse(code) {
 }
 
 /**
- * 取一只 ETF 的当日 PCF。KV 缓存 12 小时，但 key 里带日期——
- * 跨天第一次访问会自然失效，不依赖 TTL 的边界。
+ * 取一只 ETF 的当日 PCF。三级：单片 KV → 分片 KV（每日预热）→ 现场抓。
+ * key 里带日期，跨天第一次访问自然失效，不依赖 TTL 的边界。
  */
 async function getPcf(code, env) {
   const day = cstDay();
@@ -967,7 +971,18 @@ async function getPcf(code, env) {
       const hit = await env.WATCH.get(KVK, 'json');
       if (hit && hit.items && hit.items.length) return hit;
     }
-  } catch (e) { /* KV 读失败就走现场抓 */ }
+  } catch (e) { /* KV 读失败就走下一级 */ }
+
+  // 每日预热写的是分片（见下面「PCF 预热」），命中就省掉一次现场拉
+  try {
+    if (env && env.WATCH) {
+      const txt = await env.WATCH.get(shardKey(day, code));
+      if (txt) {
+        const p = pickFromShard(txt, code);
+        if (p && p.items && p.items.length) return p;
+      }
+    }
+  } catch (e) { /* 分片读失败当没预热过 */ }
 
   /* 5 开头是上交所、1 开头（159/158）是深交所。
 
@@ -1247,6 +1262,238 @@ async function serveTop3(ctx, codes, env) {
     try { ctx.waitUntil(cache.put(ck, body.clone())); } catch (e) { /* 忽略 */ }
   }
   return body;
+}
+
+/* ---------------------------------------------------------------- PCF 预热
+
+   PCF 每天开盘前换一次、盘中不变——所以盘中每打开一只 ETF 都去交易所现场
+   拉一遍是纯浪费：慢（300~900ms）、会失败（上交所并发时偶发空回复），还占
+   掉单次请求的子请求预算。改成每天早上按成交额从大到小把当天的清单全量抓一遍
+   存进 KV，盘中只读 KV。
+
+   **为什么不是「一只一个 key」**：全市场一千七百多只，而 KV 免费版每天只有
+   1000 次写。一只一键 = 1718 次写，第一天就超额，之后就再也写不进去（读没
+   问题，但每只都要现场拉，等于白做）。改成「分片」——同族的几十只打进一个
+   value，写次数从 1718 降到 247：
+
+       沪市 5xxxxx → 取前 4 位   510300 / 510310 → "5103"
+       深市 159xxx → 取前 5 位   159915 / 159919 → "15991"
+
+   深市要更细一位：159xxx 一共 771 只，按 4 位切只有 10 片、每片七八十只，
+   一次 cron 要发七八十个子请求，必然撞 50 的上限。
+
+   分片键里带日期，跨天自然失效；读的时候先按单片查（1 次 KV 读），命中就
+   在文本里把这一只的 JSON 抠出来——不 JSON.parse 整个分片，免得为一只是 7 只
+   的分片付几十毫秒 CPU。
+
+   节奏：Cron 每分钟一轮，每轮处理「尽可能多的完整分片」（约 20~30 只）。
+   1718 只大约 86 轮，从 09:05 开始，10:30 前后铺完全市场；成交额大的排在
+   前面，所以常用的那几百只在 09:30 开盘前就已经躺在 KV 里了。
+
+   一条硬约束：**盘前清单没发布时不能写**。上交所的清单接口不带日期，抓早了
+   拿到的是昨天的组合，却会被当成今天的存进去，而且当天再也不会刷新。所以每轮
+   先读 510300 的基本信息，TRADING_DAY 不等于今天就直接跳过这一轮（1 个请求
+   的代价）。深交所的文件名自带日期，没这个风险。
+*/
+const PCFS_KV = 'pcfsh-v1/';
+const PCFW_KV = 'pcfwarm-v1/';
+const PCFP_KV = 'pcfpool-v1/';
+const PCFS_TTL = 3 * 86400;       // 分片留 3 天：周末回来还能给周五的清单兜个底
+const WARM_PER_RUN = 20;          // 每轮至少这么多只（按整片取，允许超出）
+const WARM_PROBE = '510300';      // 沪深300ETF：盘前清单发布的风向标
+
+/** 分片键：沪市看前 4 位，深市看前 5 位（见上面为什么） */
+function shardOf(code) {
+  return code.charAt(0) === '5' ? code.slice(0, 4) : code.slice(0, 5);
+}
+function shardKey(day, code) {
+  return PCFS_KV + day + '/' + shardOf(code);
+}
+
+/** 从分片文本里抠出一只的 JSON：定位 → 括号配对（字符串里的括号要跳过） */
+function pickFromShard(txt, code) {
+  const tag = '"' + code + '":';
+  const at = txt.indexOf(tag);
+  if (at < 0) return null;
+  const s = txt.indexOf('{', at + tag.length);
+  if (s < 0) return null;
+  let depth = 0, inStr = false;
+  for (let j = s; j < txt.length; j++) {
+    const c = txt.charCodeAt(j);
+    if (inStr) {
+      if (c === 92) j++;                    // 转义
+      else if (c === 34) inStr = false;
+      continue;
+    }
+    if (c === 34) inStr = true;
+    else if (c === 123) depth++;
+    else if (c === 125) {
+      depth--;
+      if (!depth) {
+        try { return JSON.parse(txt.slice(s, j + 1)); } catch (e) { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+/** 上交所某只 ETF 今日的清单交易日；没发布时返回上一个交易日 */
+async function pcfTradingDay(code) {
+  const u = 'https://query.sse.com.cn/commonQuery.do?isPagination=false&FUNDID2=' + code
+    + '&sqlId=COMMON_SSE_CP_JJLB_ETFJJGK_GGSGSHQD_JBXX_C';
+  const r = await fetch(u, {
+    headers: {
+      'User-Agent': HOLD_UA, Accept: '*/*',
+      Referer: 'https://www.sse.com.cn/disclosure/fund/etflist/detail.shtml?fundid=' + code,
+    },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error('JBXX HTTP ' + r.status);
+  const j = await r.json();
+  const x = (j && j.result && j.result[0]) || null;
+  return (x && String(x.TRADING_DAY || '').trim()) || '';
+}
+
+/** 当天的预热顺序：成交额降序 → 按分片聚拢（片间按片内最大成交额排） */
+async function buildWarmPlan(day) {
+  const got = [];
+  const pages = Array.from({ length: 20 }, (_, i) => i + 1);
+  const parts = await mapLimit(pages, 4, async (pg) => {
+    const u = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+      + 'Market_Center.getHQNodeData?page=' + pg + '&num=100&sort=amount&asc=0'
+      + '&node=etf_hq_fund&symbol=&_s_r_a=page';
+    const r = await fetch(u, {
+      headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) throw new Error('SINA HTTP ' + r.status);
+    const t = (await r.text()).trim();
+    if (!t || t === 'null' || t === '[]') return [];
+    return JSON.parse(t);
+  });
+  for (const arr of parts) {
+    for (const x of arr || []) {
+      const c = String(x.code || '').trim();
+      if (!/^\d{6}$/.test(c)) continue;
+      /* 债券 / 货币 ETF 的申购赎回清单里没有股票成分（只有现金替代和债券），
+         抓了也是白抓——实测成交额前十里有一半是这类，一轮二十只就废掉七八个
+         子请求。名字里带这些字的一律跳过；真要看它们的成分也没意义，
+         穿透算的是「哪只票在拉」，债券基金没有这个答案。 */
+      if (/债|货币|短融|添益|日利|现金|保证金|理财/.test(String(x.name || ''))) continue;
+      got.push({ c, a: +x.amount || 0 });
+    }
+  }
+  if (!got.length) throw new Error('取不到 ETF 列表');
+  const byShard = new Map();
+  for (const x of got) {
+    const k = shardOf(x.c);
+    if (!byShard.has(k)) byShard.set(k, []);
+    byShard.get(k).push(x);
+  }
+  const groups = [...byShard.values()];
+  for (const g of groups) g.sort((a, b) => b.a - a.a);
+  groups.sort((a, b) => b[0].a - a[0].a);
+  const codes = [];
+  for (const g of groups) for (const x of g) codes.push(x.c);
+  return { day, n: codes.length, codes };
+}
+
+/** 预热阶段抓一只：上交所重试 2 次，深交所只认今天的文件 */
+async function pcfForWarm(code) {
+  if (code.charAt(0) !== '5') return fetchPcfSzse(code, 2);
+  let last = null;
+  for (let a = 0; a < 3; a++) {
+    try { return await fetchPcfSse(code); } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 150 + a * 200));
+    }
+  }
+  throw last || new Error('PCF 失败');
+}
+
+/**
+ * 跑一轮预热。返回进度：{ day, i, n, got, wrote, done, wait }
+ * 设计成「一轮 = 若干完整分片」，所以每片只写一次，不做 read-modify-write。
+ */
+async function warmRound(env) {
+  if (!env || !env.WATCH) return { ok: false, error: '没有 KV 绑定，预热无从谈起' };
+  const day = cstDay();
+
+  let plan = null;
+  try { plan = await env.WATCH.get(PCFP_KV + day, 'json'); } catch (e) { /* 重建 */ }
+  let built = false;
+  if (!plan || !plan.codes || !plan.codes.length) {
+    plan = await buildWarmPlan(day);
+    built = true;
+    try {
+      await env.WATCH.put(PCFP_KV + day, JSON.stringify(plan), { expirationTtl: PCFS_TTL });
+    } catch (e) { /* 写不进就下一轮重建，代价是又拉一次列表 */ }
+  }
+
+  let st = null;
+  try { st = await env.WATCH.get(PCFW_KV + day, 'json'); } catch (e) { /* 从头开始 */ }
+  if (!st || typeof st.i !== 'number' || st.n !== plan.n) st = { i: 0, n: plan.n, ok: 0, fail: 0, t: 0 };
+  if (st.i >= plan.n) return { ok: true, done: true, day, i: st.i, n: st.n };
+
+  // 建计划这一轮不抓清单：18 页列表已经吃掉不少子请求，再抓二十几只容易撞上限
+  if (built) return { ok: true, built: true, day, i: st.i, n: st.n };
+
+  /* 闸门：清单没发布时不能写。上交所的成分接口不带日期，抓早了拿到的是昨天
+     的组合，却会被当成今天的存进去，而且当天再也不会刷新。
+
+     判断依据是 510300 的基本信息里的 TRADING_DAY。但这个接口本身会抽风——
+     实测有一半请求直接回 "System Error"，所以给三次机会；三次都问不到就按时间
+     兜底：交易所的发布窗口是 08:30–09:20，过了 09:30 还没问到日期，就当作
+     已发布继续抓——宁可冒一次「拿到昨天的组合」的风险，也不要因为一个诊断
+     接口抽风，让全天一千多只都退回现场拉。 */
+  let tday = '';
+  for (let a = 0; a < 3 && tday !== day; a++) {
+    try { tday = await pcfTradingDay(WARM_PROBE); } catch (e) { tday = ''; }
+    if (tday !== day && a < 2) await new Promise((r) => setTimeout(r, 200 + a * 300));
+  }
+  if (tday !== day) {
+    const cst = new Date(Date.now() + 8 * 3600e3);
+    const hm = cst.getUTCHours() * 100 + cst.getUTCMinutes();
+    if (hm < 930) return { ok: true, wait: true, day, sse: tday, i: st.i, n: st.n };
+  }
+
+  // 从游标开始，按整片累加到 WARM_PER_RUN 只以上（片不切，保证每片只写一次）
+  const from = st.i;
+  let to = from;
+  while (to < plan.n) {
+    const sh = shardOf(plan.codes[to]);
+    let end = to;
+    while (end + 1 < plan.n && shardOf(plan.codes[end + 1]) === sh) end++;
+    to = end + 1;
+    if (to - from >= WARM_PER_RUN) break;
+  }
+  const batch = plan.codes.slice(from, to);
+
+  const res = {};
+  let ok = 0, fail = 0;
+  await mapLimit(batch, 3, async (code) => {
+    try {
+      const p = await pcfForWarm(code);
+      if (p && p.items && p.items.length) { res[code] = p; ok++; } else fail++;
+    } catch (e) { fail++; }
+  });
+
+  const shards = {};
+  for (const code of Object.keys(res)) {
+    const k = shardOf(code);
+    (shards[k] = shards[k] || {})[code] = res[code];
+  }
+  let wrote = 0;
+  for (const k of Object.keys(shards)) {
+    try {
+      await env.WATCH.put(PCFS_KV + day + '/' + k, JSON.stringify(shards[k]), { expirationTtl: PCFS_TTL });
+      wrote++;
+    } catch (e) { /* 单片写失败，下一轮不会补（游标已过），盘中退回现场拉 */ }
+  }
+
+  st = { i: to, n: plan.n, ok: st.ok + ok, fail: st.fail + fail, t: Date.now() };
+  try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
+  return { ok: true, day, i: st.i, n: st.n, got: ok, fail, wrote, done: st.i >= st.n };
 }
 
 /* ---------------------------------------------------------------- 涨速榜
@@ -1734,6 +1981,10 @@ function htmlEtag() {
   return _etag;
 }
 
+// 沙箱版（server/app.mjs）用它做「没有 Cron 时的等价物」，和 Worker 的
+// scheduled 走的是同一个函数，不各写一份
+export { warmRound };
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -1831,6 +2082,15 @@ export default {
       return serveHold(ctx, code, env);
     }
 
+    // 手动跑一轮预热（Cron 之外的补刀）：换设备/改配置时用来确认链路通不通
+    if (p === '/api/pcfwarm') {
+      try {
+        return json({ ok: true, ...(await warmRound(env)) });
+      } catch (e) {
+        return json({ ok: false, error: String(e.message || e) });
+      }
+    }
+
     if (p === '/api/speed') {
       const raw = (url.searchParams.get('codes') || '').trim();
       const list = raw.split(',').map((s) => s.trim().replace(/^(sh|sz)/i, ''))
@@ -1866,6 +2126,21 @@ export default {
       status: 404,
       headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8' },
     });
+  },
+
+  /**
+   * Cloudflare Cron Trigger（见 wrangler.toml 的 [triggers]）：
+   * 每分钟一轮 PCF 预热，从 09:00 跑到 16:00（北京时间）。预热完 1718 只大约
+   * 86 轮，之后每轮只读一次进度就返回。沙箱版没有 Cron，由 server/app.mjs
+   * 用同一个 warmRound 定时调用，两边逻辑不重复。
+   */
+  async scheduled(event, env, ctx) {
+    const job = warmRound(env).catch((e) => {
+      console.log('[pcfwarm] ' + String(e && e.message || e));
+      return null;
+    });
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(job);
+    else await job;
   },
 };
 
@@ -2205,6 +2480,7 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
   font-size:10.5px;color:var(--txt3);padding:8px 0 7px;border-bottom:1px solid var(--line);
   position:sticky;top:0;background:var(--bg2);z-index:2}
 .hholdhd b{color:var(--txt);font-weight:600}
+.hcollapse{font-style:normal;cursor:pointer;color:#2f6fd0;border-bottom:1px dashed #9dbbeb}
 .hhrow{display:grid;grid-template-columns:minmax(0,220px) 62px 66px minmax(70px,1fr) 62px;
   gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12px}
 .hhrow:hover{background:#f7f9fc}
@@ -2227,6 +2503,12 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .hhfoot b{font-family:var(--mono);font-weight:600}
 .hhfoot .k{color:var(--txt3)}
 .hhnote{padding:8px 0 2px;font-size:10.5px;color:var(--txt3);line-height:1.75}
+/* 展开按钮：整行居中，视觉上明显是「表格到此为止」的分界，不是又一条成分 */
+.hhmore{display:flex;justify-content:center;padding:9px 0 4px}
+.hhmore b{font-size:11px;font-weight:500;color:var(--acc,#2f6fd0);cursor:pointer;
+  padding:5px 14px;border:1px solid #cfdcf0;border-radius:14px;background:var(--bg2)}
+.hhmore b:hover{background:#eef4fe;border-color:#9dbbeb}
+.hhmore b:active{transform:translateY(1px)}
 .hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:12px;line-height:1.9}
 @media(max-width:760px){
   .hhrow{grid-template-columns:minmax(0,1fr) 48px 54px 52px;gap:6px;font-size:11.5px}
@@ -3002,6 +3284,10 @@ function renderWatch(){
   body.innerHTML = html;
   document.getElementById('watchN').innerHTML = watch.length + ' 只'
     + (miss ? ('，' + miss + ' 只未取到') : '')
+    // 贡献列只算前 30 只（后端硬上限 + 上游并发限制），超了要说一声，
+    // 否则第 31 行起一直是「-」，看着像坏了
+    + (watch.length > 30 ? '<span class="syn" title="「主要贡献」列只算自选的前 30 只（按自选顺序），'
+      + '再往后是长尾，滚到那里时这一列早就不在视野里了">贡献列前 30</span>' : '')
     + (WATCH_CLOUD ? '<span class="syn" title="已与云端同步，换设备也是这份列表">云端</span>' : '');
   ensureTop3();
   paintTop3();     // tbody 刚被整块重写，单元格是新的，得重画一遍
@@ -4030,7 +4316,7 @@ var H = {
   sub:'rsi', ov:{ ma:true, boll:false },
   cv:null, ctx:null, off:null, octx:null,
   W:0, Ht:0, dpr:1, geo:null,
-  mode:'min', m:null, mgeo:null
+  mode:'min', m:null, mgeo:null, holdAll:false, hj:null
 };
 /* 默认分时：点开一只标的，第一反应是「今天怎么了」，而不是「过去一年怎么样」。
    用户手动切过就记住——K 线是深度分析时才会进的门。 */
@@ -4352,6 +4638,7 @@ function loadHold(code, silent){
       box.innerHTML = '<div class="hempty">' + esc((j && j.error) || '读取失败') + '</div>';
       return;
     }
+    H.hj = j;
     renderHold(j);
   }).catch(function(e){
     if (H.code !== code || H.mode !== 'hold') return;
@@ -4369,11 +4656,16 @@ function renderHold(j){
   var isPcf = j.src === 'pcf';
 
   /* 先按权重取前 N 只，再按贡献排。权重 0.00% 的条目不进表——贡献恒为 0，
-     只占行高。PCF 全量能到 500 只（中证500），全铺出来要点几十屏，所以按权重
-     截到前 40（PCF）/ 20（季报），脚注里说明还剩多少只、占多少权重。 */
+     只占行高。
+
+     行数分两档：默认只列权重前 20，脚注写清还剩多少只、占多少权重，想看全量
+     就点一下「展开全部」。PCF 是全量清单，中证500 那只有 500 个成分，一上来就
+     铺 500 行等于把「今天谁在拉」这件事埋进几十屏的滚动里——20 行刚好一屏，
+     按贡献排完，前几只就是答案。展开后仍然是同一份数据，不重新请求。 */
   var all = (j.rows || []).filter(function(x){ return x.w >= 0.005; })
     .sort(function(a, b){ return b.w - a.w; });
-  var rows = all.slice(0, isPcf ? 40 : 20);
+  var lim = Math.min(H.holdAll ? all.length : 20, all.length);
+  var rows = all.slice(0, lim);
   var cut = all.length - rows.length;
   var cutW = 0;
   for (var q0 = rows.length; q0 < all.length; q0++) cutW += all[q0].w;
@@ -4402,8 +4694,10 @@ function renderHold(j){
   if (isPcf){
     hd.innerHTML = '<span>全部 <b>' + all.length + '</b> 只 · 权重合计 <b>100%</b>'
       + ' · 交易所 PCF <b>' + esc(dayTxt) + '</b>'
-      + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>' : '')
+      + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>（可展开）' : '')
       + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
+      // 展开后表头给一个「收起」：几百行滚到底才能收，太远了
+      + (H.holdAll ? ' · <i class="hcollapse" data-holdm="0">收起</i>' : '')
       + '</span><span>权重 = 股数 × 昨收归一化 · 贡献 = 权重 × 今日涨跌（百分点）</span>';
   } else {
     hd.innerHTML = '<span>前 <b>' + rows.length + '</b> 大 · 权重合计 <b>'
@@ -4440,17 +4734,23 @@ function renderHold(j){
     foot = '<div class="hhfoot"><span class="k">成分行情暂时没拿到（上游偶发空响应），'
       + '30 秒后自动重试</span></div>';
   }
-  foot += '<div class="hhfoot"><span class="k">前 ' + got + ' 大合计贡献</span>'
+  // 「合计贡献」只统计列出来的行，所以标签跟着行数走：展开前是「前 20 只」，
+  // 展开后是「全部 N 只」——同一个数字配上两种口径的标签，才会被读成算错
+  foot += '<div class="hhfoot"><span class="k">'
+    + (H.holdAll ? '全部 ' + got + ' 只合计贡献'
+      : (cut > 0 ? '列出 ' + got + ' 只合计贡献' : '前 ' + got + ' 只合计贡献')) + '</span>'
     + '<span><b class="' + cc(sum) + '">' + (got ? fpt(sum) : '-') + '</b></span>';
   // 一条行情都没有时不谈残差：那时 sum=0，「其余仓位 +3.50%」等于把 ETF 涨幅
   // 整个算到未披露仓位上，纯属瞎猜
   if (ec != null && got){
-    foot += '<span class="k">ETF 今日</span><span><b class="' + cc(ec) + '">' + fpc(ec) + '</b></span>'
-      + '<span class="k">' + (isPcf
+    foot += '<span class="k">ETF 今日</span><span><b class="' + cc(ec) + '">' + fpc(ec) + '</b></span>';
+    if (!isPcf || cut > 0){
+      foot += '<span class="k">' + (isPcf
         ? '其余 ' + cut + ' 只（权重 ' + cutW.toFixed(1) + '%）约'
         : '其余 ' + Math.max(0, 100 - wsum).toFixed(1) + '% 仓位（未披露持仓 / 现金 / 折溢价）约')
-      + '</span>'
-      + '<span><b class="' + cc(ec - sum) + '">' + fpt(ec - sum) + '</b></span>';
+        + '</span>'
+        + '<span><b class="' + cc(ec - sum) + '">' + fpt(ec - sum) + '</b></span>';
+    }
   }
   foot += '</div>';
 
@@ -4471,13 +4771,26 @@ function renderHold(j){
       + (cut > 0 ? '另有 ' + cut + ' 只权重不足 0.1%，没列出来。' : '') + '</div>';
   }
 
+  /* 展开/收起按钮。渲染完 20 行之后还剩多少只、占多少权重都写在按钮上——
+     「展开」两个字不说清代价，点下去才发现在一屏几百行里找不着北。 */
+  var more = '';
+  if (cut > 0){
+    more = '<div class="hhmore"><b data-holdm="1">展开全部 ' + all.length + ' 只'
+      + '（还有 ' + cut + ' 只 · 合计权重 ' + cutW.toFixed(1) + '%）</b></div>';
+  } else if (H.holdAll && all.length > 20){
+    more = '<div class="hhmore"><b data-holdm="0">收起，只看权重前 20</b></div>';
+  }
+
   // 脚注排在合计行之前：合计是 sticky 吸底的，放在最后才不会被脚注顶开
-  box.innerHTML = buf.join('') + note + foot;
+  box.innerHTML = buf.join('') + more + note + foot;
 }
 
 function openHist(code, name){
   H.code = code; H.name = name || code;
   H.d = null; H.m = null; H.hover = -1; H.ok = false; H.ext = false;
+  // 展开状态跟着标的走：换一只就回到 20 行，否则上一只的「展开」会让人以为
+  // 这一只的权重结构也是几百行
+  H.holdAll = false;
   document.getElementById('hName').textContent = H.name;
   document.getElementById('hCode').textContent = code;
   document.getElementById('hPx').textContent = '-';
@@ -5965,6 +6278,20 @@ document.getElementById('histCv').addEventListener('mouseleave', function(){
 
 Array.prototype.forEach.call(document.querySelectorAll('#hMode b'), function(b){
   b.onclick = function(){ setHMode(b.getAttribute('data-m'), false); };
+});
+
+/* 展开/收起：用上一次的响应重画，不重新请求——PCF 盘中也变不了，
+   为了一次折叠去等 300ms 甚至撞一次上游超时都不值得。
+   监听挂在整块 #hHold 上：表头和底部按钮用的是同一个 data-holdm。 */
+document.getElementById('hHold').addEventListener('click', function(e){
+  var b = e.target && e.target.closest ? e.target.closest('[data-holdm]') : null;
+  if (!b) return;
+  H.holdAll = b.getAttribute('data-holdm') === '1';
+  if (H.hj){
+    renderHold(H.hj);
+    // 收起时滚回顶部：不然停在 300 行处的滚动位置会落到一段空白上
+    if (!H.holdAll) document.getElementById('hHold').scrollTop = 0;
+  }
 });
 
 Array.prototype.forEach.call(document.querySelectorAll('#hTabs span'), function(t){
