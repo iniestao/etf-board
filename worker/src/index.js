@@ -777,6 +777,9 @@ function sinaSymOf(secid) {
  */
 function parseHq(sym, raw) {
   if (!raw) return null;
+  /* 腾讯用 ~ 分隔、新浪用 , 分隔。同一份代码里两个源都留着（腾讯主、新浪备），
+     解析按分隔符自动分派，调用方不用关心这条行情是谁给的。 */
+  if (raw.indexOf('~') >= 0) return parseHqTx(raw);
   const f = raw.split(',');
   if (!f.length) return null;
   if (sym.slice(0, 3) === 'gb_') {
@@ -796,7 +799,65 @@ function parseHq(sym, raw) {
   return { p, chg: (p / prev - 1) * 100, prev };
 }
 
-async function fetchHq(syms) {
+/**
+ * 腾讯行情串 → 和 parseHq 同一套结构。
+ *
+ * 字段（v_sz000001="51~平安银行~000001~11.60~11.64~11.62~…~-0.04~-0.34~…"）：
+ *   1 名称  3 现价  4 昨收  32 涨跌幅%
+ * A 股 / 港股 / 美股**下标完全一致**——这比新浪省事得多（新浪是三套下标：
+ * A 股现价在 3、港股在 6、美股在 1，还各有一套涨跌幅口径）。所以腾讯这条
+ * 只按一套下标取，不再分市场。
+ */
+function parseHqTx(raw) {
+  const f = raw.split('~');
+  const p = +f[3], prev = +f[4];
+  if (!(p > 0) || !(prev > 0)) return null;
+  const c = +f[32];
+  const chg = isFinite(c) ? c : (p / prev - 1) * 100;
+  return { p, chg, prev };
+}
+
+/** 内部代码（sh/sz/hk/gb_）→ 腾讯代码（美股是 us 前缀 + 纯大写） */
+function toTxSym(sym) {
+  return sym.slice(0, 3) === 'gb_' ? 'us' + sym.slice(3).toUpperCase() : sym;
+}
+
+/** 内部代码（sh/sz/hk/gb_）→ 新浪代码 */
+function toSinaSym(sym) {
+  return sym.slice(0, 2) === 'us' ? 'gb_' + sym.slice(2).toLowerCase() : sym;
+}
+
+/**
+ * 腾讯批量行情。返回 { 内部代码: 原始串 }。
+ *
+ * 为什么拿它当主源：hq.sinajs.cn 对云端出口 IP 有随机风控，实测同一批代码
+ * 连测 6 次，403 出现 2~3 次，且**与批量大小无关**（30 只和 279 只一样会 403）。
+ * 也就是说失败不是「请求太大」，重试一次只有 4 成概率撞回来；一只 300 成分的
+ * 宽基 ETF 只要这一批失手，整张成分表就变成「有持仓、零行情」。
+ * qt.gtimg.cn 同样的代码连测 24 次（60/120/200/279 只各 6 次）零失败。
+ */
+async function fetchHqTx(syms) {
+  if (!syms.length) return {};
+  const r = await fetch('https://qt.gtimg.cn/q=' + syms.map(toTxSym).join(','), {
+    headers: { 'User-Agent': HOLD_UA, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('HQ(tx) HTTP ' + r.status);
+  const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const out = {};
+  const re = /v_([A-Za-z0-9_]+)="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(text))) {
+    // 键换回内部代码，下游一律按 sym 取值，不关心上游是谁
+    const sym = toSinaSym(m[1]);
+    if (m[2]) out[sym] = m[2];
+  }
+  if (!Object.keys(out).length) throw new Error('HQ(tx) empty');
+  return out;
+}
+
+/** 新浪批量行情（备用源）。腾讯那条挂了才走这里。 */
+async function fetchHqSina(syms) {
   if (!syms.length) return {};
   const r = await fetch('https://hq.sinajs.cn/list=' + syms.join(','), {
     headers: { 'User-Agent': HOLD_UA, Referer: 'https://finance.sina.com.cn/' },
@@ -809,21 +870,32 @@ async function fetchHq(syms) {
   let m;
   while ((m = re.exec(text))) out[m[1]] = m[2];
   /* 新浪这条链路会偶发「HTTP 200 但正文是 Forbidden / 空」——只解出 0 条却
-     不报错，前端就拿不到任何涨跌幅。这里当失败抛出，交给上层重试一次。 */
+     不报错，前端就拿不到任何涨跌幅。这里当失败抛出，交给上层重试。 */
   if (!Object.keys(out).length) throw new Error('HQ empty');
   return out;
 }
 
-/** 一次批量行情，失败重试一次：股票行情是这一栏的全部内容，宁可多打一次上游 */
+/**
+ * 一次批量行情：腾讯 3 次（退避）→ 新浪 2 次兜底。
+ *
+ * 重试次数为什么从 1 提到 3：新浪 403 是随机风控，不是请求有问题，多打两次
+ * 就回来了；而这一批失手的代价是整张成分表没有涨跌幅，比多一次子请求贵得多。
+ */
 async function fetchHqRetry(syms) {
-  for (let a = 0; ; a++) {
-    try {
-      return await fetchHq(syms);
-    } catch (e) {
-      if (a >= 1) throw e;
-      await new Promise((res) => setTimeout(res, 250));
+  let last = null;
+  for (let a = 0; a < 3; a++) {
+    try { return await fetchHqTx(syms); } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 180 + a * 320 + Math.random() * 160));
     }
   }
+  for (let a = 0; a < 2; a++) {
+    try { return await fetchHqSina(syms); } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 250 + a * 350));
+    }
+  }
+  throw last || new Error('HQ 失败');
 }
 
 /* ---------------------------------------------------- 交易所每日 PCF（申购赎回清单）
@@ -915,7 +987,13 @@ function parsePcfSzseTxt(txt) {
   const items = [];
   // 一行长这样（列间是多空格）：
   // 000001   平安银行   1,600   允许   34.00%   0.00%   0.0000   0.0000   深圳市场
-  const re = /^[ \t]*(\d{6}|[A-Z]{1,6})[ \t]+(.+?)[ \t]+([\d,]+)[ \t]+(?:允许|必须|禁止)/gm;
+  /* 代码位数按市场分：沪深 6 位、港股 4~6 位、美股是纯字母。
+     港股这一列**位数不固定**：同一个交易所的文件，有的写 00700、有的写 100、
+     1211、1698（去掉前导零）。之前只写了 (\d{6}|[A-Z]{1,6})，于是 159792 互联网、
+     159740 恒生科技、159303 HS医疗这一整类深市港股通 ETF 一行都匹配不上——
+     文件明明下下来了（9~23KB），解析出来却是 0 只，界面报「清单里没有可取成分」，
+     看起来像交易所没发布。 */
+  const re = /^[ \t]*(\d{4,6}|[A-Z]{1,6})[ \t]+(.+?)[ \t]+([\d,]+)[ \t]+(?:允许|必须|禁止)/gm;
   let m;
   while ((m = re.exec(txt))) {
     const c = m[1];
@@ -928,7 +1006,7 @@ function parsePcfSzseTxt(txt) {
     // 用行尾的挂牌市场判沪深：看代码首位靠不住（688/605 是沪、300/301 是深）
     if (line.indexOf('上海市场') >= 0) sym = 'sh' + c;
     else if (line.indexOf('深圳市场') >= 0) sym = 'sz' + c;
-    // 港股同样要补前导零（和上交所一个毛病）
+    // 港股同样要补前导零（清单里是 00700 这种 5 位，补到 5 位不变）
     else if (line.indexOf('香港市场') >= 0) sym = 'hk' + c.padStart(5, '0');
     else if (/^[A-Z]/.test(c)) sym = 'gb_' + c.toLowerCase();
     if (!sym) continue;
@@ -955,13 +1033,27 @@ async function fetchPcfSzse(code, days) {
     const day = cstDay(off);
     const u = 'https://reportdocs.static.szse.cn/files/text/etf/ETF' + code + day + '.txt';
     let txt = null;
-    try {
-      const r = await fetch(u, {
-        headers: { 'User-Agent': HOLD_UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (r.ok) txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
-    } catch (e) { /* 换个日期再试 */ }
+    /* 403 要和 404 分开看：404 是「这一天没有这份文件」，403 是「现在不给」。
+       实测同一天同一只，单发 200、五路并发 403（静态文件服务器的并发保护），
+       隔一会儿再请求就正常。所以 403/429 在同一天内重试一次，别急着翻页——
+       翻到前一天等于把一份昨天的清单当成今天的用。
+
+       重试只在「现场拉」时做（days 省略）：预热一轮 20 只，每只多两次尝试就是
+       四十个子请求，直接顶穿 Cloudflare 的五十上限，整轮报废。预热的容错交给
+       后面轮次和盘中现场拉。 */
+    for (let a = 0; a < 2; a++) {
+      let st = 0;
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': HOLD_UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (r.ok) { txt = new TextDecoder('gbk').decode(await r.arrayBuffer()); break; }
+        st = r.status;
+      } catch (e) { /* 网络抖动，也算一次 */ }
+      if ((st !== 403 && st !== 429) || days > 0) break;
+      await new Promise((r2) => setTimeout(r2, 400));
+    }
     if (!txt) continue;
     const items = parsePcfSzseTxt(txt);
     if (items) return { ex: 'szse', day, items, idx: pcfSzseIndex(txt) };
@@ -1022,22 +1114,47 @@ async function getPcf(code, env) {
 
 /**
  * 一次批量取行情，返回 { sym: {p, prev, chg} }。
- * 500 只一批也可以（实测新浪 URL 2.7KB / 300 只 / 70ms 就返回），
- * 但按 300 一批更稳，也留住了失败时「部分成功」的能力。
+ *
+ * 分块 + **补抓缺失**：一次 150 只，某块整块失手（上游风控）时只丢这 150 只，
+ * 第二轮把这批「没回来的」单独再打一次。这一层很关键——原来的写法是
+ * Promise.all 里 catch(() => ({})) 静默吞掉，失败那一块的成分股直接不进
+ * rowsFromPcf 的分母，界面照样显示「权重合计 100%」，但其实是把 300 只的
+ * 盘子缩成了 150 只、权重全体放大一倍。宁可补抓，也不要这种看起来正常的错表。
+ *
+ * 剩下的零星缺失（退市、停牌无昨收、美股换代码）属于真没有，不算失败。
  */
 async function priceMap(syms) {
-  const out = {}, uniq = [];
-  for (const s of syms) if (s && !out[s]) { out[s] = 1; uniq.push(s); }
-  const chunks = [];
-  for (let k = 0; k < uniq.length; k += 300) chunks.push(uniq.slice(k, k + 300));
-  const got = await Promise.all(chunks.map((c) => fetchHqRetry(c).catch(() => ({}))));
+  const seen = {}, uniq = [];
+  for (const s of syms) if (s && !seen[s]) { seen[s] = 1; uniq.push(s); }
+
+  const slice = (arr, n) => {
+    const r = [];
+    for (let k = 0; k < arr.length; k += n) r.push(arr.slice(k, k + n));
+    return r;
+  };
+
   const q = {};
+  const got = await Promise.all(slice(uniq, 150).map((c) => fetchHqRetry(c).catch(() => ({}))));
   for (const g of got) Object.assign(q, g);
+
+  const miss = uniq.filter((s) => !q[s]);
+  if (miss.length) {
+    for (const c of slice(miss, 100)) {
+      try { Object.assign(q, await fetchHqRetry(c)); } catch (e) { /* 认了，下面按命中率兜 */ }
+    }
+  }
+
   const res = {};
   for (const s of uniq) {
     const o = parseHq(s, q[s]);
     if (o) res[s] = o;
   }
+
+  /* 命中率低于四成：不是「个别没有」，是行情源这一轮整体不可用。此时返回
+     那点残渣会让界面把权重归一化到极少数股票上，涨跌幅看着合理其实全错。
+     抛出去让上层明说「行情源暂时不可用」，比给一张假表强。 */
+  const n = Object.keys(res).length;
+  if (n && n < uniq.length * 0.4) throw new Error('行情源命中率过低 ' + n + '/' + uniq.length);
   return res;
 }
 
@@ -1105,15 +1222,28 @@ async function serveHoldPcf(ctx, code, pcf) {
     } catch (e) { /* 忽略 */ }
   }
 
-  const q = await priceMap(pcf.items.map((x) => x.sym));
+  let q = {};
+  try {
+    q = await priceMap(pcf.items.map((x) => x.sym));
+  } catch (e) {
+    /* 清单拿到了、行情没拿到——这两件事必须分开说。原来一律报「清单里没有
+       可取成分」，于是华泰柏瑞 510300 这种 300 只全 A 股的宽基也会显示
+       「黄金/债券/货币类常见，穿透不适用」，把人往错误方向带。 */
+    return json({
+      ok: false, code, src: 'pcf', day: pcf.day, total: pcf.items.length,
+      error: '成分清单已取到（' + pcf.items.length + ' 只），但这一轮成分行情没响应：'
+        + String(e.message || e) + '。稍等几秒再点一次。',
+    }, 0);
+  }
   const r = rowsFromPcf(pcf, q);
 
-  /* 持仓拿到了、一条行情都没回来：多半是商品/货币类（清单里只有黄金合约或现金
-     替代），也可能上游整批失败。别回一张空表让人以为是加载中。 */
+  /* 清单有成分、却一条行情都对不上：多半是商品/货币类（清单里只有黄金合约或
+     现金替代，代码不在股票行情范围），也可能是上游全挂。别回一张空表让人以为
+     是加载中。 */
   if (!r.rows.length) {
     return json({
-      ok: false, code, src: 'pcf', day: pcf.day,
-      error: '这只 ETF 的申购赎回清单里没有可取的股票成分（黄金 / 债券 / 货币类常见），穿透不适用',
+      ok: false, code, src: 'pcf', day: pcf.day, total: pcf.items.length,
+      error: '这只 ETF 的申购赎回清单里没有可取的股票成分（商品 / 境外指数 / 债券类常见），穿透不适用',
     });
   }
 
@@ -1121,6 +1251,7 @@ async function serveHoldPcf(ctx, code, pcf) {
     ok: true, code, src: 'pcf', ex: pcf.ex, day: pcf.day,
     name: '', asof: pcf.day,
     n: r.rows.length, total: pcf.items.length,
+    miss: Math.max(0, pcf.items.length - r.rows.length),
     wsum: +r.wsum.toFixed(2), hit: r.hit,
     rows: r.rows, ms: 0,
   }, r.hit > 0 ? 30 : 0);
@@ -1173,17 +1304,14 @@ async function serveHoldReport(ctx, code, env, pcfErr) {
     pair.push([it, sym]);
   }
 
+  /* 走和 PCF 同一条行情链路：腾讯主源 + 新浪兜底 + 缺失补抓。原来这里自己
+     分 50 只一批、失败静默吞掉，季报这条路会「有前十大、没有涨跌幅」。 */
   let q = {}, qErr = '';
-  try {
-    const chunks = [];
-    for (let k = 0; k < syms.length; k += 50) chunks.push(syms.slice(k, k + 50));
-    const got = await Promise.all(chunks.map((c) => fetchHqRetry(c).catch((e) => { qErr += String(e.message || e) + ' '; return {}; })));
-    for (const g of got) Object.assign(q, g);
-  } catch (e) { qErr = String(e.message || e); }
+  try { q = await priceMap(syms); } catch (e) { qErr = String(e.message || e); }
 
   let wsum = 0, ctr = 0, hit = 0;
   const rows = pair.map(([it, sym]) => {
-    const o = parseHq(sym, q[sym]);
+    const o = q[sym] || null;
     const w = it.w;
     wsum += w;
     // 贡献：权重 × 涨跌幅（百分点）。ETF 涨跌幅 ≈ 各成分贡献之和 + 折溢价
@@ -1423,6 +1551,12 @@ async function buildWarmPlan(day, env) {
       const nm = String(x.name || '');
       if (/债|货币|短融|添益|日利|保证金|理财/.test(nm)) continue;
       if (nm.indexOf('现金') >= 0 && !/自由现金|现金流/.test(nm)) continue;
+      /* 商品和境外指数也没有股票成分：黄金（518880 那批）、日经 / 东证 / 巴西、
+         豆粕、能源化工。实测 400 只成交额榜里这类有 21 只，每只预热要烧 1~3 个
+         子请求还必然失败，一轮二十只的预算直接被吃掉一小半。
+         注意别按「有色」筛：159980 有色ETF 是商品期货，但 159881 有色50 是股票
+         指数，同一个词两种品种，宁可留一只漏网的也不误伤。 */
+      if (/黄金|金ETF|上海金|日经|东证|巴西|豆粕|能源化工/.test(nm)) continue;
       got.push({ c, a: +x.amount || 0, m: String(x.name || '') });
     }
   }

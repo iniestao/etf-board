@@ -2582,10 +2582,16 @@ function renderHold(j){
   // 注意这里是模板字符串：正则里的反斜杠要写两个，写成 \d 会被当成 d
   var dayTxt = (j.asof || '-').replace(/^(\\d{4})(\\d{2})(\\d{2})$/, '$2-$3');
   if (isPcf){
-    hd.innerHTML = '<span>全部 <b>' + all.length + '</b> 只 · 权重合计 <b>100%</b>'
+    /* miss = 清单里有、但行情没取到的只数（退市、停牌无昨收、代码换过）。
+       这些不进行，权重就按剩下的归一化到 100%——数字看着正常，其实分母缩了。
+       所以「全部 N 只 · 权重合计 100%」这句话只在 miss=0 时成立，有缺就把缺的
+       只数写出来，别让人拿一张静默缩过水的表当全量。 */
+    var missN = j.miss || 0;
+    hd.innerHTML = '<span>清单 <b>' + (j.total || all.length + missN) + '</b> 只'
+      + (missN > 0 ? ' · <b>' + missN + '</b> 只无行情（权重按其余归一化）' : '')
+      + ' · 权重合计 <b>100%</b>'
       + ' · 交易所 PCF <b>' + esc(dayTxt) + '</b>'
       + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>（可展开）' : '')
-      + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
       // 展开后表头给一个「收起」：几百行滚到底才能收，太远了
       + (H.holdAll ? ' · <i class="hcollapse" data-holdm="0">收起</i>' : '')
       + '</span><span>权重 = 股数 × 昨收归一化 · 贡献 = 权重 × 今日涨跌（百分点）</span>';
