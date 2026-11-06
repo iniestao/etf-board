@@ -105,13 +105,13 @@ def main():
             rows_meta.append((c, today, '', None, None, None, None, len(holds)))
             rows_hold.extend((c, today, *h) for h in holds)
             if i % 40 == 0:
-                db.executemany('INSERT OR REPLACE INTO pcf_meta VALUES (?,?,?,?,?,?,?,?)', rows_meta)
+                db.executemany('INSERT OR REPLACE INTO pcf_meta(code,date,idx_code,nav,unit_nav,min_unit,cash,n_hold) VALUES (?,?,?,?,?,?,?,?)', rows_meta)
                 db.executemany('INSERT OR REPLACE INTO pcf_hold VALUES (?,?,?,?,?,?)', rows_hold)
                 db.commit()
                 rows_meta.clear(); rows_hold.clear()
                 print(f'  [{i}/{len(todo)}] ok={ok} fail={fail}', flush=True)
 
-    db.executemany('INSERT OR REPLACE INTO pcf_meta VALUES (?,?,?,?,?,?,?,?)', rows_meta)
+    db.executemany('INSERT OR REPLACE INTO pcf_meta(code,date,idx_code,nav,unit_nav,min_unit,cash,n_hold) VALUES (?,?,?,?,?,?,?,?)', rows_meta)
     db.executemany('INSERT OR REPLACE INTO pcf_hold VALUES (?,?,?,?,?,?)', rows_hold)
     db.commit()
     print(f'完成：成功 {ok}，失败 {fail}')

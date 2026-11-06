@@ -37,7 +37,8 @@ OUT = Path(__file__).parent
 def load_pcf():
     con = sqlite3.connect(OUT / 'pcf.db')
     h = pd.read_sql('SELECT code, date, stock, qty FROM pcf_hold', con)
-    m = pd.read_sql('SELECT code, date, nav, idx_code, min_unit, unit_nav FROM pcf_meta', con)
+    m = pd.read_sql('SELECT code, date, nav, nav_date, fund_type, idx_code, '
+                    'min_unit, unit_nav FROM pcf_meta', con)
     con.close()
     h['date'] = pd.to_datetime(h['date'])
     m['date'] = pd.to_datetime(m['date'])
@@ -229,30 +230,30 @@ def main():
     F['TRACK'] = F.groupby('code')['TRACK_D'].transform(
         lambda s: s.rolling(20, min_periods=15).sum())
 
-    # PREM_NAV：PCF 文件名的日期是 T（申赎日），但里面的 net value 是 T−1 收盘净值。
-    # 已在原文核对：PCF 20261103 的 nav=2.4748 ↔ ETF 11-02 收盘 2.473。
-    # 所以必须配前一交易日的原始收盘价，否则混进一天的涨跌，出现过 ±979% 的假折溢价。
-    cal = E_raw.index
-
-    def prev_td(d):
-        i = cal.searchsorted(d, side='left')
-        return cal[i - 1] if i > 0 else pd.NaT
-
-    mm = meta.dropna(subset=['nav'])
+    # PREM_NAV：净值日期直接从 PCF 原文读（「2026-10-30日 信息内容」），不要猜。
+    # 本市场 ETF 是 T-1，跨境 ETF 各不相同：纳指类要等海外确认是 T-2，
+    # 恒生类港股收盘晚于 A 股、当天可确认，还是 T-1。按文件日期退固定天数会系统性错配。
+    #
+    # 值用净值日的价格算，但**落点是 PCF 发布日**，不是净值日。
+    # 净值日 T-1 的净值要到 T 日 08:30 才随 PCF 公布，落在 T-1 等于
+    # 「用还没公开的信息，在公布前一天收盘买入」——那是前视偏差，IC 会虚高。
+    # 也不能按日频填充：同一期净值配不同日价格，一个月内会算出 20 个相同值，
+    # 等于把 1 个观测复制 20 遍，t 值同样失真。
+    mm = meta.dropna(subset=['nav', 'nav_date'])
     mm = mm[mm['nav'] > 0]
-    nav_map = {(r.code, pd.Timestamp(r.date)): r.nav for r in mm.itertuples()}
-    prems = []
-    for c, d in zip(F['code'], F['pcf_day']):
-        nav = nav_map.get((c, d))
-        if nav is None or nav <= 0:
-            prems.append(np.nan)
+    row_of = {(c, d): i for i, (c, d) in enumerate(zip(F['code'], F['date']))}
+    prems = [np.nan] * len(F)
+    for r in mm.itertuples():
+        nd = pd.Timestamp(r.nav_date)
+        fd = pd.Timestamp(r.date)
+        if r.nav <= 0 or nd not in E_raw.index or r.code not in E_raw.columns:
             continue
-        pday = prev_td(d)
-        if pday is pd.NaT or pday not in E_raw.index or c not in E_raw.columns:
-            prems.append(np.nan)
+        i = row_of.get((r.code, fd))
+        if i is None:
             continue
-        p = E_raw.at[pday, c]
-        prems.append(float(p / nav - 1) if np.isfinite(p) else np.nan)
+        p = E_raw.at[nd, r.code]
+        if np.isfinite(p):
+            prems[i] = float(p / r.nav - 1)
     F['PREM_NAV'] = prems
 
     F.to_csv(OUT / 'out_pcf_daily.csv', index=False)

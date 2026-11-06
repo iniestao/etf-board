@@ -46,6 +46,10 @@ RE_NAV = re.compile(r'基金份额净值[：:]\s*([\d.]+)')
 RE_UNITNAV = re.compile(r'最小申购、赎回单位资产净值[：:]\s*([\d,.]+)')
 RE_MINUNIT = re.compile(r'最小申购、赎回单位[：:]\s*([\d,]+)份')
 RE_CASH = re.compile(r'现金差额[：:]\s*(-?[\d,.]+)')
+# 原文明确写「2026-10-30日 信息内容」——这才是净值和持仓的真实日期。
+# 文件日期是申赎日 T，本市场 ETF 是 T-1，跨境 ETF 是 T-2，不能靠猜。
+RE_NAVDATE = re.compile(r'(\d{4})-(\d{2})-(\d{2})\s*日\s*信息内容')
+RE_FTYPE = re.compile(r'基金类型[：:]\s*(\S+)')
 # 一行：代码 简称 数量 现金替代标志 ...
 # 代码 5 位是港股（00001 长和）、6 位是 A 股、纯字母是美股
 RE_HOLD = re.compile(r'^[ \t]*(\d{5,6}|[A-Z]{1,6})[ \t]+(.+?)[ \t]+([\d,]+)[ \t]+(?:允许|必须|禁止)', re.M)
@@ -81,9 +85,13 @@ def parse(txt: str) -> dict | None:
         mk = 'SH' if '上海市场' in line else ('SZ' if '深圳市场' in line else
                                               ('HK' if '香港市场' in line else 'OT'))
         holds.append((c, name, q, mk))
+    m_nd = RE_NAVDATE.search(head)
+    m_ft = RE_FTYPE.search(head)
     return dict(
         idx_code=m_code.group(1) if m_code else '',
         nav=nav,
+        nav_date='%s-%s-%s' % m_nd.groups() if m_nd else None,
+        fund_type=m_ft.group(1) if m_ft else None,
         unit_nav=_num(RE_UNITNAV, head),
         min_unit=_num(RE_MINUNIT, head, int),
         cash=_num(RE_CASH, head),
@@ -155,7 +163,8 @@ def main():
     ''')
     con.commit()
 
-    done = {(c, d) for c, d in con.execute('SELECT code,date FROM pcf_meta')}
+    done = {(c, d) for c, d in con.execute(
+        'SELECT code,date FROM pcf_meta WHERE nav_date IS NOT NULL')}
     tasks = [(c, d) for c in codes for d in days if (c, d) not in done]
     print(f'已完成 {len(done)}，待抓 {len(tasks)}')
     if not tasks:
@@ -177,10 +186,11 @@ def main():
             else:
                 ok += 1
                 batch_meta.append((code, day, r['idx_code'], r['nav'], r['unit_nav'],
-                                   r['min_unit'], r['cash'], len(r['holds'])))
+                                   r['min_unit'], r['cash'], len(r['holds']),
+                                   r['nav_date'], r['fund_type']))
                 batch_hold.extend((code, day, *h) for h in r['holds'])
             if i % 500 == 0:
-                con.executemany('INSERT OR REPLACE INTO pcf_meta VALUES (?,?,?,?,?,?,?,?)', batch_meta)
+                con.executemany('INSERT OR REPLACE INTO pcf_meta VALUES (?,?,?,?,?,?,?,?,?,?)', batch_meta)
                 con.executemany('INSERT OR REPLACE INTO pcf_hold VALUES (?,?,?,?,?,?)', batch_hold)
                 con.commit()
                 batch_meta.clear(); batch_hold.clear()
@@ -192,7 +202,7 @@ def main():
                 con.rollback()
                 raise SystemExit('前 200 个请求全部失败，先检查 URL 拼接，不要继续烧请求')
 
-    con.executemany('INSERT OR REPLACE INTO pcf_meta VALUES (?,?,?,?,?,?,?,?)', batch_meta)
+    con.executemany('INSERT OR REPLACE INTO pcf_meta VALUES (?,?,?,?,?,?,?,?,?,?)', batch_meta)
     con.executemany('INSERT OR REPLACE INTO pcf_hold VALUES (?,?,?,?,?,?)', batch_hold)
     con.commit()
     print(f'完成：成功 {ok}，缺失 {fail}，耗时 {time.time()-t0:.0f}s')
