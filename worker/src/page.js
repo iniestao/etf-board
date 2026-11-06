@@ -1994,8 +1994,27 @@ function spdPct(v){
   return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
 }
 
+/* 服务端给的 pv 是相对**今开**的百分比（0 = 今开）。但行情软件的 0 轴是**昨收**，
+   两者在跳空日会彻底背离：588000 低开 4.6%，全天都在昨收下方运行，按今开算却是
+   一路上扬 +2.2%——迷你线画出来像在涨，左边数字却是绿的，和分时图对照就是「对不上」。
+
+   这里换算到昨收基准，让迷你线、涨跌幅、分时图三者同向。不需要额外请求：服务端
+   给的最后一点 pv_last 对应现价 price，于是今开 = price / (1 + pv_last/100)，
+   再套一遍就得到相对昨收的百分比。用快照的 price/prev 而不是 chg 字段，
+   因为 chg 只有两位小数，低价品种会带来 0.01% 级别的抖动。 */
+function toPrevBase(pv, price, prev){
+  if (!pv || pv.length < 3 || !(price > 0) || !(prev > 0)) return pv;
+  var lastPct = pv[pv.length - 1];
+  if (!isFinite(lastPct)) return pv;
+  var open = price / (1 + lastPct / 100);
+  if (!(open > 0)) return pv;
+  var k = open / prev, out = [], i;
+  for (i = 0; i < pv.length; i++) out.push(+((k * (1 + pv[i] / 100) - 1) * 100).toFixed(2));
+  return out;
+}
+
 /* 迷你线：横轴是当日 9:30 至今的完整分时，与「涨速」的窗口不是一回事，所以颜色
-   按窗口方向给、形状按全天给——「上午冲高、午后一路阴跌、最后两分钟拉起来」这种
+   按全天方向给、形状按全天给——「上午冲高、午后一路阴跌、最后两分钟拉起来」这种
    形态，只有拉长到全天才看得见。颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量
    （--up/--down 改主题时这里要跟着改）。
 
@@ -2003,11 +2022,11 @@ function spdPct(v){
    0.18% 的横盘和 0.45% 的急拉画出来一样高、一样陡——一列全是同形状的锯齿，
    看起来「比例很怪」，而且丢掉了「动得多不多」这个信息。
    现在：
-   - 中线 = 今开价，虚线画出来当基准，「贴着中线 = 全天就在开盘价附近磨」；
+   - 中线 = 昨收，虚线画出来当基准，和分时图的 0 轴是同一根线；
    - 全池共用一把尺子（spdScale），幅度按同一比例换算，行与行之间可比；
    - 超尺的顶到边，短的自然就矮——10 只里谁走得最远一眼能排出来。 */
 function spdSpark(vals, up, sc){
-  // vals 是相对今开的百分比：0 就是今开，中线画在那儿
+  // vals 是相对昨收的百分比：0 就是昨收，中线画在那儿
   if (!vals || vals.length < 3) return '<span class="spk"></span>';
   var w = 88, h = 24, pad = 3, i;
   // sc 是全池统一幅度（百分比），缺省 0.8% 不至于把线画成一条直杠
@@ -2028,17 +2047,20 @@ function spdSpark(vals, up, sc){
     + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>';
 }
 
-/* 全池共用一把纵向尺子：取每只「当日相对今开最大偏离（%）」的 65 分位。
-   0.3% 是下限（那种一根直线的心电图没必要占满），3% 是上限（有一只暴涨
+/* 全池共用一把纵向尺子：取每只「当日相对昨收最大偏离（%）」的 65 分位。
+   0.15% 是下限（那种一根直线的心电图没必要占满），5% 是上限（有一只暴涨
    时不至于把其余 39 只全压成直线）。分位从 75 降到 65 是配合全天窗口调的：
    20 分钟窗口里大家的振幅都在 0.3%~0.5%，75 分位正好把线铺满；拉到全天之后
    振幅差得远（题材 ETF 3%、宽基 0.8%），75 分位会把大半的线压成矮墩墩一条，
    降到 65 让多数线用掉六七成高度，代价是四分之一的线会顶到框边——顶边本身
-   也是信息（「这只今天动得比同类猛」）。 */
+   也是信息（「这只今天动得比同类猛」）。
+
+   上限从 3% 放到 5%：基准换成昨收之后，跳空日的幅度不再被今开吃掉，
+   低开高走的那几只 max|pv| 能到 5%~7%，卡在 3% 会让一整列全顶边。 */
 function spdScale(rows){
   var a = [], i, j, pv, m, dv;
   for (i = 0; i < rows.length; i++){
-    pv = rows[i].pv;
+    pv = rows[i].pvn || rows[i].pv;
     if (!pv || pv.length < 3) continue;
     m = 0;
     for (j = 0; j < pv.length; j++){
@@ -2050,7 +2072,7 @@ function spdScale(rows){
   if (!a.length) return 0.8;
   a.sort(function(x, y){ return x - y; });
   var q = a[Math.min(a.length - 1, Math.floor(a.length * 0.65))];
-  return Math.min(3, Math.max(0.3, q));
+  return Math.min(5, Math.max(0.3, q));
 }
 
 function renderSpeed(){
@@ -2083,6 +2105,18 @@ function renderSpeed(){
   }
   up.sort(function(a, b){ return b.v - a.v; });
   dn.sort(function(a, b){ return a.v - b.v; });
+
+  /* 先把 pv 从「相对今开」换算到「相对昨收」——迷你线和分时图的 0 轴必须是同一根，
+     否则跳空日会出现「线在涨、数字在跌」。换算要用快照里的现价和昨收，缺任一只
+     就退回今开基准（线照样能画，只是那一行的 0 轴和别的行不是一个意思）。 */
+  var it0;
+  for (i = 0; i < SPD.rows.length; i++){
+    it0 = findItem(SPD.rows[i].c);
+    SPD.rows[i].pvn = (it0 && it0.p > 0 && it0.pc > 0)
+      ? toPrevBase(SPD.rows[i].pv, it0.p, it0.pc)
+      : SPD.rows[i].pv;
+  }
+
   // 尺子按整个池子算，不按这两栏算：左右两栏、切换 3/5 分钟都得同一把尺，
   // 否则「急涨第一名」和「急跌第一名」的波形幅度没法放在一起看
   var SC = spdScale(SPD.rows);
@@ -2091,13 +2125,18 @@ function renderSpeed(){
     var x = o.r, it = findItem(x.c);
     var nm = it ? it.n : x.c;
     var hot = o.q >= SPD_VOL_HOT;
+    /* 线的颜色跟全天方向走（相对昨收），不跟 3 分钟涨速走：否则跳空低开的日子
+       会出现「绿线一路向上」这种自相矛盾的图形。左边数字仍是涨速、仍按涨速
+       配色——那才是这一栏排序的依据，「急跌但今天还涨着」本身就是有用的信息。 */
+    var pvx = x.pvn || x.pv;
+    var dayUp = pvx && pvx.length ? pvx[pvx.length - 1] >= 0 : true;
     // sp 和标称窗口差得多就标 ~：可能是数据缺口把基准推远了（尾盘 14:56
     // 直接跳 15:00，3 分钟实际跨了 4 分钟），也可能是午后刚开盘窗口还没走满
     var far = Math.abs(x.sp - SPD.w) >= 2;
     return '<div class="spdrow" data-c="' + x.c + '">'
       + '<div class="spdnm" title="' + nm + '  ' + x.c + '">'
         + '<span class="nmx">' + nm + '</span><em>' + x.c + '</em></div>'
-      + spdSpark(x.pv, o.v >= 0, SC)
+      + spdSpark(pvx, dayUp, SC)
       + '<div class="spdv" style="color:' + (o.v >= 0 ? 'var(--up)' : 'var(--down)') + '">'
         + (far ? '~' : '') + spdPct(o.v) + '</div>'
       + '<div class="spdq' + (hot ? ' hot' : '') + '" title="量比：最近 ' + SPD.w
@@ -2139,8 +2178,8 @@ function renderSpeed(){
       + '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
       + '到 <b>' + SPD_VOL_HOT + '×</b> 标黄。收盘集合竞价那根按 4 分钟折算，'
       + '否则尾盘会凭空多出十倍放量。'
-      + '小走势线是<b>当日 9:30 至今</b>的分时，虚线是今开——'
-      + '线在虚线上方就是全天在水面之上，最后那一下拉升也能看出是从哪儿起来的。'
+      + '小走势线是<b>当日 9:30 至今</b>的分时，虚线是<b>昨收</b>，和分时图同一根 0 轴——'
+      + '线在虚线上方就是全天还在涨，颜色也按这条线的方向给（数字仍是 ' + SPD.w + ' 分钟涨速，两者可以不同向）。'
       + (spdClosed() ? '<br>已收盘：这里是<b>今天最后几分钟</b>的涨速，明天 9:30 才重新走动。' : '');
   }
 }
