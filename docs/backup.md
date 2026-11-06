@@ -28,17 +28,45 @@ https://github.com/iniestao/etf-board/releases/tag/data-2026-11-06
 
 SHA256 与 GitHub 侧独立计算的 `digest` 逐一对齐过，三个文件均一致。
 
+## 每日增量（自动）
+
+存量基线是一次性快照，之后每天由 `.github/workflows/backup-data.yml` 自动累积：
+
+| | |
+|---|---|
+| 触发 | 每个交易日北京时间 16:40（可手动 `workflow_dispatch` 补跑） |
+| 抓取 | 个股日线 4348 只（约 2 分钟）、深市 PCF 191 只（11 秒）、沪市 PCF 241 只（约 4 分钟） |
+| 产出 | `daily/YYYY-MM-DD.parquet`（最近 5 个交易日）、`pcf_meta/`、`pcf_hold/` |
+| 落点 | `factor-data` 分支，**按日累积**（不像 `data` 分支那样 force push 覆盖） |
+| 体积 | 每天约 777 KB，一年约 190 MB |
+
+关键点：**跑在 GitHub Actions，不在沙箱**。沙箱正是要防的东西，让它自己守护自己的数据，休眠一次就断，而且断了没人知道。
+
+为什么只存最近 5 个交易日而不是当天：哪天的流水线挂了，后一天还能把那天补上。合并按 `(code, date)` 主键去重，重复写入是幂等的。
+
+抓取脚本对 CI 的适配都在文件头注释里，两个容易踩的坑：
+
+- `hfq.js` 的复权因子是**稀疏**的（茅台三年才 33 条，只在分红除权日有记录）。截断 bars 时若跟着截 `adj`，ffill 会拿不到因子，`close_adj` 退化成 `close`——茅台差 8.88 倍且不报错。
+- 名单不能从 `shares.db` 取（CI 里没有这个库），改用随仓库提交的 `universe.txt`、`pcf_universe.txt`、`pcf_universe_sse.txt`。
+
 ## 恢复
 
 ```bash
 git clone git@github.com:iniestao/etf-board.git
 cd etf-board
-./scripts/restore-data.sh                    # 默认 tag
-./scripts/restore-data.sh data-2026-11-06    # 指定版本
-FORCE=1 ./scripts/restore-data.sh            # 覆盖已存在的文件
+./scripts/restore-data.sh                    # 拉基线（Release）
+git clone -b factor-data --depth 1 \
+  git@github.com:iniestao/etf-board.git factor-data   # 拉增量
+python factor_lab/merge_increments.py \
+  --baseline factor_lab/stocks.db \
+  --baseline-pcf factor_lab/pcf.db \
+  --inc factor-data
 ```
 
-脚本会下载、校验 SHA256、解压到 `factor_lab/`。代码走 git，数据走 Release，两条路分开。
+产出 `stocks.merged.db` / `pcf.merged.db`（脚本用 `replace('.db', '.merged.db')`，注意文件名不是 `stocks.db.merged.db`）。
+
+合并已验证：删掉基线里某一天再合，能准确补回 4229 行，`close_adj` 与原始逐位一致，零重复键。
+
 
 ### 关于下载速度
 
@@ -50,9 +78,9 @@ FORCE=1 ./scripts/restore-data.sh            # 覆盖已存在的文件
 1. **本地下载再传**：在自己电脑上打开 Release 页面下载（家用宽带通常 5–20 MB/s），再用 `scp` 或对象存储中转进新沙箱。
 2. **只拉必需的**：`pcf.db.gz` 只有 17.7 MB，是三者中唯一不可再生的；`stocks.db` 急了就重抓。
 
-## 更新备份
+## 手动更新基线
 
-数据每天在变，备份是一次性的快照。需要新快照时：
+基线只在需要「重置起点」时更新（比如增量分支被弄坏了，重新打一个全量快照）：
 
 ```bash
 cd factor_lab

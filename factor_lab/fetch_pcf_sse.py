@@ -57,11 +57,26 @@ def fetch(code: str, retries: int = 3) -> list | None:
 
 
 def main():
-    con = sqlite3.connect(OUT / 'shares.db')
-    codes = [c for (c,) in con.execute('SELECT DISTINCT code FROM shares').fetchall()
-             if not c.startswith('15')]
-    con.close()
-    codes = sorted(codes)
+    import argparse
+    ap = argparse.ArgumentParser(description='抓沪市 ETF 申购赎回清单（只能取当天）')
+    ap.add_argument('--db', help='数据库路径，默认 ./pcf.db')
+    ap.add_argument('--codes', help='代码名单文件，默认 pcf_universe_sse.txt')
+    args = ap.parse_args()
+
+    global DB
+    if args.db:
+        DB = Path(args.db)
+
+    # 优先用随仓库提交的名单：CI 里没有 shares.db（份额库是沙箱本地抓的）
+    f = Path(args.codes) if args.codes else OUT / 'pcf_universe_sse.txt'
+    if f.exists():
+        codes = sorted(x.strip() for x in f.read_text().splitlines() if x.strip())
+    else:
+        con = sqlite3.connect(OUT / 'shares.db')
+        codes = [c for c, in con.execute('SELECT DISTINCT code FROM shares').fetchall()
+                 if not c.startswith('15')]
+        con.close()
+        codes = sorted(codes)
     print(f'沪市代表 ETF {len(codes)} 只')
 
     db = sqlite3.connect(DB)

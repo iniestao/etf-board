@@ -17,13 +17,29 @@
  */
 import fs from 'node:fs';
 import readline from 'node:readline';
-import decode from '/workspace/etf_board/data/sina_klc_decode.js';
+import decode from '../data/sina_klc_decode.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
          + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const HDR = { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn' };
 const CONC = 8;
 const RETRY = 2;
+
+/* 参数（每日增量备份用的，见 .github/workflows/backup-data.yml）
+   --list=  股票池文件，默认 /tmp/stocks.txt（沙箱里的老路径，保持不变）
+   --out=   NDJSON 输出路径
+   --keep=  每只只保留最近 N 个交易日；0 = 全历史（研究用）
+
+   注意 klc 接口**一次就返回整段历史**，所以 --keep 不减少请求数、也不加快
+   抓取，它只是把输出从几百 MB 压到几百 KB —— 这是增量能每天跑的前提。
+   复权因子按日期对齐，截断 bars 时必须同步截断 adj，否则会混进更早的因子。 */
+const arg = (k, d) => {
+  const a = process.argv.find((x) => x.startsWith('--' + k + '='));
+  return a ? a.slice(k.length + 3) : d;
+};
+const LIST = arg('list', '/tmp/stocks.txt');
+const OUT_FILE = arg('out', '/tmp/stocks.ndjson');
+const KEEP = +arg('keep', '0') || 0;
 
 const d2s = (d) => {
   const x = new Date(d);
@@ -73,11 +89,11 @@ async function one(sym) {
 }
 
 async function main() {
-  const list = fs.readFileSync('/tmp/stocks.txt', 'utf8')
+  const list = fs.readFileSync(LIST, 'utf8')
     .split('\n').map((s) => s.trim()).filter(Boolean);
-  console.log(`待抓 ${list.length} 只，并发 ${CONC}`);
+  console.log(`待抓 ${list.length} 只，并发 ${CONC}，每只保留 ${KEEP || '全部'} 天`);
 
-  const out = fs.createWriteStream('/tmp/stocks.ndjson');
+  const out = fs.createWriteStream(OUT_FILE);
   let done = 0, ok = 0, fail = 0;
   const t0 = Date.now();
 
@@ -87,6 +103,15 @@ async function main() {
       const sym = queue.shift();
       const r = await one(sym);
       if (r && r.bars.length > 30) {
+        if (KEEP > 0 && r.bars.length > KEEP) {
+          /* 只截 bars，**绝不截 adj**。
+
+             hfq.js 是稀疏的：茅台三年才 33 条（每年分红除权两次），中位数
+             只有 6 条。截到最近 5 天就是空数组，下游 ffill 拿不到因子，
+             close_adj 会退化成 close —— 茅台会差 8.88 倍，而且不会报错，
+             因子结果全错却看起来正常。adj 一年添几条，留着不占地方。 */
+          r.bars = r.bars.slice(-KEEP);
+        }
         out.write(JSON.stringify(r) + '\n');
         ok++;
       } else {

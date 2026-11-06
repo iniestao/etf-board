@@ -33,7 +33,9 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path('/workspace/etf_board')
+# 别写死 /workspace/etf_board：CI 里检出到 /home/runner/work/...，
+# 写死之后 month_ends() 会在 Actions 上直接抛 FileNotFoundError
+ROOT = Path(__file__).resolve().parent.parent
 OUT = Path(__file__).parent
 DB = OUT / 'pcf.db'
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -123,11 +125,18 @@ def fetch(code: str, day: str, retries: int = 3) -> dict | None:
 def representatives() -> list[str]:
     """深市代表 ETF 的代码列表。
 
+    优先读随仓库提交的 pcf_universe.txt：CI 里没有 shares.db（份额库是沙箱
+    本地抓的），只能靠这份固定名单。文件不存在时回退到 shares.db，沙箱里的
+    行为完全不变。
+
     注意返回的是**纯代码字符串**，不是 (code, idx) 元组——之前返回元组，
     组装任务时 `code, day = t` 把整个元组赋给了 code，拼出来的 URL 变成
     `ETF('159915', '创业板指')20261104.txt`，18145 个请求全部 404，
     但每个都「正常返回 None」，所以看起来像「深交所没有数据」。
     """
+    f = OUT / 'pcf_universe.txt'
+    if f.exists():
+        return sorted(x.strip() for x in f.read_text().splitlines() if x.strip())
     con = sqlite3.connect(OUT / 'shares.db')
     rows = con.execute('SELECT DISTINCT code FROM shares').fetchall()
     con.close()
@@ -146,9 +155,20 @@ def month_ends() -> list[str]:
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description='抓深市 ETF 申购赎回清单')
+    ap.add_argument('--date', help='只抓这一天（YYYYMMDD），给每日增量用；不传则按月末回溯')
+    ap.add_argument('--db', help='数据库路径，默认 ./pcf.db')
+    args = ap.parse_args()
+
+    global DB
+    if args.db:
+        DB = Path(args.db)
+
     codes = representatives()
-    days = month_ends()
-    print(f'深市代表 ETF {len(codes)} 只 × 月末 {len(days)} 期 = {len(codes)*len(days)} 请求')
+    days = [args.date] if args.date else month_ends()
+    scope = f'当日 {args.date}' if args.date else f'月末 {len(days)} 期'
+    print(f'深市代表 ETF {len(codes)} 只 × {scope} = {len(codes)*len(days)} 请求')
 
     con = sqlite3.connect(DB)
     con.executescript('''

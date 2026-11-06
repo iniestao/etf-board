@@ -1,0 +1,144 @@
+name: 每日数据备份
+
+# 沙箱是临时的，/workspace 不保证跨会话保留。代码在 git 里，但 factor_lab 的
+# 个股日线（1494 万行）和 PCF 清单（1.8 万个文件）没有——丢了要重抓好几个小时。
+#
+# 为什么不每天传全量到 Release：376 MB 里 99.97% 是历史，一年 94 GB。
+# 这里只传当天的增量（约 400 KB），按日期累积在 factor-data 分支。
+# 存量基线在 Release tag data-2026-11-06，恢复时「基线 + 增量」合并。
+#
+# 为什么跑在 Actions 而不是沙箱：沙箱正是我们要防的东西。让它自己守护自己的
+# 数据，休眠一次就断了，而且断了没人知道。
+
+on:
+  schedule:
+    # 收盘 15:00 + 数据源清洗延迟。比 update-data.yml（16:35）晚 5 分钟，
+    # 避开和它抢同一条 self-hosted 队列，也确保当天的日线已经能取到。
+    - cron: '40 8 * * 1-5'
+  workflow_dispatch:        # 支持手动补跑，漏了一天不用等下一个交易日
+
+concurrency:
+  group: etf-backup
+  cancel-in-progress: false     # 补跑时不要把正在跑的挤掉
+
+permissions:
+  contents: write               # 往 factor-data 分支 push 需要
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install --quiet pandas pyarrow
+
+      # ---------- 1. 个股日线（只留最近 5 个交易日）----------
+      # klc 接口一次返回整段历史，所以 --keep 不省请求，只把输出从几百 MB
+      # 压到几百 KB。留 5 天是为了容错：哪天流水线挂了，后一天还能把那天补上。
+      - name: 抓个股日线（4348 只，约 3 分钟）
+        run: |
+          node factor_lab/fetch_stocks.mjs \
+            --list=factor_lab/universe.txt \
+            --keep=5 \
+            --out=/tmp/stocks.ndjson
+          echo "NDJSON $(du -h /tmp/stocks.ndjson | cut -f1)，$(wc -l < /tmp/stocks.ndjson) 只"
+
+      # ---------- 2. 两个交易所的申购赎回清单 ----------
+      # 深市是静态文件、可按日期取；沪市接口没有日期参数，只能拿当天。
+      # 两个脚本都从 factor_lab/*universe*.txt 读名单——CI 里没有 shares.db。
+      - name: 抓深市清单
+        run: |
+          DAY=$(TZ=Asia/Shanghai date +%Y%m%d)
+          python factor_lab/fetch_pcf.py --date=$DAY --db=/tmp/pcf.db
+
+      - name: 抓沪市清单
+        run: python factor_lab/fetch_pcf_sse.py --db=/tmp/pcf.db
+
+      # ---------- 3. 导出增量 ----------
+      - name: 导出增量包
+        run: |
+          DAY=$(TZ=Asia/Shanghai date +%Y%m%d)
+          python factor_lab/export_increment.py \
+            --ndjson /tmp/stocks.ndjson --pcf /tmp/pcf.db \
+            --out /tmp/inc --keep 5 --day $DAY
+
+      - name: 增量完整性断言
+        run: |
+          python3 - <<'PY'
+          import glob, sys
+          import pandas as pd
+          files = glob.glob('/tmp/inc/daily/*.parquet')
+          if not files:
+              sys.exit('没有产出日线增量')
+          df = pd.read_parquet(files[-1])
+          n_code = df['code'].nunique()
+          print(f"日线 {len(df):,} 行 / {n_code} 只 / {df['date'].nunique()} 个交易日")
+          # 正常全市场 4300+ 只；低于 3000 说明上游大面积失败，
+          # 宁可让流水线红掉，也不要把残缺数据写进 factor-data
+          assert n_code > 3000, f'覆盖股票数异常：{n_code}'
+          assert df['close_adj'].notna().all(), 'close_adj 有空值（复权因子没对上）'
+
+          import glob as g
+          mf = g.glob('/tmp/inc/pcf_meta/*.parquet')
+          if mf:
+              m = pd.read_parquet(mf[-1])
+              print(f"PCF {len(m)} 份清单")
+              assert len(m) > 100, f'清单数异常：{len(m)}'
+          PY
+
+      # ---------- 4. 累积到 factor-data 分支 ----------
+      # 和 update-data.yml 的 data 分支不同：那边每天 force push 覆盖（只有一份
+      # 最新快照），这里必须**累积**——PCF 的历史是不可再生的，覆盖等于丢掉。
+      - name: 推送到 factor-data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          PUB=/tmp/pub
+          mkdir -p "$PUB"
+          cd "$PUB"
+          git init -q
+          git config user.name "etf-board-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          # 分支可能还不存在（第一次跑），取不到就从空目录开始
+          if git fetch -q origin factor-data 2>/dev/null; then
+            git reset -q --hard FETCH_HEAD
+            echo "已有 $(git ls-files | wc -l) 个文件"
+          else
+            echo "factor-data 尚不存在，本次创建"
+          fi
+
+          cp -r /tmp/inc/* .
+          git add -A
+          if git diff --cached --quiet; then
+            echo "没有变化，跳过提交"
+          else
+            DAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+            git commit -q -m "data ${DAY}"
+            git push -q origin HEAD:factor-data
+            echo "已推送 $(git rev-parse --short HEAD)"
+          fi
+          echo "分支体积 $(du -sh . | cut -f1)，日线 $(ls daily | wc -l) 天，PCF $(ls pcf_meta 2>/dev/null | wc -l) 天"
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### 每日数据备份"
+            echo "- 时间：$(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "- 增量：$(du -sh /tmp/inc 2>/dev/null | cut -f1)"
+            echo "- 状态：${{ job.status }}"
+          } >> $GITHUB_STEP_SUMMARY
