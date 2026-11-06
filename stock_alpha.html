@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>从个股出发：ETF 到底能装进多少 alpha</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1c1f24; --sub:#5b6472; --line:#e3e6ea;
+    --up:#c0392b; --dn:#1e8449; --accent:#1a5fb4; --warn:#b7791f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:960px;margin:0 auto;padding:44px 24px 80px}
+  h1{font-size:27px;line-height:1.4;margin:0 0 6px;letter-spacing:-.3px}
+  .lede{color:var(--sub);font-size:14px;margin-bottom:34px}
+  h2{font-size:19px;margin:44px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--ink)}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:8px}
+  h3{font-size:15px;margin:26px 0 10px;color:var(--ink)}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;margin:16px 0}
+  .verdict{background:#fff;border-left:4px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:18px 0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .verdict b{color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:12px 0;
+    font-variant-numeric:tabular-nums;background:#fff}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th{background:#f0f2f5;font-weight:600;color:var(--sub);font-size:12.5px;white-space:nowrap}
+  td:first-child,th:first-child{text-align:left}
+  tr:last-child td{border-bottom:none}
+  .up{color:var(--up)} .dn{color:var(--dn)} .mut{color:var(--sub)}
+  .hi{background:#fdf6e3;font-weight:600}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:13px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  pre{background:#1c1f24;color:#e6e8eb;padding:14px 16px;border-radius:8px;overflow-x:auto;
+    font-size:12.5px;line-height:1.65}
+  .bars{display:flex;align-items:flex-end;gap:4px;height:150px;margin:16px 0 6px;
+    padding:0 2px;border-bottom:1px solid var(--line)}
+  .bar{flex:1;position:relative;display:flex;flex-direction:column;justify-content:flex-end}
+  .bar i{display:block;background:var(--accent);border-radius:2px 2px 0 0}
+  .bar.neg i{background:var(--dn);border-radius:0 0 2px 2px}
+  .xis{display:flex;gap:4px;font-size:11px;color:var(--sub);text-align:center;margin-bottom:18px}
+  .xis span{flex:1}
+  .lg{font-size:12px;color:var(--sub);margin-top:4px}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}
+  .kpi div{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px}
+  .kpi b{display:block;font-size:21px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+  .kpi small{color:var(--sub);font-size:11.5px;line-height:1.5;display:block;margin-top:3px}
+  ul{padding-left:20px} li{margin:6px 0}
+  .foot{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);
+    color:var(--sub);font-size:12.5px}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;
+    background:#eef1f4;color:var(--sub);margin-left:6px;vertical-align:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>从个股出发：ETF 到底能装进多少 alpha</h1>
+<div class="lede">
+  起于一个判断——ETF 是一篮子股票，研究它就该沉到成分股去。
+  走完之后结论比预期更硬：方向对，但走到底会撞上一堵墙。
+  <span class="tag">2016-01 ~ 2026-11</span><span class="tag">4,348 只 A 股</span><span class="tag">405 只 ETF</span>
+</div>
+
+<div class="verdict">
+  <b>先说结论。</b>ETF 层面做不出因子，不是因子不好，是标的没有自由度——
+  131 只老 ETF 的第一主成分解释 <b>53.3%</b>，有效独立标的只有 <b>3.4 只</b>。
+  沉到个股后确实找到了逐年同号的稳定 alpha（成交额因子，年化 <b>17.7%</b>，夏普 0.80）。
+  但这个 alpha 在 ETF 里只剩 <b>约 10%</b>：ETF 成分股的加权成交额分位是 <b>0.86</b>，
+  而 alpha 最厚的那一端在 0.0~0.1。ETF 的市值加权，结构性地把它过滤掉了。
+</div>
+
+<div class="kpi">
+  <div><b class="dn">3.4</b><small>131 只 ETF 的有效<br>独立标的数（ENB）</small></div>
+  <div><b>0.093</b><small>个股低波因子 IC<br>t = 24，11 年全正</small></div>
+  <div><b class="up">17.7%</b><small>成交额因子组合年化<br>vs 基准 7.6%</small></div>
+  <div><b class="dn">10%</b><small>同一 alpha 在 ETF<br>里的残留比例</small></div>
+</div>
+
+<h2><span class="n">01</span>先证伪我自己：ETF 层面为什么必然做不出来</h2>
+
+<p>把 2019 年之前就存在、后续缺失低于 2% 的 131 只 ETF 放在一起，算日收益相关矩阵：</p>
+
+<table>
+  <tr><th>指标</th><th>数值</th><th>含义</th></tr>
+  <tr><td>两两相关中位数</td><td>0.508</td><td>一半的 ETF 对，日收益同涨同跌过半</td></tr>
+  <tr><td>第一主成分解释力</td><td>53.3%</td><td>一半的横截面变化来自同一个东西</td></tr>
+  <tr><td>前三主成分</td><td>64.2%</td><td>其余 128 个维度挤在 36% 里</td></tr>
+  <tr class="hi"><td>有效独立标的数 ENB</td><td>3.4</td><td>131 个观测，真正独立的只有 3 个半</td></tr>
+</table>
+
+<p>这意味着：在 ETF 上算任何横截面因子的 IC，分母里那个 <code>√n</code> 的 n 是假的。
+把 131 只 ETF 当 131 个独立样本，t 值会被系统性地放大 <b>6 倍以上</b>——我上一轮的
+择时和跨市场结论，全部要按这个折价重读。</p>
+
+<p>更直接的证据是聚合实验。把个股因子按 PCF 持仓权重加权，得到每只 ETF 的「成分股画像」，
+再检验它能否预测 ETF 未来 20 日收益。个股 IC 是 0.09 量级，聚合到 ETF 之后：</p>
+
+<table>
+  <tr><th>因子</th><th>个股 IC</th><th>个股 t</th><th>聚合到 ETF 后 IC</th><th>聚合后 t</th></tr>
+  <tr><td>低波 VOL20</td><td class="up">+0.0927</td><td>24.3</td><td>+0.0091</td><td>0.20</td></tr>
+  <tr><td>不买彩票 MAX20</td><td class="up">+0.0925</td><td>31.8</td><td>+0.0070</td><td>0.17</td></tr>
+  <tr><td>成交额 AMT20</td><td class="dn">−0.1013</td><td>−32.7</td><td>−0.0223</td><td>−0.64</td></tr>
+  <tr><td>反转 REV20</td><td class="up">+0.0628</td><td>21.3</td><td>+0.0043</td><td>0.12</td></tr>
+</table>
+
+<p>信号不是变弱，是<b>归零</b>。两个原因叠在一起：一是 ETF 之间同指数重复（成分完全一样，
+得分完全一样，秩相关被并列值稀释）；二是组合把个股的特质波动平均掉了，
+而个股 alpha 的一大半恰恰活在特质里。</p>
+
+<h2><span class="n">02</span>个股层面确实有东西，而且逐年同号</h2>
+
+<p>4,348 只 A 股，2016-01 至 2026-11，2,600 个交易日，剔除价格 &lt; 2 元、20 日均成交额
+&lt; 1000 万、当日涨跌停。20 日持有期的横截面 Rank IC：</p>
+
+<table>
+  <tr><th>因子</th><th>IC</th><th>t</th><th>IR</th><th>胜率</th><th>年度同号</th></tr>
+  <tr class="hi"><td>成交额 AMT20（低）</td><td class="dn">−0.1013</td><td>−32.7</td><td>−0.64</td><td>27.5%</td><td>11 / 11</td></tr>
+  <tr class="hi"><td>不买彩票 MAX20</td><td class="up">+0.0925</td><td>31.8</td><td>+0.62</td><td>74.1%</td><td>11 / 11</td></tr>
+  <tr><td>低波 VOL20</td><td class="up">+0.0927</td><td>24.3</td><td>+0.48</td><td>68.7%</td><td>11 / 11</td></tr>
+  <tr><td>Amihud 非流动性</td><td class="dn">−0.0650</td><td>−21.0</td><td>−0.41</td><td>30.9%</td><td>9 / 11</td></tr>
+  <tr><td>反转 REV20</td><td class="up">+0.0628</td><td>21.3</td><td>+0.42</td><td>65.4%</td><td>11 / 11</td></tr>
+  <tr><td>换手放大 VRATIO</td><td class="dn">−0.0484</td><td>−22.9</td><td>−0.45</td><td>32.1%</td><td>11 / 11</td></tr>
+  <tr><td>动量 MOM120</td><td class="dn">−0.0338</td><td>−10.2</td><td>−0.20</td><td>43.8%</td><td>7 / 11</td></tr>
+</table>
+
+<p>这个 t 值量级和 ETF 层面（全在 ±2 以内晃）完全不是一个世界。
+胜率 74% 意味着 2,595 个交易日里，有 1,922 天 MAX20 的方向是对的。</p>
+
+<h2><span class="n">03</span>但 IC 会骗人——两端的形状跟中间不是一回事</h2>
+
+<p>拿 IC 最高的两个因子直接做组合：月末调仓，选分位最低的 10%（约 330 只），等权，
+扣双边 15bp。结果跟 IC 完全反着来。</p>
+
+<table>
+  <tr><th>组合</th><th>年化</th><th>波动</th><th>夏普</th><th>最大回撤</th><th>月胜率</th><th>换手</th></tr>
+  <tr><td>低波 VOL20</td><td class="dn">−11.2%</td><td>31.2%</td><td class="dn">−0.36</td><td>−85.6%</td><td>45.7%</td><td>66.8%</td></tr>
+  <tr><td>低 MAX20</td><td class="dn">−9.1%</td><td>28.4%</td><td class="dn">−0.32</td><td>−82.0%</td><td>46.5%</td><td>76.5%</td></tr>
+  <tr class="hi"><td>低成交额 AMT20</td><td class="up">+17.7%</td><td>22.1%</td><td class="up">0.80</td><td>−42.3%</td><td>58.3%</td><td>49.5%</td></tr>
+  <tr><td>反转 REV20</td><td class="up">+6.5%</td><td>27.7%</td><td>0.23</td><td>−48.1%</td><td>50.8%</td><td>88.6%</td></tr>
+  <tr><td class="mut">全 A 等权基准</td><td class="mut">+7.6%</td><td class="mut">21.7%</td><td class="mut">0.35</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td></tr>
+</table>
+
+<p>IC 是 +0.093 的因子，做出了 −11% 的年化。原因在分位收益的形状上——它不是单调的，是倒 U 的：</p>
+
+<div class="bars">
+  <div class="bar neg"><i style="height:100px"></i></div>
+  <div class="bar neg"><i style="height:21px"></i></div>
+  <div class="bar"><i style="height:3px"></i></div>
+  <div class="bar"><i style="height:13px"></i></div>
+  <div class="bar"><i style="height:23px"></i></div>
+  <div class="bar"><i style="height:26px"></i></div>
+  <div class="bar"><i style="height:28px"></i></div>
+  <div class="bar"><i style="height:21px"></i></div>
+  <div class="bar"><i style="height:17px"></i></div>
+  <div class="bar"><i style="height:2px"></i></div>
+</div>
+<div class="xis"><span>D1</span><span>D2</span><span>D3</span><span>D4</span><span>D5</span><span>D6</span><span>D7</span><span>D8</span><span>D9</span><span>D10</span></div>
+<div class="lg">低波 VOL20 十分位月均超额（%）：D1 −1.17，D7 +0.33，D10 −0.02。顶-底看似 +1.15，但 D1 是悬崖。</div>
+
+<p>IC 用的是全样本秩相关，被中间那 8 格的轻微单调托起来了；组合只吃最极端的一格。
+最极端的那一格恰好是「最不活跃的死票」——跌的时候没人接，反弹的时候没弹性。
+<b>IC 高和分位组合赚钱，是两件事。</b></p>
+
+<p>成交额因子就没有这个问题，十格一路单调下来：</p>
+
+<div class="bars">
+  <div class="bar"><i style="height:98px"></i></div>
+  <div class="bar"><i style="height:79px"></i></div>
+  <div class="bar"><i style="height:51px"></i></div>
+  <div class="bar"><i style="height:35px"></i></div>
+  <div class="bar"><i style="height:21px"></i></div>
+  <div class="bar neg"><i style="height:4px"></i></div>
+  <div class="bar neg"><i style="height:37px"></i></div>
+  <div class="bar neg"><i style="height:52px"></i></div>
+  <div class="bar neg"><i style="height:82px"></i></div>
+  <div class="bar neg"><i style="height:100px"></i></div>
+</div>
+<div class="xis"><span>D1</span><span>D2</span><span>D3</span><span>D4</span><span>D5</span><span>D6</span><span>D7</span><span>D8</span><span>D9</span><span>D10</span></div>
+<div class="lg">成交额 AMT20 十分位月均超额（%）：+0.90 → −0.92，每一步都往下，没有一格背叛方向。</div>
+
+<h2><span class="n">04</span>但那是不是小盘的马甲？——是，而且大部分是</h2>
+
+<p>先按成交额分 5 层（规模代理），层内再按因子分 5 组，看组内底-顶差（月均超额，%）：</p>
+
+<table>
+  <tr><th>规模层</th><th>VOL20 组内底-顶</th><th>MAX20 组内底-顶</th><th>REV20 组内底-顶</th></tr>
+  <tr><td>最小盘</td><td class="up">+1.24</td><td class="up">+0.50</td><td class="up">+0.29</td></tr>
+  <tr><td>Q2</td><td>+0.21</td><td>−0.11</td><td>−0.69</td></tr>
+  <tr><td>Q3</td><td>+0.08</td><td>−0.30</td><td>−0.87</td></tr>
+  <tr><td>Q4</td><td>−0.37</td><td>−0.37</td><td>−1.01</td></tr>
+  <tr class="hi"><td>最大盘</td><td class="dn">−1.07</td><td class="dn">−1.04</td><td class="dn">−0.76</td></tr>
+</table>
+
+<p>三条因子，在最大盘那一层全部翻成负的。低波溢价只在小盘存在，在大盘甚至是反向的。
+换句话说：<b>VOL20 / MAX20 / REV20 的 IC，大部分是规模效应的另一种写法。</b>
+规模中性化之后，它们剩下的是「小盘里再挑低波」这一层，很薄，而且盖不住 2024 年那种崩塌。</p>
+
+<p>唯一不需要规模中性化也站得住的，是成交额本身——因为它就是规模。这不是缺陷，
+是承认：<b>这十年 A 股最稳定的横截面 alpha 就是小盘 + 低流动性溢价。</b>
+它 11 年 9 年正超额，但 2024 年跑输基准 19.5 个点，回撤 −42%。</p>
+
+<h2><span class="n">05</span>回到 ETF：它把这个 alpha 过滤掉了 90%</h2>
+
+<p>把同一个因子按 ETF 持仓权重聚合，再按聚合得分把 ETF 分 5 组，看组间月均超额：</p>
+
+<table>
+  <tr><th>因子</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Q5</th><th>ETF 组间差</th><th>个股同向差</th><th>残留</th></tr>
+  <tr class="hi"><td>成交额 AMT20</td><td>+0.07</td><td>+0.09</td><td>+0.15</td><td>−0.00</td><td>−0.10</td><td>+0.17</td><td>1.82</td><td class="dn">10%</td></tr>
+  <tr><td>低波 VOL20</td><td>+0.56</td><td>+0.16</td><td>+0.06</td><td>−0.38</td><td>−0.17</td><td>+0.74</td><td>1.15</td><td>72%</td></tr>
+  <tr><td>不买彩票 MAX20</td><td>+0.49</td><td>+0.30</td><td>−0.04</td><td>−0.23</td><td>−0.31</td><td>+0.80</td><td>0.96</td><td>94%</td></tr>
+  <tr><td>反转 REV20</td><td>−0.03</td><td>−0.23</td><td>+0.33</td><td>−0.02</td><td>+0.14</td><td class="dn">−0.17</td><td>1.54</td><td class="dn">反向</td></tr>
+</table>
+
+<p class="mut" style="font-size:12.5px">口径说明：ETF 分 5 组、个股分 10 组，组数不同不可直接比。按线性单调假设，5 组的端点差约为 10 组端点差的 0.89 倍，表中「残留」已按此折算。</p>
+<p>注意这个别扭的地方：<b>真正能赚钱的成交额因子，在 ETF 里只剩 10%</b>；
+幸存最好的反而是两个在个股上做组合会亏钱的因子。ETF 保留的是「中间段的单调性」，
+而中间段本身不产生收益。</p>
+
+<p>原因不在统计，在物理结构：</p>
+
+<table>
+  <tr><th>成交额分位</th><th>中位日成交额</th><th>月均超额</th><th>ETF 能不能装</th></tr>
+  <tr class="hi"><td>D1（最低 10%）</td><td>3,163 万元</td><td class="up">+0.90%</td><td class="dn">装不进</td></tr>
+  <tr><td>D5（中位）</td><td>13,834 万元</td><td>+0.19%</td><td>勉强</td></tr>
+  <tr><td>D10（最高 10%）</td><td>192,574 万元</td><td class="dn">−0.92%</td><td>装满了</td></tr>
+</table>
+
+<p>而 357 只 ETF 的成分股，按持仓权重加权的成交额分位是：<b>均值 0.856、中位 0.898</b>。
+<b>49.6% 的 ETF，成分股整体落在个股成交额最高的 10% 区间里</b>——
+正好是月均超额 −0.92% 的那一格。</p>
+
+<div class="verdict">
+  <b>这就是墙。</b>ETF 是市值加权（或自由流通加权）的，这个规则本身就在做一件事：
+  把权重往大票上堆。你买的每一只 ETF，无论叫什么名字，成分股平均都处在全市场成交额的第 85 百分位。
+  而个股 alpha 最厚的地方在第 0~10 百分位。两者之间隔着 0.76 个分位，
+  这不是选基能力能弥补的距离。
+</div>
+
+<p>唯一的例外是 512100 中证 1000 ETF，成分股成交额分位 0.476——它是 357 只里最靠近下沿的。
+但也只到中位，够不到 D1。中证 2000、国证 2000 同理：它们装的是「小盘 beta」，
+不是「小盘里的选股 alpha」，而且 2024 年这类标的的下跌和微盘股是同步的。</p>
+
+<h2><span class="n">06</span>所以三条路，代价不同</h2>
+
+<div class="card">
+  <h3>路 A：承认 ETF 只是 beta 工具，不再在它身上找 alpha</h3>
+  <p>ETF 的正确定价逻辑是费率、跟踪误差、流动性、折溢价。这些是工程问题，有确定答案，
+  不像 alpha 那样会被证伪。把研究精力从「哪只 ETF 会涨」转到「哪只 ETF 更便宜地把 beta 交给我」，
+  收益是可预期的。</p>
+  <p class="mut">代价：放弃超额。适合资金量大、要的是仓位而不是收益的情况。</p>
+</div>
+
+<div class="card">
+  <h3>路 B：小盘ETF 拿 beta，个股组合拿 alpha，两边分开记账</h3>
+  <p>成交额因子的年化 17.7% 是真实的，但它要求你持有 330 只日均成交额三千万的股票。
+  这条路要解决的不是因子，是执行：冲击成本、涨跌停买不进、2024 年那种流动性枯竭时的赎回压力。
+  仓位上应该把它当成一个高 beta、高回撤的卫星仓位，而不是替代 ETF 的核心仓。</p>
+  <p class="mut">代价：回撤 −42%，单年跑输 19.5 个点。要不要扛，取决于资金属性和考核周期。</p>
+</div>
+
+<div class="card">
+  <h3>路 C：用成分股画像做 ETF 体检，不做预测</h3>
+  <p>聚合出来的画像本身是有用的描述性工具：这只 ETF 的成分股是偏大票还是偏小票、
+  波动结构如何、是不是都挤在高位。它不能告诉你「下个月谁涨」，
+  但能告诉你「你现在买的是什么货色」——尤其在两只 ETF 名字相近、实际持仓风格差异很大时。</p>
+  <p class="mut">代价：只是一个描述工具，不产生交易信号。我已经把最新一期画像落成文件了。</p>
+</div>
+
+<h2><span class="n">07</span>下一步该做什么</h2>
+
+<ul>
+  <li><b>重读上一轮结论。</b>择时、跨市场、折溢价那三份报告里的 t 值，全是在 ENB = 3.4 的样本上算的。
+      折溢价那个「折价 &gt; 1% 下月超额 +1.33%，t = 2.x」需要按 √(131/3.4) ≈ 6 折价重算，大概率不再显著。</li>
+  <li><b>个股层面继续挖，但换个方向。</b>量价因子到这里挖完了，成交额因子已经是最强的一个。
+      再往下要么接基本面（需要财报数据），要么接资金流（龙虎榜、北向、大宗），
+      这两个都不是量价能替代的信息维度。</li>
+  <li><b>把 ETF 的评估标准换掉。</b>从「预测收益」换成「跟踪质量 + 成本 + 流动性」，
+      这三项有客观数据、不会被样本外证伪。</li>
+</ul>
+
+<div class="foot">
+  数据：<code>stocks.db</code> 4,348 只 A 股 1,494 万条日线 ｜ <code>pcf.db</code> 405 只 ETF 96 期持仓 74 万条 ｜
+  <code>etf.db</code> 1,717 只 ETF 154 万条日线<br>
+  复现：<code>python3 stock_factor.py 2016-01-01 20</code> → <code>python3 stock_portfolio.py</code> →
+  <code>python3 stock_decile.py</code> → <code>python3 aggregate.py</code><br>
+  成本假设：双边 15bp（佣金 3bp + 印花税 5bp + 冲击 7bp），等权，月频调仓。
+</div>
+
+</div>
+</body>
+</html>
