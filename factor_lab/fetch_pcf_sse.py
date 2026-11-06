@@ -84,6 +84,9 @@ def main():
     CREATE TABLE IF NOT EXISTS pcf_meta(
         code TEXT, date TEXT, idx_code TEXT, nav REAL, unit_nav REAL,
         min_unit INTEGER, cash REAL, n_hold INTEGER,
+        -- 和 fetch_pcf.py 保持完全一致：CI 里两个脚本写同一个新建的库，
+        -- 少一列就会在不同的步骤上炸
+        nav_date TEXT, fund_type TEXT,
         PRIMARY KEY(code,date));
     CREATE TABLE IF NOT EXISTS pcf_hold(
         code TEXT, date TEXT, stock TEXT, name TEXT, qty INTEGER, market TEXT,

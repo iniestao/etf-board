@@ -175,6 +175,10 @@ def main():
     CREATE TABLE IF NOT EXISTS pcf_meta(
         code TEXT, date TEXT, idx_code TEXT, nav REAL, unit_nav REAL,
         min_unit INTEGER, cash REAL, n_hold INTEGER,
+        -- nav_date / fund_type 是后来加的列：沙箱里的库是 ALTER 上去的，
+        -- 建表语句一直没跟着改。于是在沙箱里跑得好好的，到了 CI（/tmp/pcf.db
+        -- 是新建的空库）就报 "no such column: nav_date"。
+        nav_date TEXT, fund_type TEXT,
         PRIMARY KEY(code,date));
     CREATE TABLE IF NOT EXISTS pcf_hold(
         code TEXT, date TEXT, stock TEXT, name TEXT, qty INTEGER, market TEXT,
