@@ -1994,29 +1994,28 @@ function spdPct(v){
   return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
 }
 
-/* 迷你线：横轴是最近 20 分钟，与「涨速」的窗口不是一回事，所以颜色按窗口
-   方向给、形状按 20 分钟给——「一路阴跌最后两分钟拉起来」这种形态才看得见。
-   颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量（--up/--down 改主题时
-   这里要跟着改）。
+/* 迷你线：横轴是当日 9:30 至今的完整分时，与「涨速」的窗口不是一回事，所以颜色
+   按窗口方向给、形状按全天给——「上午冲高、午后一路阴跌、最后两分钟拉起来」这种
+   形态，只有拉长到全天才看得见。颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量
+   （--up/--down 改主题时这里要跟着改）。
 
    纵向尺度是这一栏最容易画错的地方。原先每行按自己的 min/max 拉满，结果
    0.18% 的横盘和 0.45% 的急拉画出来一样高、一样陡——一列全是同形状的锯齿，
    看起来「比例很怪」，而且丢掉了「动得多不多」这个信息。
    现在：
-   - 中线 = 20 分钟前的价格，虚线画出来当基准，「贴着中线 = 没怎么动」；
+   - 中线 = 今开价，虚线画出来当基准，「贴着中线 = 全天就在开盘价附近磨」；
    - 全池共用一把尺子（spdScale），幅度按同一比例换算，行与行之间可比；
    - 超尺的顶到边，短的自然就矮——10 只里谁走得最远一眼能排出来。 */
 function spdSpark(vals, up, sc){
+  // vals 是相对今开的百分比：0 就是今开，中线画在那儿
   if (!vals || vals.length < 3) return '<span class="spk"></span>';
   var w = 88, h = 24, pad = 3, i;
-  var base = vals[0];
-  if (!(base > 0)) return '<span class="spk"></span>';
-  // sc 是相对幅度（基准价的百分比），缺省 0.25% 不至于把线画成一条直杠
-  var rng = base * (sc > 0 ? sc : 0.0025);
+  // sc 是全池统一幅度（百分比），缺省 0.8% 不至于把线画成一条直杠
+  var rng = sc > 0 ? sc : 0.8;
   var mid = h / 2, half = mid - pad, d = '';
   for (i = 0; i < vals.length; i++){
     var x = pad + (i / (vals.length - 1)) * (w - pad * 2);
-    var y = mid - ((vals[i] - base) / rng) * half;
+    var y = mid - (vals[i] / rng) * half;
     if (y < pad) y = pad;
     if (y > h - pad) y = h - pad;
     d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
@@ -2029,27 +2028,29 @@ function spdSpark(vals, up, sc){
     + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>';
 }
 
-/* 全池共用一把纵向尺子：取每只「20 分钟内相对起点最大偏离」的 75 分位。
-   0.06% 是下限（那种一根直线的心电图没必要占满），0.8% 是上限（有一只暴涨
-   时不至于把其余 39 只全压成直线）。实测盘中这个分位落在 0.3%–0.5%。 */
+/* 全池共用一把纵向尺子：取每只「当日相对今开最大偏离（%）」的 65 分位。
+   0.3% 是下限（那种一根直线的心电图没必要占满），3% 是上限（有一只暴涨
+   时不至于把其余 39 只全压成直线）。分位从 75 降到 65 是配合全天窗口调的：
+   20 分钟窗口里大家的振幅都在 0.3%~0.5%，75 分位正好把线铺满；拉到全天之后
+   振幅差得远（题材 ETF 3%、宽基 0.8%），75 分位会把大半的线压成矮墩墩一条，
+   降到 65 让多数线用掉六七成高度，代价是四分之一的线会顶到框边——顶边本身
+   也是信息（「这只今天动得比同类猛」）。 */
 function spdScale(rows){
-  var a = [], i, j, pv, base, m, dv;
+  var a = [], i, j, pv, m, dv;
   for (i = 0; i < rows.length; i++){
     pv = rows[i].pv;
     if (!pv || pv.length < 3) continue;
-    base = pv[0];
-    if (!(base > 0)) continue;
     m = 0;
-    for (j = 1; j < pv.length; j++){
-      dv = Math.abs(pv[j] - base) / base;
+    for (j = 0; j < pv.length; j++){
+      dv = Math.abs(pv[j]);
       if (dv > m) m = dv;
     }
     if (m > 0) a.push(m);
   }
-  if (!a.length) return 0.0025;
+  if (!a.length) return 0.8;
   a.sort(function(x, y){ return x - y; });
-  var q = a[Math.min(a.length - 1, Math.floor(a.length * 0.75))];
-  return Math.min(0.008, Math.max(0.0006, q));
+  var q = a[Math.min(a.length - 1, Math.floor(a.length * 0.65))];
+  return Math.min(3, Math.max(0.3, q));
 }
 
 function renderSpeed(){
@@ -2138,8 +2139,8 @@ function renderSpeed(){
       + '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
       + '到 <b>' + SPD_VOL_HOT + '×</b> 标黄。收盘集合竞价那根按 4 分钟折算，'
       + '否则尾盘会凭空多出十倍放量。'
-      + '小走势线是<b>最近 20 分钟</b>的价格，虚线是 20 分钟前的位置——'
-      + '贴着虚线就是没怎么动，离得远才是真在走。'
+      + '小走势线是<b>当日 9:30 至今</b>的分时，虚线是今开——'
+      + '线在虚线上方就是全天在水面之上，最后那一下拉升也能看出是从哪儿起来的。'
       + (spdClosed() ? '<br>已收盘：这里是<b>今天最后几分钟</b>的涨速，明天 9:30 才重新走动。' : '');
   }
 }
@@ -2545,13 +2546,12 @@ function renderHold(j){
      混着写会出现「前 20 大 26%」这种在 PCF 下永远不可能的数字，用户会以为算错。 */
   var isPcf = j.src === 'pcf';
 
-  /* 先按权重取前 N 只，再按贡献排。权重 0.00% 的条目不进表——贡献恒为 0，
-     只占行高。
+  /* 一律按权重从大到小。权重 0.00% 的条目不进表——贡献恒为 0，只占行高。
 
      行数分两档：默认只列权重前 20，脚注写清还剩多少只、占多少权重，想看全量
      就点一下「展开全部」。PCF 是全量清单，中证500 那只有 500 个成分，一上来就
-     铺 500 行等于把「今天谁在拉」这件事埋进几十屏的滚动里——20 行刚好一屏，
-     按贡献排完，前几只就是答案。展开后仍然是同一份数据，不重新请求。 */
+     铺 500 行等于把「这只 ETF 押在哪」埋进几十屏的滚动里——20 行刚好一屏，
+     权重排序下前几只就是这只 ETF 的仓位骨架。展开后仍然是同一份数据，不重新请求。 */
   var all = (j.rows || []).filter(function(x){ return x.w >= 0.005; })
     .sort(function(a, b){ return b.w - a.w; });
   var lim = Math.min(H.holdAll ? all.length : 20, all.length);
@@ -2562,13 +2562,11 @@ function renderHold(j){
   var it = findItem(H.code);
   var ec = (it && isFinite(it.chg)) ? it.chg : null;
 
-  // 有行情的按贡献从拉到砸；停牌/取不到行情的沉到底，别插在中间打断阅读
-  rows.sort(function(a, b){
-    if (a.ctr == null && b.ctr == null) return b.w - a.w;
-    if (a.ctr == null) return 1;
-    if (b.ctr == null) return -1;
-    return b.ctr - a.ctr;
-  });
+  /* 按权重从大到小：这一栏回答的是「持仓长什么样」，先看谁占得重。
+     原来按贡献（权重×涨跌）排，涨得多的中小权重会挤到茅台前面，翻半天找不到
+     「这只 ETF 到底押在哪」；贡献有颜色条和数值，谁在拉谁在砸扫一眼就看得到，
+     不需要靠排序来回答。 */
+  rows.sort(function(a, b){ return b.w - a.w; });
 
   var sum = 0, got = 0, mx = 0, wsum = 0, i, r;
   for (i = 0; i < rows.length; i++){

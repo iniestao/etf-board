@@ -1755,20 +1755,32 @@ function slotOf(t) {
 function weightOf(t) { return t === '15:00' ? 4 : 1; }
 
 /**
- * 最近 20 分钟的价格轨迹，降采样到最多 16 点。
+ * 当日 09:30 至今的走势，降采样到最多 48 点，**每个点是以今开为基准的涨跌幅（%）**。
+ *
  * 给前端画迷你线用——「+0.31%」这个数字看不出是一路缓涨还是最后两笔拉起来，
- * 形状才看得出。只传价格不传量，40 只 × 16 点约 3.8KB。
+ * 形状才看得出。原先只取最近 20 分钟，只能看到「刚才这一下」，上午冲高、午后
+ * 回落这种全天节奏全被截掉了；改成全天之后，「现在这个位置是从哪儿走过来的」
+ * 直接能从线的形状读出来。
+ *
+ * 为什么传百分比而不是价格：ETF 的价格最小变动单位是 0.001，512000 那种 0.48
+ * 元的低价品种，一整天在 0.483–0.486 之间走，只有三个台阶——画在 24 像素高的
+ * 框里就是一段阶梯，看不出形状。换成相对今开的百分比，同样的行情能落到 0.01%
+ * 的刻度上，而 0.62% 的振幅也就能画出六十多级。顺带还统一了纵向语义：中线永远
+ * 是今开，不用每行自己去猜基准价。
+ *
+ * 采样按点数均分，正好等于按交易分钟均分：分时数据本身就是一分钟一个点、
+ * 午休没有点，所以 11:30 到 13:00 之间不会凭空多出一段平线。
+ *
+ * 只传百分比不传量，40 只 × 48 点约 9KB（gzip 后三成）。
  */
 function trailOf(pts) {
-  const sl = slotOf(pts[pts.length - 1][0]);
-  const arr = [];
-  for (let i = 0; i < pts.length; i++) {
-    if (slotOf(pts[i][0]) >= sl - 20) arr.push(pts[i][1]);
-  }
-  if (!arr.length) return [];
-  if (arr.length <= 16) return arr.map((v) => +v.toFixed(3));
+  if (!pts.length) return [];
+  const base = pts[0][1];
+  if (!(base > 0)) return [];
+  const pct = (v) => +(((v / base) - 1) * 100).toFixed(2);
+  if (pts.length <= 48) return pts.map((x) => pct(x[1]));
   const out = [];
-  for (let k = 0; k < 16; k++) out.push(+arr[Math.round((k * (arr.length - 1)) / 15)].toFixed(3));
+  for (let k = 0; k < 48; k++) out.push(pct(pts[Math.round((k * (pts.length - 1)) / 47)][1]));
   return out;
 }
 
@@ -1849,7 +1861,10 @@ async function serveSpeed(ctx, codes) {
   const list = codes.slice(0, SPEED_MAX);
   const stamp = fpOf(list.join(','));
   const bucket = Math.floor(Date.now() / 30000);
-  const key = new Request('https://etf-board.internal/speed/v1/' + stamp + '/' + bucket, { method: 'GET' });
+  /* v2：pv 从「价格数组」改成了「相对今开的百分比数组」，键里必须带上版本，
+     否则部署后最先点开的几个人会撞上 30 秒内的旧缓存，前端按百分比画价格，
+     整条线会飞出框外。 */
+  const key = new Request('https://etf-board.internal/speed/v2/' + stamp + '/' + bucket, { method: 'GET' });
   const cache = await getCache();
   if (cache) {
     try {
