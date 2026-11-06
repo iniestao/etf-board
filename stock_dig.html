@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>个股上到底挖到了什么：涨停是虚火</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f24;--sub:#5b6472;--line:#e3e6ea;
+        --up:#c0392b;--dn:#1e8449;--accent:#1a5fb4;--gold:#b7791f}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.78 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:44px 24px 80px}
+  h1{font-size:27px;line-height:1.4;margin:0 0 6px;letter-spacing:-.3px}
+  .lede{color:var(--sub);font-size:14px;margin-bottom:34px}
+  h2{font-size:19px;margin:44px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--ink)}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:8px}
+  h3{font-size:15px;margin:24px 0 8px}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 22px;margin:16px 0}
+  .win{background:#fff;border-left:4px solid var(--up);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:18px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  .lose{background:#fff;border-left:4px solid var(--dn);border-radius:0 10px 10px 0;
+    padding:16px 22px;margin:18px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:12px 0;
+    font-variant-numeric:tabular-nums;background:#fff}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th{background:#f0f2f5;font-weight:600;color:var(--sub);font-size:12.5px;white-space:nowrap}
+  td:first-child,th:first-child{text-align:left}
+  tr:last-child td{border-bottom:none}
+  .up{color:var(--up)} .dn{color:var(--dn)} .mut{color:var(--sub)}
+  .hi{background:#fdf6e3;font-weight:600}
+  code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:13px;
+    font-family:ui-monospace,Menlo,monospace}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}
+  .kpi div{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px}
+  .kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+  .kpi small{color:var(--sub);font-size:11.5px;line-height:1.5;display:block;margin-top:3px}
+  .bars{display:flex;align-items:flex-end;gap:10px;height:140px;margin:18px 0 6px;
+    padding:0 4px;border-bottom:1px solid var(--line);position:relative}
+  .bars::before{content:"";position:absolute;left:0;right:0;bottom:56px;border-top:1px dashed #c9ced6}
+  .bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+  .bar i{display:block;border-radius:2px 2px 0 0}
+  .bar.neg{justify-content:flex-start;padding-top:56px}
+  .bar.neg i{border-radius:0 0 2px 2px}
+  .xis{display:flex;gap:10px;font-size:11.5px;color:var(--sub);text-align:center}
+  .xis span{flex:1}
+  ul{padding-left:20px} li{margin:6px 0}
+  .foot{margin-top:54px;padding-top:18px;border-top:1px solid var(--line);color:var(--sub);font-size:12.5px}
+  q{quotes:"「" "」";color:var(--gold);font-style:normal}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>个股上到底挖到了什么：涨停是虚火</h1>
+<div class="lede">
+  上一版我把低波、反转、成交额、Amihud 这几个文献因子搬过来跑了一遍 IC，那不叫挖，叫体检。
+  这一版换个问法：不问「哪个因子好」，问「这个市场有什么具体行为，是 ETF 价格里看不见的」。
+  <span style="color:#8a929e">4,348 只 A 股 ｜ 2016-01 ~ 2026-11 ｜ 128 个月频截面</span>
+</div>
+
+<div class="win">
+  <b>一句话结论。</b>同样在过去 20 日涨了 20%，<b>靠 20 个平淡日慢慢涨上去的，下月还涨 0.26%；
+  靠 3 次以上涨停堆上去的，下月跌 1.50%。</b>
+  单看这个信号：4 组完全单调（+0.21 / −0.50 / −1.29 / −2.44），11 年每年都为负，
+  而且控住规模、控住反转之后依然成立。它不是小盘的另一种写法——涨停股的中位成交额是
+  <b>4.5 亿</b>，是未涨停组的 5.6 倍。
+</div>
+
+<div class="kpi">
+  <div><b class="dn">−0.0946</b><small>Rank IC<br>t = −48.6</small></div>
+  <div><b>15.5%</b><small>IC 为正的天数占比<br>即 84.5% 方向为负</small></div>
+  <div><b>11 / 11</b><small>年度符号一致<br>没有一个反例年</small></div>
+  <div><b class="up">+2.3pt</b><small>只做排除，年化<br>7.49% → 9.82%</small></div>
+</div>
+
+<h2><span class="n">01</span>挖法：从市场行为出发，不从因子清单出发</h2>
+
+<p>上次的问题是起点错了。我从「有哪些经典因子」出发，那只能得到教科书已经写过的答案。
+这次从 A 股的具体制度出发——<b>它有涨跌停板</b>，这是一个别的市场没有的、强制的价格截断。</p>
+
+<p>涨跌停制造了一个可观测的行为痕迹：一只股票在 20 天内被资金打到涨停板上几次。
+我把 <code>日收益 &gt; 9.5%</code> 的次数记为 <code>LIMIT20</code>
+（主板涨停 10%，创业板/科创板是 20%，所以这里抓的主要是主板涨停 + 各类单日暴涨，
+严格说不等于全部涨停，但它是同一类行为）。</p>
+
+<p>然后问一个具体问题：<b>被打上过涨停板的股票，接下来一个月怎么样？</b></p>
+
+<h2><span class="n">02</span>答案：完全单调，四年年都为负</h2>
+
+<p>按 20 日内暴涨次数分组，看下月相对全 A 等权的超额：</p>
+
+<div class="bars">
+  <div class="bar"><i style="height:14px;background:var(--up)"></i></div>
+  <div class="bar neg"><i style="height:12px;background:var(--dn)"></i></div>
+  <div class="bar neg"><i style="height:30px;background:var(--dn)"></i></div>
+  <div class="bar neg"><i style="height:56px;background:var(--dn)"></i></div>
+</div>
+<div class="xis"><span>0 次<br><b>+0.21%</b></span><span>1 次<br><b>−0.50%</b></span>
+<span>2 次<br><b>−1.29%</b></span><span>3+ 次<br><b>−2.44%</b></span></div>
+
+<table>
+  <tr><th>组</th><th>下月超额</th><th>平均股票数</th><th>占可交易池</th><th>中位日成交额</th></tr>
+  <tr><td>0 次</td><td class="up">+0.21%</td><td>2,694</td><td>80.3%</td><td>8,059 万</td></tr>
+  <tr><td>1 次</td><td class="dn">−0.50%</td><td>436</td><td>13.0%</td><td>18,179 万</td></tr>
+  <tr><td>2 次</td><td class="dn">−1.29%</td><td>129</td><td>3.8%</td><td>28,086 万</td></tr>
+  <tr class="hi"><td>3+ 次</td><td class="dn">−2.44%</td><td>96</td><td>2.9%</td><td>45,208 万</td></tr>
+</table>
+
+<p>注意最后两列：<b>涨停越多，股票越大、流动性越好。</b>中位成交额从 8 千万一路涨到 4.5 亿。
+这跟「小盘低流动性溢价」是相反的方向，不是同一个东西。</p>
+
+<p>分年看，3+ 次组的超额：</p>
+
+<table>
+  <tr><th>2016</th><th>2017</th><th>2018</th><th>2019</th><th>2020</th><th>2021</th><th>2022</th><th>2023</th><th>2024</th><th>2025</th><th>2026</th></tr>
+  <tr><td class="dn">−1.54</td><td class="dn">−4.36</td><td class="dn">−4.06</td><td class="dn">−1.73</td><td class="dn">−0.84</td>
+      <td class="dn">−2.23</td><td class="dn">−3.94</td><td class="dn">−1.75</td><td class="dn">−3.41</td><td class="dn">−1.51</td><td class="dn">−0.79</td></tr>
+</table>
+
+<p>11 年，全部为负。2018 和 2017 最狠（−4.4 / −4.1），2020 最弱（−0.84）——
+弱的时候恰好是流动性最宽松、投机最盛的那年，这也说得通。</p>
+
+<h2><span class="n">03</span>两次证伪：它是不是小盘的马甲？是不是反转的马甲？</h2>
+
+<h3>控住规模：五个成交额层内，效应全在</h3>
+<p>先按 20 日均成交额分 5 层，层内再比「0 次」和「3+ 次」：</p>
+
+<table>
+  <tr><th>成交额层</th><th>0 次</th><th>1 次</th><th>2 次</th><th>3+ 次</th><th>0 次 − 3+ 次</th></tr>
+  <tr><td>最小盘</td><td>+0.82</td><td>+0.48</td><td>+3.05</td><td>−2.81</td><td class="up">+3.63</td></tr>
+  <tr><td>Q2</td><td>+0.43</td><td>+0.14</td><td>−0.68</td><td>−3.43</td><td class="up">+3.86</td></tr>
+  <tr><td>Q3</td><td>+0.15</td><td>−0.12</td><td>−0.96</td><td>−2.50</td><td class="up">+2.65</td></tr>
+  <tr><td>Q4</td><td>−0.25</td><td>−0.50</td><td>−1.42</td><td>−2.48</td><td class="up">+2.23</td></tr>
+  <tr><td>最大盘</td><td>−0.44</td><td>−1.28</td><td>−1.57</td><td>−2.68</td><td class="up">+2.25</td></tr>
+</table>
+
+<p>五个层，五个正数。对比上一版低波因子——它在最大盘层是 <b>−1.07</b>（翻负），
+这个因子在最大盘层还有 +2.25。<b>这是它跟规模因子最根本的区别。</b></p>
+
+<h3>控住反转：五个反转层内，效应还在</h3>
+<p>「涨停多的股票 = 涨得多的股票」，那它会不会只是反转的加强版？按过去 20 日涨幅分 5 层：</p>
+
+<table>
+  <tr><th>反转层</th><th>0 次</th><th>1 次</th><th>2 次</th><th>3+ 次</th><th>0 次 − 3+ 次</th></tr>
+  <tr><td>跌最多</td><td>−0.04</td><td>−1.07</td><td>−1.76</td><td>−2.84</td><td class="up">+2.80</td></tr>
+  <tr><td>Q2</td><td>+0.25</td><td>−0.34</td><td>−1.61</td><td>−1.69</td><td class="up">+1.93</td></tr>
+  <tr><td>Q3</td><td>+0.32</td><td>−0.14</td><td>−0.44</td><td>−1.57</td><td class="up">+1.89</td></tr>
+  <tr><td>Q4</td><td>+0.27</td><td>−0.24</td><td>−0.64</td><td>−0.82</td><td class="up">+1.10</td></tr>
+  <tr class="hi"><td>涨最多</td><td class="up">+0.26</td><td>−0.58</td><td>−0.34</td><td class="dn">−1.50</td><td class="up">+1.76</td></tr>
+</table>
+
+<p>最干净的一格是右下角。<b>同样是「过去 20 日涨得最多」这一档，没涨停过的下月还涨 0.26%，
+涨停 3 次以上的跌 1.50%。</b>同样是涨，路径不一样，后面的路完全相反。</p>
+
+<p>这就是「路径效率」的直觉：涨要靠每天一点点买上去（有承接、有分歧消化），
+还是靠几天封板拉上去（没有换手、情绪透支）。前者是资金在建仓，后者是资金在找人接。</p>
+
+<h2><span class="n">04</span>可执行的形态：不选股，只排除</h2>
+
+<p>这个因子最好用的地方是不需要预测谁涨，只需要<b>不买什么</b>。全 A 等权持有，月频调仓，
+扣双边 15bp：</p>
+
+<table>
+  <tr><th>组合</th><th>年化</th><th>夏普</th><th>最大回撤</th></tr>
+  <tr><td>全 A 等权（基准）</td><td>7.49%</td><td>0.34</td><td>−44.3%</td></tr>
+  <tr class="hi"><td>剔除所有涨停过的股票</td><td class="up">9.82%</td><td class="up">0.46</td><td>−40.3%</td></tr>
+  <tr><td>剔除涨停 ≥ 2 次的</td><td>9.10%</td><td>0.42</td><td>−42.3%</td></tr>
+  <tr><td>剔除涨停 ≥ 3 次的</td><td>8.55%</td><td>0.40</td><td>−43.1%</td></tr>
+</table>
+
+<p>不做任何选股、不预测方向，只是把过去一个月涨停过的 19.7% 的股票划掉，
+年化多 2.3 个点，回撤还小 4 个点。这是一条纪律，不是一个策略。</p>
+
+<div class="lose">
+  <b>但它跟小盘因子是冗余的。</b>
+  低成交额 top 10% 组合年化 17.68%，加上「剔除涨停 ≥ 2 次」只变成 17.79%。
+  原因是低成交额组合本来就天然排掉了涨停股——涨停的股票成交额一定大，进不了最低 10%。
+  <b>两个信号抓的是同一样东西：投机情绪。</b>一个从「没人要」这一端抓，一个从「太抢手」那一端抓。
+</div>
+
+<h2><span class="n">05</span>为什么它没法简单地加权到 ETF</h2>
+
+<p>既然个股层面这么干净，按 PCF 权重聚合成「成分股涨停占比」，应该也能预测 ETF 吧？</p>
+
+<table>
+  <tr><th>ETF 按成分股涨停占比分 5 组</th><th>Q1（最低）</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Q5（最高）</th></tr>
+  <tr><td>未来 20 日超额</td><td class="dn">−0.331%</td><td>−0.279%</td><td>+0.012%</td><td class="up">+0.463%</td><td>+0.292%</td></tr>
+</table>
+
+<p>Rank IC <b>+0.0153</b>，t <b>0.37</b>——不显著。更麻烦的是<b>方向反了</b>：
+个股层面涨停越多越差，ETF 层面成分股涨停越多反而略好。</p>
+
+<p>机制上说得通：<b>单只股票涨停是个体投机，一批股票同时涨停是主题资金进场。</b>
+前者的结局是均值回归，后者往往还有一段延续。同一个观测量，
+在个体层面是反转，在组合层面是动量——聚合改变了信号的性质，不是稀释，是变了。</p>
+
+<p>这也解释了上一版为什么在 ETF 上什么都做不出来：我一直假设「个股信号加权上去就能用」，
+但这个假设本身不成立。ETF 的成分股结构是<b>另一个变量</b>，不是个股变量的简单加总。</p>
+
+<h2><span class="n">06</span>还有一个失败了的方向，一并记下</h2>
+
+<p>原本想给小盘 alpha 做崩盘预警。2024 年 1 月小盘跑输 19.5 个点，如果有个指标能提前示警，
+那个年化 17.7% 就能用了。</p>
+
+<p>构造了「小盘成交额占比」（成交额最低 10% 的股票，占全市场成交额的比重）。
+2024 年 1 月这个值是 <b>1.77%</b>，全样本最高位——看起来正是崩盘前的拥挤信号。
+但拉长看，结论反了：</p>
+
+<table>
+  <tr><th>拥挤度分位</th><th>下月小盘超额</th><th>t</th><th>样本月数</th></tr>
+  <tr><td>低（&lt; 33%）</td><td>+0.71%</td><td>0.95</td><td>13</td></tr>
+  <tr><td>中（33–67%）</td><td>+0.88%</td><td>2.50</td><td>35</td></tr>
+  <tr class="hi"><td>高（&gt; 67%）</td><td class="up">+1.05%</td><td>2.57</td><td>55</td></tr>
+</table>
+
+<p>高拥挤组的下月超额反而最高，与「拥挤 → 崩盘」的直觉完全相反。相关系数 −0.065，等于没有。
+2024 年 1 月那一次是唯一一次「拥挤到极致然后崩」，但 8 年样本里只此一例，
+不足以支撑一个预警规则。<b>这条记下来，但不用。</b></p>
+
+<h2><span class="n">07</span>所以，能拿走什么</h2>
+
+<div class="card">
+  <h3>如果你继续买 ETF</h3>
+  <p>这条结论对 ETF 的直接用处只有一个，但是很硬：<b>追热点 ETF，本质是在买一批刚涨停的股票。</b>
+  而数据显示，那批股票接下来的一个月平均跑输 2.4%。你付出的溢价，是在为别人的止盈买单。</p>
+  <p>具体到动作：一只 ETF 短期暴涨、成分股批量涨停时，那不是「趋势确认」，那是这个因子最差的入场点。
+  这跟「追涨杀跌」的直觉相反，但数据是 11 年 11 次一致的。</p>
+</div>
+
+<div class="card">
+  <h3>如果你愿意碰个股</h3>
+  <p>最省事的用法是把它当成一条<b>排除规则</b>，写在任何选股逻辑的最后一步：
+  过去 20 日涨停过的，不看、不买。不需要额外判断，不需要预测，年化 +2.3 个点。</p>
+  <p>更强但更难的用法是和低成交额叠加——但那两个信号高度冗余，叠加几乎没增量（17.68% → 17.79%），
+  而且真正赚钱的那部分是靠持有 330 只日均成交额三千万的股票换来的，容量小、回撤 −42%。</p>
+</div>
+
+<div class="card">
+  <h3>研究上还欠的</h3>
+  <ul>
+    <li><b>LIMIT20 的口径要修。</b>现在用 9.5% 一刀切，创业板/科创板的 20% 涨停没识别到。
+        按板块真实涨跌停价重算，效应应该更强而不是更弱。</li>
+    <li><b>20 日的衰减曲线没做。</b>这个因子是 1 天、5 天还是 20 天最强？现在只知道 20 日。</li>
+    <li><b>没有行业中性化。</b>如果涨停集中在某几个行业（券商、次新、AI），
+        那这个因子可能带着行业择时，需要再拆一层。</li>
+  </ul>
+</div>
+
+<div class="foot">
+  数据：<code>stocks.db</code> 4,348 只 A 股 1,494 万条日线 ｜ 可交易过滤：价格 ≥ 2 元、20 日均成交额 ≥ 1,000 万<br>
+  复现：<code>python3 limit_etf.py</code> ｜ 分层与回测逻辑见 <code>stock_decile.py</code> / <code>stock_portfolio.py</code><br>
+  成本假设：双边 15bp ｜ 分组超额基准 = 当期可交易池等权收益
+</div>
+
+</div>
+</body>
+</html>
