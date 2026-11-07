@@ -632,7 +632,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <div class="sec" id="secSec">
   <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
     <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
-  <div class="dnote">同一跟踪指数的多只 ETF 只算一次——40 只中证A500 不该占掉 AI 的权重。
+  <div class="dnote">只算行业主题 ETF，宽基和跨境不计入——它们的驱动不是行业轮动。
+    同一跟踪指数的多只 ETF 只算一次，否则 40 只中证A500 会占掉 AI 的权重。
     这一栏回答的是「今天钱在往哪条线走」，不是「谁涨得最多」。</div>
   <div class="smhead" id="secHead"><span>读取中…</span></div>
   <div class="smgrid" id="secGrid"><div class="empty">正在读取行情…</div></div>
