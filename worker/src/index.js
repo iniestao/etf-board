@@ -321,9 +321,11 @@ async function serveAll(env, ctx) {
    旧记录不能混进均值，直接换 key 重新攒。
 
    同日再升到 v3：板块成交额改成「每个跟踪指数只算代表标的」，不再把同指数
-   克隆的成交额相加（克隆倍数 1.1×~2.3×，半导体 39.8%→42.8%）。 */
+   克隆的成交额相加（克隆倍数 1.1×~2.3×，半导体 39.8%→42.8%）。
 
-const SEC_DAILY_KEY = 'sec-daily-v3';
+   同日再升到 v4：板块从 12 格重划成 16 格（申万骨架 + 港股单列），键不一样了。 */
+
+const SEC_DAILY_KEY = 'sec-daily-v4';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {
