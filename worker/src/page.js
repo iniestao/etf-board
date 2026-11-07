@@ -725,7 +725,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <button id="btnClear">清空</button>
     <span class="alertbar">
       <span class="abtn" id="btnAlert" title="在页面开着的时候，出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
-      <span class="abtn" id="btnScope" title="自选：逐只提醒，5 秒一刷。全市场：只弹汇总和极端个股，60 秒一刷——400 只逐只弹，一天几百条，弹到第二次就没人看了">范围 自选</span>
+      <span class="abtn" id="btnScope" title="自选：逐只提醒，5 秒一刷。全市场：扫同指数去重后的代表标的（500 只上下，一只一个指数），只弹汇总和极端个股，60 秒一刷——一只不漏地逐只弹，一天几百条，弹到第二次就没人看了">范围 自选</span>
       <span class="aset" id="alertSet">
         涨跌≥<input id="aChg" value="2.0">%
         急变≥<input id="aSpd" value="0.8">%/3分
@@ -1057,13 +1057,17 @@ function markKeep(items){
   }
 }
 
+/** 是不是这个跟踪指数的代表标的（成交额最大的那只）。
+    没抓到跟踪标的的（ix 为空）判断不了重复，一律算代表——
+    宁可多扫一只，也不要把一只没人跟的票静默藏掉。 */
+function isRep(x){
+  return !x.ix || !KEEP[x.ix] || KEEP[x.ix] === x.c;
+}
+
 function dedupCount(){
   // 参与去重、且不是代表标的的只数
   var n = 0;
-  for (var i=0;i<DATA.length;i++){
-    var x = DATA[i];
-    if (x.ix && KEEP[x.ix] && KEEP[x.ix] !== x.c) n++;
-  }
+  for (var i=0;i<DATA.length;i++) if (!isRep(DATA[i])) n++;
   return DATA.length - n;
 }
 
@@ -4876,16 +4880,32 @@ function alertScan(items){
 /* 全市场：只在「极端」和「汇总」两个尺度上说话。
    单只越 1 倍阈值只是「今天它在动」，400 只里随时有几十只，不构成信息；
    越 2 倍阈值才是「这只出事了」。中间的交给每 5 分钟一条的汇总。 */
+/* 全市场提醒扫的池子 = 同指数去重后的代表标的，不是 1719 只全量。
+   1719 只里有 1202 只在跟别人跟踪同一个指数（2026-11-07 实测：247 组指数，
+   另 270 只没抓到跟踪标的、判断不了重复），日内涨跌幅几乎一样。
+   全量扫的直接后果是前 3 名被同一指数的克隆占满——20 只 A500 一起涨 3%，
+   榜单等于没给信息。去重后 500 出头，一只一个指数，榜单才是「哪个方向在动」。 */
+function alertPool(){
+  var arr = [], i, x;
+  for (i=0;i<DATA.length;i++){
+    x = DATA[i];
+    // 停牌、无成交、债券货币类不参与：那几类涨跌幅恒定，扫了也是白扫
+    if (!x || !isFinite(x.chg) || !(x.amt > 0) || x.pre) continue;
+    if (x.g === 'bond' || x.g === 'money') continue;
+    if (!isRep(x)) continue;
+    arr.push(x);
+  }
+  return arr;
+}
+
 function alertScanAll(){
   if (!ALERT.on || ALERT.scope !== 'all' || !isOpen()) return;
   if (!DATA.length) return;
 
+  var pool = alertPool();
   var up = [], dn = [], pms = [];
-  for (var i=0;i<DATA.length;i++){
-    var x = DATA[i];
-    // 停牌、无成交、债券货币类不参与：那几类涨跌幅恒定，扫了也是白扫
-    if (!x || !isFinite(x.chg) || !(x.amt > 0) || x.pre) continue;
-    if (x.g === 'bond' || x.g === 'money') continue;
+  for (var i=0;i<pool.length;i++){
+    var x = pool[i];
     if (x.chg >= ALERT.chg) up.push(x);
     else if (x.chg <= -ALERT.chg) dn.push(x);
     if (x.pm != null && isFinite(x.pm) && Math.abs(x.pm) >= ALERT.pm) pms.push(x);
@@ -4905,9 +4925,9 @@ function alertScanAll(){
       x.chg > 0 ? 'up' : 'dn', k);
   };
   /* 只认「当下最极端的前 3 名」，不是「所有超过 2 倍阈值的」。
-     差别很大：全市场 1719 只 ETF，极端的日子有几十只同时超 4%。按「所有」报，
-     每轮弹出前三名，下一轮它们被冷却挡住、就漏出第 4/5/6 名——一路漏到底，
-     等于没上限。限定在前 3 名内，超出的只进记录，浮层才不会被淹。 */
+     差别很大：极端的日子几十只同时超 4%。按「所有」报，每轮弹出前三名，
+     下一轮它们被冷却挡住、就漏出第 4/5/6 名——一路漏到底，等于没上限。
+     限定在前 3 名内，超出的只进记录，浮层才不会被淹。 */
   var cand = [];
   for (var a=0;a<up.length && a<3;a++) if (up[a].chg >= ALERT.chg*2) cand.push(up[a]);
   for (var b=0;b<dn.length && b<3;b++) if (dn[b].chg <= -ALERT.chg*2) cand.push(dn[b]);
@@ -4936,10 +4956,12 @@ function alertScanAll(){
   ALERT_ALL_TS = now;
 
   var nb = up.length + dn.length;
-  var ratio = DATA.length > 0 ? nb / DATA.length : 0;
+  var ratio = pool.length > 0 ? nb / pool.length : 0;
   var mood = ratio > 0.25 ? (dn.length > up.length ? '普跌' : '普涨') : '';
-  var head = (mood ? mood + ' · ' : '') + '全市场 ' + up.length + ' 涨 ' + dn.length
-    + ' 跌 越过 ' + ALERT.chg + '%';
+  // 带上去重后的池子大小：否则「12 涨 45 跌」会被读成「1719 只里只有 12 只在涨」，
+  // 实际是 517 个指数代表里 12 个在涨——差着一个数量级。
+  var head = (mood ? mood + ' · ' : '') + '全市场 ' + pool.length + ' 只中 '
+    + up.length + ' 涨 ' + dn.length + ' 跌 越过 ' + ALERT.chg + '%';
   var parts = [];
   var top = up.slice(0, 3).map(function(x){ return x.n + ' ' + fpc(x.chg); });
   if (top.length) parts.push('领涨 ' + top.join('、'));
@@ -4974,9 +4996,9 @@ function alertScanAll(){
     paint();
     if (ALERT.on){
       ALERT_MUTE = {}; ALERT_SPD = {}; ALERT_ALL_TS = 0;
-      var n = ALERT.scope === 'all' ? DATA.length : (Object.keys(LIVE).length || watch.length);
+      var n = ALERT.scope === 'all' ? alertPool().length : (Object.keys(LIVE).length || watch.length);
       alertPush('盯盘提醒已开启',
-        '监控 ' + n + ' 只' + (ALERT.scope === 'all' ? '（全市场）' : '自选')
+        '监控 ' + n + ' 只' + (ALERT.scope === 'all' ? '（全市场·同指数去重）' : '自选')
           + ' · 涨跌≥' + ALERT.chg + '% · 溢价≥' + ALERT.pm + '%' + scopeNote(), '', 'on');
       if (ALERT.scope === 'all') alertScanAll();
     }
@@ -4989,7 +5011,7 @@ function alertScanAll(){
     ALERT_MUTE = {}; ALERT_SPD = {}; ALERT_ALL_TS = 0; ALERT_HIT = {};
     alertSave(); paint();
     if (ALERT.scope === 'all'){
-      toast('范围：全市场 ' + DATA.length + ' 只 · 只报极端与 5 分钟汇总');
+      toast('范围：全市场 ' + alertPool().length + ' 只（同指数去重）· 只报极端与 5 分钟汇总');
       if (ALERT.on) alertScanAll();      // 切过去立刻跑一轮，别等 60 秒
     } else {
       toast('范围：自选 ' + watch.length + ' 只 · 逐只提醒');
