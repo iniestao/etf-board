@@ -314,8 +314,13 @@ async function serveAll(env, ctx) {
    为什么让前端 POST 存档而不是服务端自己解析：全量快照是 600KB 的原始 JSON，
    在 Worker 里 parse 一次要吃掉不少 CPU；而且板块划分（SEC_DEF 关键词表）在
    page.js 里，服务端再复制一份就会两边漂移。前端算完只 POST 12 个数字，成本可忽略。
-   代价是「当天没人打开页面就缺一天」，5 日均值缺一两天不影响结论。 */
-const SEC_DAILY_KEY = 'sec-daily-v1';
+   代价是「当天没人打开页面就缺一天」，5 日均值缺一两天不影响结论。
+
+   2026-11-07 从 v1 升到 v2：板块成员变了（科创半导体/芯片/创新药 这类主题原先
+   被 '科创' 前缀判成宽基，整块不进分子），半导体一天差 170 多亿。口径变了，
+   旧记录不能混进均值，直接换 key 重新攒。 */
+
+const SEC_DAILY_KEY = 'sec-daily-v2';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {
