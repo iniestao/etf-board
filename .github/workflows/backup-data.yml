@@ -57,10 +57,38 @@ jobs:
       # ---------- 2. 两个交易所的申购赎回清单 ----------
       # 深市是静态文件、可按日期取；沪市接口没有日期参数，只能拿当天。
       # 两个脚本都从 factor_lab/*universe*.txt 读名单——CI 里没有 shares.db。
-      - name: 抓深市清单
+
+      # 目标交易日从日线里取，不能取系统日期。
+      # GitHub 的 schedule 常年延迟数小时：cron 写 08:40 UTC（北京 16:40），
+      # 实际执行常在次日凌晨。那时 `date` 已经翻页，把 PCF 请求打到一个
+      # 休市日上，深市 191 只全部 404、入库 0 条（2026-11-07 就是这么空转的）。
+      # 日线的最后一个日期才是真正能取到数据的那个交易日，节假日也自动正确。
+      - name: 确定目标交易日
         run: |
-          DAY=$(TZ=Asia/Shanghai date +%Y%m%d)
-          python factor_lab/fetch_pcf.py --date=$DAY --db=/tmp/pcf.db
+          DAY=$(python3 - <<'PY'
+          import json
+          last = None
+          with open('/tmp/stocks.ndjson') as f:
+              for line in f:
+                  try:
+                      o = json.loads(line)
+                  except Exception:
+                      continue
+                  bars = o.get('bars') or []
+                  if bars and (last is None or bars[-1][0] > last):
+                      last = bars[-1][0]
+          print(last.replace('-', '') if last else '')
+          PY
+          )
+          if [ -z "$DAY" ]; then
+            echo "::error::日线里取不到交易日，中止"
+            exit 1
+          fi
+          echo "DAY=$DAY" >> "$GITHUB_ENV"
+          echo "目标交易日 $DAY（系统日期 $(TZ=Asia/Shanghai date +%Y%m%d)）"
+
+      - name: 抓深市清单
+        run: python factor_lab/fetch_pcf.py --date=$DAY --db=/tmp/pcf.db
 
       - name: 抓沪市清单
         run: python factor_lab/fetch_pcf_sse.py --db=/tmp/pcf.db
@@ -68,7 +96,6 @@ jobs:
       # ---------- 3. 导出增量 ----------
       - name: 导出增量包
         run: |
-          DAY=$(TZ=Asia/Shanghai date +%Y%m%d)
           python factor_lab/export_increment.py \
             --ndjson /tmp/stocks.ndjson --pcf /tmp/pcf.db \
             --out /tmp/inc --keep 5 --day $DAY
@@ -126,8 +153,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "没有变化，跳过提交"
           else
-            DAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
-            git commit -q -m "data ${DAY}"
+            git commit -q -m "data ${DAY:0:4}-${DAY:4:2}-${DAY:6:2}"
             git push -q origin HEAD:factor-data
             echo "已推送 $(git rev-parse --short HEAD)"
           fi
