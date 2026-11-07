@@ -453,6 +453,35 @@ color:var(--txt2);border:1px solid var(--line)}
 .stax{display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);
 margin-top:1px;font-variant-numeric:tabular-nums}
 
+/* 集中度 × 宽度四象限。格子回答「钱在哪条线」，这张图回答
+   「这种分布是常态还是异常」——只给一个 58.7% 没人知道算高算低。 */
+.scq{margin:7px 0 8px;padding:8px 11px 6px;background:var(--bg2);
+border:1px solid var(--line);border-radius:8px}
+.scqhd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:10.5px;color:var(--txt3)}
+.scqhd>span:first-child{color:var(--txt2);font-weight:600}
+.scqhd .scqb{font-style:normal;font-weight:700;font-size:11px;padding:1px 7px;border-radius:4px;
+background:var(--bg3);border:1px solid var(--line)}
+.scqbody{display:grid;grid-template-columns:minmax(0,330px) 196px minmax(0,1fr);gap:18px;
+align-items:start;margin-top:3px}
+.scqplot svg{display:block;width:100%;height:auto}
+.scqax{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;
+font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:-1px}
+.scqstats{display:flex;flex-direction:column;gap:9px;padding-top:8px}
+.scqe{display:flex;align-items:baseline;gap:6px}
+.scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
+.scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+.scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
+.scqdesc{display:flex;flex-direction:column;gap:7px;padding-top:8px;min-width:0}
+.scqd{margin:0;font-size:12px;color:var(--txt2);line-height:1.7}
+.scqnote{margin:0;font-size:10px;color:var(--txt3);line-height:1.75}
+@media(max-width:820px){
+  .scqbody{grid-template-columns:1fr;gap:4px}
+  .scqplot{max-width:400px}
+  .scqstats{flex-direction:row;flex-wrap:wrap;gap:4px 20px;padding-top:6px}
+  .scqdesc{padding-top:6px}
+}
+@media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:9.5px}}
+
 /* ---- 自选导入导出 ---- */
 #ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
@@ -615,7 +644,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sghd .sgm em{font-style:normal;color:var(--txt3);font-size:10px;margin-left:2px}
 
 @media(max-width:880px){.sghd .sgm.opt{display:none}}
-.sgrp.fold .smgrid,.sgrp.fold .sdet{display:none}
+.sgrp.fold .smgrid,.sgrp.fold .sdet,.sgrp.fold .scq{display:none}
 .smgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
 @media(max-width:1180px){.smgrid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:760px){
@@ -1461,6 +1490,159 @@ function secConcPct(v){
   return n / c.length * 100;
 }
 
+/** 宽度（上涨格占比）在过去一年里的分位。 */
+function secBrdPct(v){
+  var H = SEC_HIST;
+  if (!H || !H.b || H.b.length < 40) return null;
+  var b = H.b, n = 0;
+  for (var i=0;i<b.length;i++) if (b[i] / 10 <= v) n++;
+  return n / b.length * 100;
+}
+
+/* 集中度 × 宽度 四象限。
+   单看集中度会误判：半导体占到 40%，可以是「主线就在这儿」，也可以是「别的全塌了
+   只剩它在成交」。单看宽度也会误判：18 个行业 15 个在涨，可能是普涨，也可能是
+   每个都涨 0.1% 的假扩散。两个数放一张图，四种状态才分得开：
+     高集中 + 窄  → 抱团（赚指数不赚面）
+     高集中 + 宽  → 主线上攻（有主线也在扩散）
+     低集中 + 宽  → 轮动扩散（追高容易挨打）
+     低集中 + 窄  → 涣散（没有主线）
+   灰色点＝近一年每个交易日的位置，蓝点＝今天。今天在哪个象限、这个象限过去
+   一年出现过多少次，一眼可见——单个数字没有「常态」作参照，就只是数字。 */
+var QUAD_INFO = {
+  hl:{ n:'抱团',  c:'#a8541c' },
+  hw:{ n:'主线上攻', c:'#b3383d' },
+  lw:{ n:'轮动扩散', c:'#2563eb' },
+  ll:{ n:'涣散无主线', c:'#5b6472' }
+};
+function secQuadCard(core, conc, top3){
+  var H = SEC_HIST;
+  if (!H || !H.c || H.c.length < 40 || !H.b || H.b.length < 40) return '';
+  if (!core || core.length < 5 || !(conc > 0)) return '';
+
+  // 宽度按指数数，不按格数：18 个格只有 19 个离散值，散点会排成一条条竖线。
+  var i, j, nIx = 0, nUp = 0;
+  for (i=0;i<core.length;i++){
+    var ixA = core[i].ix;
+    for (j=0;j<ixA.length;j++){
+      if (!(ixA[j].amt > 0)) continue;
+      nIx++;
+      if (ixA[j].chg > 0) nUp++;
+    }
+  }
+  if (nIx < 40) return '';
+  var brd = nUp / nIx * 100;
+
+  // 历史序列（千分位 → 百分数）。c 与 b 同长，缺一天就整体不用。
+  var C = [], B = [];
+  for (i=0;i<H.c.length;i++){
+    var cv = H.c[i] / 10, bv = (H.b[i] || 0) / 10;
+    if (cv > 0 && H.b[i] > 0){ C.push(cv); B.push(bv); }
+  }
+  if (C.length < 40) return '';
+
+  var sortedC = C.slice().sort(function(a,b){ return a - b; });
+  var cMed = sortedC[Math.floor(sortedC.length / 2)];
+  var hiC = conc >= cMed, wide = brd >= 50;
+  var q = QUAD_INFO[(hiC ? 'h' : 'l') + (wide ? 'w' : 'l')];
+  var cMax = Math.max.apply(null, C.concat([conc]));
+  var cMin = Math.min.apply(null, C.concat([conc]));
+  var pad = (cMax - cMin) * 0.13 || 2;
+  var ylo = Math.max(0, cMin - pad), yhi = cMax + pad;
+
+  // 历史里落在同一象限的比例——单点没有「常态」参照，这个数才是参照。
+  var sameN = 0;
+  for (i=0;i<C.length;i++) if ((C[i] >= cMed) === hiC && (B[i] >= 50) === wide) sameN++;
+  var samePct = sameN / C.length * 100;
+
+  var W = 320, HT = 168, ml = 33, mr = 10, mt = 9, mb = 16;
+  var x0 = ml, x1 = W - mr, y0 = mt, y1 = HT - mb;
+  var px = function(v){ return x0 + Math.max(0, Math.min(100, v)) / 100 * (x1 - x0); };
+  var py = function(v){ return y1 - (v - ylo) / (yhi - ylo) * (y1 - y0); };
+
+  // 250 个点不用 250 个 <circle>：一个 path 里串起来，描边圆头就是点。
+  var pG = '', pA = '';
+  for (i=0;i<C.length;i++){
+    var seg = 'M' + px(B[i]).toFixed(1) + ' ' + py(C[i]).toFixed(1) + 'h0';
+    if ((C[i] >= cMed) === hiC && (B[i] >= 50) === wide) pA += seg; else pG += seg;
+  }
+  var tX = px(brd), tY = py(conc);
+  var txAnchor = tX > x1 - 26 ? 'end' : (tX < x0 + 26 ? 'start' : 'middle');
+  var txDx = txAnchor === 'end' ? -7 : (txAnchor === 'start' ? 7 : 0);
+
+  var yTick = [cMax, cMed, cMin];
+  var tk = '';
+  for (i=0;i<yTick.length;i++){
+    tk += '<text x="' + (ml - 4) + '" y="' + (py(yTick[i]) + 3).toFixed(1)
+      + '" text-anchor="end" font-size="8.5" fill="#a7aeb9">' + yTick[i].toFixed(0) + '%</text>';
+  }
+  var xRow = '';
+  var xs = [0, 50, 100];
+  for (i=0;i<xs.length;i++){
+    xRow += '<text x="' + px(xs[i]).toFixed(1) + '" y="' + (y1 + 11)
+      + '" text-anchor="' + (i === 0 ? 'start' : (i === 2 ? 'end' : 'middle'))
+      + '" font-size="8.5" fill="#a7aeb9">' + xs[i] + '%</text>';
+  }
+
+  var lbl = function(t, x, y, anch){
+    return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + anch
+      + '" font-size="8.5" fill="#c2c8d2">' + t + '</text>';
+  };
+
+  var svg = '<svg viewBox="0 0 ' + W + ' ' + HT + '" role="img" aria-label="集中度与宽度四象限散点图">'
+    + '<rect x="' + x0 + '" y="' + y0 + '" width="' + (x1 - x0) + '" height="' + (y1 - y0)
+    + '" fill="none"/>'
+    + '<line x1="' + px(50).toFixed(1) + '" y1="' + y0 + '" x2="' + px(50).toFixed(1)
+    + '" y2="' + y1 + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
+    + '<line x1="' + x0 + '" y1="' + py(cMed).toFixed(1) + '" x2="' + x1 + '" y2="'
+    + py(cMed).toFixed(1) + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
+    + '<path d="' + pG + '" stroke="#c3cad6" stroke-width="2.4" stroke-linecap="round" fill="none"/>'
+    + '<path d="' + pA + '" stroke="' + q.c + '" stroke-width="2.6" stroke-linecap="round" fill="none" stroke-opacity=".55"/>'
+    + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="6.5" fill="' + q.c + '" fill-opacity=".14"/>'
+    + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="3.3" fill="' + q.c + '" stroke="#fff" stroke-width="1"/>'
+    + '<text x="' + (tX + txDx).toFixed(1) + '" y="' + (tY - 8).toFixed(1) + '" text-anchor="' + txAnchor
+    + '" font-size="9" font-weight="700" fill="' + q.c + '">今天</text>'
+    + lbl('抱团', x0 + 5, y0 + 11, 'start')
+    + lbl('主线上攻', x1 - 5, y0 + 11, 'end')
+    + lbl('涣散', x0 + 5, y1 - 5, 'start')
+    + lbl('轮动扩散', x1 - 5, y1 - 5, 'end')
+    + tk + xRow
+    + '</svg>';
+
+  var c3 = secConcPct(conc), b3 = secBrdPct(brd);
+  var names = top3.join('、'), upTxt = nUp + '/' + nIx;
+  var desc;
+  if (hiC && !wide) desc = '钱压在 ' + names + ' 上（TOP3 占 ' + conc.toFixed(1) + '%），'
+    + nIx + ' 个指数只有 ' + nUp + ' 个在涨——赚了指数不赚面。';
+  else if (hiC && wide) desc = names + ' 领涨（TOP3 占 ' + conc.toFixed(1) + '%），'
+    + nUp + '/' + nIx + ' 个指数在涨——有主线，也在扩散。';
+  else if (!hiC && wide) desc = nUp + '/' + nIx + ' 个指数在涨，TOP3 只占 ' + conc.toFixed(1)
+    + '%——钱在轮着走，追高容易挨打。';
+  else desc = nUp + '/' + nIx + ' 个指数在涨，TOP3 只占 ' + conc.toFixed(1)
+    + '%——没有主线，别硬找。';
+
+  return '<div class="scq">'
+    + '<div class="scqhd"><span>集中度 × 宽度</span>'
+    + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em></div>'
+    + '<div class="scqbody"><div class="scqplot">' + svg
+    + '<div class="scqax"><span>灰点＝近一年每个交易日</span>'
+    + '<span>横轴 上涨指数占比</span></div></div>'
+    + '<div class="scqstats">'
+    + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
+    + '<em>TOP3 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
+    + '<div class="scqe"><span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
+    + '<em>' + upTxt + ' 只 · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
+    + '<div class="scqe"><span>同象限</span><b>' + samePct.toFixed(0) + '%</b>'
+    + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
+    + '</div>'
+    + '<div class="scqdesc"><p class="scqd">' + desc + '</p>'
+    + '<p class="scqnote">纵轴是 A 股前三大板块的成交额比重，横轴是当日上涨指数占比。'
+    + '两条虚线是近一年的中位（' + cMed.toFixed(1) + '% / 50%），把平面分成四种状态：'
+    + '左上抱团、右上主线上攻、右下轮动扩散、左下涣散。'
+    + '一年里有多少天跟你今天站在同一格，才算得出「这次是不是不一样」。</p></div>'
+    + '</div></div>';
+}
+
 /** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
 function secTrend(s){
   var h = secHistArr(s.key);
@@ -1861,13 +2043,13 @@ function renderSectors(){
     var spread = top.ret - bot.ret;
     // 集中度只算 A 股：港股 7 格、跨境 8 地区，TOP3 占比天然很高，报了没有区分度。
     // 它是「抱团还是扩散」的读数——宽度看涨跌家数，集中度看钱压在哪。
-    var t3 = null, t3p = null;
+    var t3 = null, t3n = null, byAmt = null;
     if (G2.code === 'a' && G2.core > 0 && core.length >= 5){
-      var byAmt = core.slice().sort(function(a,b){ return b.amt - a.amt; });
+      byAmt = core.slice().sort(function(a,b){ return b.amt - a.amt; });
       var s3 = 0;
       for (var m5=0;m5<3 && m5<byAmt.length;m5++) s3 += byAmt[m5].amt;
       t3 = s3 / G2.core * 100;
-      t3p = secConcPct(t3);
+      t3n = byAmt.slice(0, 3).map(function(o){ return o.k; });
     }
     // 组内资金占比上升最多的那一格（不到 0.5pt 不报，噪声）
     var bk = null, bv = 0;
@@ -1887,13 +2069,11 @@ function renderSectors(){
       + top.k + ' ' + fpc(top.ret) + '</b></span>'
       + '<span class="sgm">弱 <b class="down">' + bot.k + ' ' + fpc(bot.ret) + '</b></span>'
       + '<span class="sgm">分化 <b>' + spread.toFixed(2) + '</b></span>'
-      + (t3 != null ? '<span class="sgm opt" title="前三大板块占 A 股行业成交额的比重。'
-          + '高＝钱压在少数几条线上（抱团，赚指数不赚面）；低＝扩散（轮动快，追高容易挨打）。'
-          + (t3p != null ? '　括号里是它在近一年里的分位。' : '') + '">集中 <b>'
-          + t3.toFixed(1) + '%</b>' + (t3p != null ? ' <em>' + t3p.toFixed(0) + ' 分位</em>' : '') + '</span>' : '')
       + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
       + '<span class="sgm t3">' + nUp + ' 涨 ' + (core.length - nUp) + ' 跌</span>'
-      + '</div><div class="smgrid">'
+      + '</div>'
+      + (G2.code === 'a' && t3 != null ? secQuadCard(core, t3, t3n) : '')
+      + '<div class="smgrid">'
       + cellHtml(G2, core, mxAmt, sdel)
       + (ths.length
         ? '<div class="sth">主题 · 跨行业需求，成分落在上面几格里，<b>不计入占比分母</b></div>'
