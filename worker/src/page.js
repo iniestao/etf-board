@@ -63,8 +63,7 @@ background:var(--bg3)}
 .card .v small{font-size:11px;font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
 /* ---------- 全市场异动 ---------- */
-.mktwrap{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:9px;align-items:start}
-@media(max-width:880px){.mktwrap{grid-template-columns:1fr}}
+.mktwrap{display:block}
 .mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 13px}
 .wbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:9px 0 7px;
   background:#eef1f5;box-shadow:inset 0 0 0 1px #e3e6eb}
@@ -148,14 +147,6 @@ background:var(--bg3)}
   .spdv{flex:0 0 52px;font-size:11.5px}
   .spdq{flex:0 0 36px;font-size:10.5px}
 }
-.styl{display:grid;grid-template-columns:62px minmax(0,1fr) 44px 40px;
-  gap:8px;align-items:center;padding:3.5px 0;font-size:11.5px}
-.styl .sk{color:var(--txt2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.styl .sbar{height:6px;background:#eef1f5;border-radius:3px;position:relative;overflow:hidden}
-.styl .sbar u{position:absolute;left:0;top:0;height:6px;border-radius:3px;
-  background:linear-gradient(90deg,#c9dbff,#5c92ec)}
-.styl .sv{font-family:var(--mono);text-align:right;color:var(--txt);font-size:11px}
-.styl .sr{font-family:var(--mono);text-align:right;font-size:10.5px}
 .mfoot{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);
   font-size:10.5px;color:var(--txt3);line-height:1.6}
 
@@ -686,14 +677,6 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <div class="sec" id="secSec">
   <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
     <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
-  <div class="dnote">分三组：A股、港股、跨境。三组<b>各自算占比</b>，分母不混——跨市场的涨跌幅
-    本来也不可比（汇率、交易时段、投资者结构都不同）。A 股用申万一级骨架：通信（光模块/CPO）
-    与传媒（游戏影视）分开，半导体从电子里单列，上游资源（有色/煤炭/石油）与中游材料
-    （化工/钢铁/建材）分开。港股按同一套行业口径分格，跨境只按国家分。
-    <b>人工智能、新能源是主题不是行业</b>——成分横跨半导体/通信/计算机和光伏/电池，
-    与上面几格是同一批股票，所以单独放在每组末尾，<b>不计入占比分母</b>，也不能和行业格相加。
-    宽基、风格（红利/价值）、商品、债券货币都不计入——它们不回答「钱往哪条线走」。
-    同一跟踪指数的多只 ETF 只算一次，否则 40 只中证A500 会占掉 AI 的权重。</div>
   <div class="smhead" id="secHead"><span>读取中…</span></div>
   <div id="secBody"><div class="empty">正在读取行情…</div></div>
 </div>
@@ -729,7 +712,6 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       <div class="mtabs" id="mktTabs"></div>
       <div id="mktList"><div class="empty">读取中…</div></div>
     </div>
-    <div class="mkbox" id="mktStyle"><div class="empty">读取中…</div></div>
   </div>
 </div>
 
@@ -2210,26 +2192,6 @@ function mktBar(){
     + '<span>合计成交 <b>' + b.amt.toFixed(0) + '</b> 亿</span>';
 }
 
-function mktStyle(){
-  var box = document.getElementById('mktStyle');
-  if (!MKT.style || !MKT.style.length){
-    box.innerHTML = '<div class="empty">没有风格数据</div>';
-    return;
-  }
-  var h = '<div class="wstat" style="margin-bottom:6px"><span>风格地图</span>'
-    + '<span>位置 / 今日</span></div>';
-  for (var i = 0; i < MKT.style.length; i++){
-    var g = MKT.style[i];
-    h += '<div class="styl"><span class="sk" title="' + esc(g.k) + '">' + esc(g.k) + '</span>'
-      + '<div class="sbar"><u style="width:' + Math.max(2, Math.min(100, g.pos)).toFixed(0) + '%"></u></div>'
-      + '<span class="sv">' + g.pos.toFixed(0) + '</span>'
-      + '<span class="sr ' + cc(g.r1) + '">' + fpc(g.r1) + '</span></div>';
-  }
-  h += '<div class="mfoot">条形是这一组所有指数的位置中位数。'
-    + '一组 70 只全在低位、另一组 49 只在 35，说明钱在往哪儿去——'
-    + '单看指数涨跌幅看不出来，因为涨跌幅只反映今天。</div>';
-  box.innerHTML = h;
-}
 
 function mktList(){
   var box = document.getElementById('mktList');
@@ -2280,13 +2242,11 @@ function renderMkt(){
   if (!MKT){
     document.getElementById('mktList').innerHTML =
       '<div class="empty">' + esc(MKT_ERR || '还没有收盘快照，等今晚数据管道跑完') + '</div>';
-    document.getElementById('mktStyle').innerHTML =
-      '<div class="empty">—</div>';
     document.getElementById('mktTabs').innerHTML = '';
     if (nEl) nEl.textContent = '';
     return;
   }
-  mktBar(); mktStyle(); mktTabs(); mktList();
+  mktBar(); mktTabs(); mktList();
   if (nEl){
     nEl.textContent = MKT.n + ' 个指数 · ' + MKT.date + ' 收盘';
   }
