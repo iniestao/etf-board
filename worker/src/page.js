@@ -449,7 +449,7 @@ border:1px solid var(--line);border-radius:8px}
 color:var(--txt2);border:1px solid var(--line)}
 .sthd .sttag.hi{color:#a8541c;border-color:#f0dcc8;background:#fdf6ef}
 .sthd .sttag.lo{color:#1c6b8a;border-color:#cfe3ee;background:#f2f9fc}
-.strend svg{display:block;width:100%;height:76px;margin-top:5px}
+.strend svg{display:block;width:100%;height:86px;margin-top:5px}
 .stax{display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);
 margin-top:1px;font-variant-numeric:tabular-nums}
 
@@ -1471,7 +1471,9 @@ function secTrend(s){
   var cur = Math.round(s.share * 1000);
   var appended = false;
   var lastD = dates[dates.length-1], today = bjToday();
-  if (lastD !== today && dayGap(lastD, today) <= 5){
+  // 只在「值真的变了」时补。休市日快照等于上个交易日收盘，补上去会多一个平点，
+  // 看起来像「最近几天没动」，实际是没数据。
+  if (lastD !== today && dayGap(lastD, today) <= 5 && Math.abs(cur - a[a.length-1]) > 2){
     a.push(cur); dates.push(today); appended = true;
   }
 
@@ -1521,8 +1523,9 @@ function secTrend(s){
     + '<path d="' + d + '" fill="none" stroke="var(--accent)" stroke-width="1.7"'
     + ' stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
     + tail
-    + '<line x1="' + W + '" y1="' + yOf(a[a.length-1]).toFixed(1) + '" x2="' + W + '" y2="' + (H0-2)
-    + '" stroke="var(--accent)" stroke-opacity=".28" vector-effect="non-scaling-stroke"/>'
+    + '<line x1="' + W + '" y1="' + (yOf(a[a.length-1]) - 5).toFixed(1) + '" x2="' + W
+    + '" y2="' + (yOf(a[a.length-1]) + 5).toFixed(1)
+    + '" stroke="var(--accent)" stroke-opacity=".45" vector-effect="non-scaling-stroke"/>'
     + '</svg>'
     + '<div class="stax"><span>' + dates[0].slice(0, 7) + '</span>'
     + '<span>虚线＝一年中位</span>'
