@@ -299,6 +299,76 @@ async function serveAll(env, ctx) {
   }
 }
 
+// ---------------------------------------------------------------- 板块成交额日档
+/* 为什么需要它：板块地图只显示「今天谁强」，回答不了「钱是在进还是在出」。
+   要看后者必须跟昨天比，而盘中拿今天的累计额直接比昨天全天，是被时间进度污染的
+   ——10:30 的 3 亿跟昨天的 8 亿不是一回事。
+
+   为什么不用分钟线自己算昨日同期：新浪 minline 只有当天（kind=min 无日期参数），
+   东财 trends2 在本项目里实测连不通（见 fetchMin 的注释）。没有历史分钟数据，
+   「昨日同一时刻」这条路就堵死了。
+
+   所以改用占比口径：板块成交额 ÷ 当日行业板块成交额合计。分子分母同时被时间进度
+   放大，比值基本抵消掉。它衡量的不是「放了多大成交量」，而是「钱有多集中在这条线」。
+
+   为什么让前端 POST 存档而不是服务端自己解析：全量快照是 600KB 的原始 JSON，
+   在 Worker 里 parse 一次要吃掉不少 CPU；而且板块划分（SEC_DEF 关键词表）在
+   page.js 里，服务端再复制一份就会两边漂移。前端算完只 POST 12 个数字，成本可忽略。
+   代价是「当天没人打开页面就缺一天」，5 日均值缺一两天不影响结论。 */
+const SEC_DAILY_KEY = 'sec-daily-v1';
+const SEC_DAILY_KEEP = 12;
+
+async function loadSecDaily(env) {
+  try {
+    const raw = env && env.WATCH ? await env.WATCH.get(SEC_DAILY_KEY) : null;
+    const days = raw ? JSON.parse(raw) : [];
+    // 60 秒边缘缓存：这数据一天只变几次，不必每次穿透到 KV
+    return json({ ok: true, days: Array.isArray(days) ? days : [] }, 60);
+  } catch (e) {
+    return json({ ok: false, error: String(e.message || e) });
+  }
+}
+
+async function saveSecDaily(request, env) {
+  if (!env || !env.WATCH) return json({ ok: false, error: 'kv_not_bound' });
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return json({ ok: false, error: 'bad_json' });
+  }
+  const d = String((body && body.d) || '');
+  const s = body && body.s;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return json({ ok: false, error: 'bad_date' });
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return json({ ok: false, error: 'bad_sectors' });
+
+  // 只收 12 个数字，键名与成交额都做一次清洗：这个接口在前端跑，挡不住有人手搓
+  const clean = {};
+  let n = 0;
+  for (const k in s) {
+    if (n++ > 20) break;
+    const v = +s[k];
+    if (!k || !isFinite(v) || v < 0) continue;
+    clean[k.slice(0, 12)] = Math.round(v);
+  }
+  if (!Object.keys(clean).length) return json({ ok: false, error: 'empty' });
+
+  try {
+    const prev = await env.WATCH.get(SEC_DAILY_KEY);
+    let days = prev ? JSON.parse(prev) : [];
+    if (!Array.isArray(days)) days = [];
+    // 同一天多次 POST 取最后一次：收盘后成交额只会增不会减，后到的更完整
+    days = days.filter((x) => x && x.d !== d);
+    days.push({ d, t: String((body && body.t) || '').slice(0, 5), s: clean });
+    days.sort((a, b) => (a.d < b.d ? -1 : 1));
+    if (days.length > SEC_DAILY_KEEP) days = days.slice(-SEC_DAILY_KEEP);
+    await env.WATCH.put(SEC_DAILY_KEY, JSON.stringify(days));
+    return json({ ok: true, days: days.length });
+  } catch (e) {
+    return json({ ok: false, error: String(e.message || e) });
+  }
+}
+
 // 只解析头部元信息，不解析 raw（避免 CPU 开销）
 function safeParse(b) {
   if (typeof b !== 'string') return null;
@@ -2297,6 +2367,12 @@ export default {
     if (p === '/api/all') {
       // 三层：边缘缓存 → KV 最近一次成功 → 现场拉（只在前两者都没有时才等上游）
       return serveAll(env, ctx);
+    }
+
+    if (p === '/api/secdaily') {
+      return request.method === 'POST'
+        ? saveSecDaily(request, env)
+        : loadSecDaily(env);
     }
 
     if (p === '/api/quote') {
