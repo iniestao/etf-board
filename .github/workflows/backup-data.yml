@@ -91,7 +91,7 @@ jobs:
         run: python factor_lab/fetch_pcf.py --date=$DAY --db=/tmp/pcf.db
 
       - name: 抓沪市清单
-        run: python factor_lab/fetch_pcf_sse.py --db=/tmp/pcf.db
+        run: python factor_lab/fetch_pcf_sse.py --db=/tmp/pcf.db --date=$DAY
 
       # ---------- 3. 导出增量 ----------
       - name: 导出增量包

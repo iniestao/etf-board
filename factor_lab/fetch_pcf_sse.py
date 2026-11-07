@@ -61,6 +61,9 @@ def main():
     ap = argparse.ArgumentParser(description='抓沪市 ETF 申购赎回清单（只能取当天）')
     ap.add_argument('--db', help='数据库路径，默认 ./pcf.db')
     ap.add_argument('--codes', help='代码名单文件，默认 pcf_universe_sse.txt')
+    ap.add_argument('--date', help='目标交易日 YYYYMMDD，默认取系统日期。'
+                             '必须由调用方显式传：CI 的 schedule 常延迟到次日凌晨，'
+                             '系统日期会翻到一个休市日，241 只全部 404')
     args = ap.parse_args()
 
     global DB
@@ -93,7 +96,7 @@ def main():
         PRIMARY KEY(code,date,stock));
     CREATE INDEX IF NOT EXISTS ix_hold_date ON pcf_hold(date);
     ''')
-    today = time.strftime('%Y%m%d')
+    today = args.date or time.strftime('%Y%m%d')
     done = {c for (c,) in db.execute('SELECT code FROM pcf_meta WHERE date=?', (today,))}
     todo = [c for c in codes if c not in done]
     print(f'今天已抓 {len(done)}，待抓 {len(todo)}')
