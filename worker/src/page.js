@@ -418,6 +418,29 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
      但 canvas 的固有宽度参与 flex 计算会把面板撑宽，导致第 4 列被裁掉 */
   .hind{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
+/* 自选标题行右侧的小按钮：上一版这里是「同步」，复制一条带编号的链接，
+   谁打开谁能写。换成纯文本导入导出后，只需要一个入口。 */
+.sechd .io{margin-left:auto;font-size:10.5px;color:var(--txt3);border:1px solid var(--line);
+border-radius:5px;padding:2px 7px;cursor:pointer;user-select:none}
+.sechd .io:hover{color:var(--txt);border-color:var(--accent)}
+
+/* ---- 自选导入导出 ---- */
+#ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
+align-items:center;justify-content:center;padding:18px}
+#ioMask.on{display:flex}
+.iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
+max-width:470px;box-shadow:0 18px 48px rgba(20,26,40,.16);overflow:hidden}
+.iohd{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
+font-size:13.5px}
+.iobody{padding:13px 14px}
+.iotip{font-size:11px;color:var(--txt3);line-height:1.65;margin-bottom:9px}
+#ioTxt{width:100%;height:104px;resize:vertical;font-family:var(--mono);font-size:12px;
+line-height:1.7;padding:9px 10px;border:1px solid var(--line);border-radius:7px;
+background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
+#ioTxt:focus{border-color:var(--accent)}
+.iobar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+.iobar .iom{font-size:11px;color:var(--txt3);margin-left:auto}
+
 /* ---- 因子研究面板 ---- */
 #rsMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:70;display:none;
 align-items:center;justify-content:center;padding:18px}
@@ -731,7 +754,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
 <div class="sec">
   <div id="staleBar" class="stalebar" style="display:none"></div>
-  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span></div>
+  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
+    <span class="io" id="btnIO" title="导出一行代码清单，或粘贴清单导入（只追加，不覆盖）">导入/导出</span></div>
   <div class="bar">
     <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
     <button class="pri" id="btnAdd">添加</button>
@@ -849,6 +873,23 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </div>
 </div>
 
+<div id="ioMask">
+  <div class="iobox">
+    <div class="iohd"><b>自选清单</b>
+      <button class="hx" id="ioClose" title="关闭 (Esc)" style="margin-left:auto">×</button></div>
+    <div class="iobody">
+      <div class="iotip">一行代码，逗号、空格或换行分隔，多余的字符会被忽略。
+        导入<b>只追加</b>，不会删掉现有自选；重复的自动跳过。</div>
+      <textarea id="ioTxt" spellcheck="false" placeholder="510300, 513180, 515880"></textarea>
+      <div class="iobar">
+        <button class="pri" id="ioCopy">复制清单</button>
+        <button id="ioImport">导入清单</button>
+        <span class="iom" id="ioMsg"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="rsMask">
   <div class="rspanel">
     <div class="rshd">
@@ -933,7 +974,7 @@ function loadWatch(){
   return DEFAULT_WATCH.slice();
 }
 
-/* ---------- 自选同步（Workers KV） ----------
+/* ---------- 自选云端存储（Workers KV） ----------
    本地先写，云端异步推，800ms 防抖——用户连点几下删除不会打出 5 个请求。
    云端未配置（Deno 无 KV、或 wrangler.toml 没绑）时静默降级为纯本地。 */
 var WATCH_CLOUD = false;
@@ -942,16 +983,14 @@ var pushTimer = null;
 /* 自选分桶用的匿名编号。
    不同的人打开同一个网址，各自有一份，互不覆盖——共用一份的话，
    陌生人一按「+」就把别人的自选改掉了。
-   「同步」按钮已删：它给的那条 /?u= 链接谁拿到谁能写，按一下就等同把自选共享出去。
-   ?u= 仍然认，但只在「本机还没有编号」时采用（换设备的第一次打开）。 */
+   跨设备不再走链接（「同步」按钮已删，那条 /?u= 链接谁拿到谁能写），
+   改用标题行的「导入/导出」：文本没有写权限可外泄。 */
 var WATCH_UID = (function(){
   var LSK = 'etfUid';
   var u = '';
   try { u = localStorage.getItem(LSK) || ''; } catch (e) {}
-  // 本机已有编号就无视 ?u=：早先是无条件覆盖，谁打开一条带 u 的链接，本机编号
-  // 就永久变成别人的，之后加自选全写进别人的桶——这正是「被别人打乱」的入口。
-  var fromUrl = qs('u');
-  if (fromUrl && !u) u = fromUrl;
+  // 不再认 URL 上的 ?u=。以前是「复制一条带编号的链接给另一台设备」，等于把这份
+  // 自选的写权限发给任何拿到链接的人；现在跨设备走导入/导出文本，没有写权限可外泄。
   u = String(u).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
   if (u.length < 6){
     u = 'u' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-3);
@@ -1815,7 +1854,7 @@ function renderWatch(){
     // 否则第 31 行起一直是「-」，看着像坏了
     + (watch.length > 30 ? '<span class="syn" title="「主要贡献」列只算自选的前 30 只（按自选顺序），'
       + '再往后是长尾，滚到那里时这一列早就不在视野里了">贡献列前 30</span>' : '')
-    + (WATCH_CLOUD ? '<span class="syn" title="已与云端同步，换设备也是这份列表">云端</span>' : '');
+    + (WATCH_CLOUD ? '<span class="syn" title="已存到云端（按本机匿名编号分桶）。换设备请用「导入/导出」搬清单">云端</span>' : '');
   ensureTop3();
   paintTop3();     // tbody 刚被整块重写，单元格是新的，得重画一遍
   diagSync();
@@ -4792,6 +4831,7 @@ document.getElementById('hClose').onclick = closeHist;document.getElementById('h
 };
 document.addEventListener('keydown', function(e){
   if (e.key !== 'Escape') return;
+  if (document.getElementById('ioMask').classList.contains('on')) { ioClose(); return; }
   if (document.getElementById('rsMask').classList.contains('on')) { closeRs(); return; }
   if (document.getElementById('histMask').classList.contains('on')) closeHist();
 });
@@ -5375,6 +5415,73 @@ document.getElementById('addIn').addEventListener('keydown', function(e){
 });
 document.getElementById('btnClear').onclick = function(){
   watch = []; LIVE = {}; saveWatch(); renderWatch(); toast('已清空自选');
+};
+
+/* ---------- 自选导入 / 导出 ----------
+   上一版这里是「同步」：复制一条 /?u=编号 的链接，换台设备打开就变成这份自选。
+   问题在于那条链接本身就是写权限——本来发给自己的链接，顺手转给别人、贴到群里，
+   对方加一只删一只都会写进你的桶。为了搬一次家留一个永久后门，不划算。
+   换成纯文本：谁拿到这串代码都只能自己粘，改不动你的。 */
+function ioOpen(){
+  var t = document.getElementById('ioTxt');
+  t.value = watch.join(',');
+  document.getElementById('ioMsg').textContent = '当前 ' + watch.length + ' 只';
+  document.getElementById('ioMask').classList.add('on');
+  setTimeout(function(){ t.focus(); t.select(); }, 30);
+}
+function ioClose(){ document.getElementById('ioMask').classList.remove('on'); }
+
+document.getElementById('btnIO').onclick = ioOpen;
+document.getElementById('ioClose').onclick = ioClose;
+document.getElementById('ioMask').onclick = function(e){ if (e.target === this) ioClose(); };
+
+document.getElementById('ioCopy').onclick = function(){
+  var t = document.getElementById('ioTxt'), txt = t.value.trim();
+  var msg = document.getElementById('ioMsg');
+  if (!txt){ msg.textContent = '清单是空的'; return; }
+  function done(){ msg.textContent = '已复制 ' + watch.length + ' 只'; toast('清单已复制'); }
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(done).catch(function(){
+      t.select();
+      try{ document.execCommand('copy'); done(); }
+      catch(e){ msg.textContent = '复制失败，请手动选中'; }
+    });
+  } else {
+    t.select();
+    try{ document.execCommand('copy'); done(); }
+    catch(e){ msg.textContent = '复制失败，请手动选中'; }
+  }
+};
+
+document.getElementById('ioImport').onclick = function(){
+  var raw = document.getElementById('ioTxt').value || '';
+  var msg = document.getElementById('ioMsg');
+  // 只认 5~6 位数字，逗号、空格、换行、代码前缀、名称里的其他字都当分隔符
+  var codes = raw.match(/\\d{6}|\\d{5}/g) || [];
+  var seen = {}, add = [], dup = 0, bad = [];
+  for (var i=0;i<codes.length;i++){
+    var c = codes[i];
+    if (seen[c]) continue;
+    seen[c] = 1;
+    if (watch.indexOf(c) >= 0){ dup++; continue; }
+    // DATA 还没到就别校验——否则整份清单会被判成「不在全市场」
+    if (DATA.length && !findItem(c)){ bad.push(c); continue; }
+    add.push(c);
+  }
+  if (!add.length){
+    var why = [];
+    if (dup) why.push(dup + ' 只已在自选');
+    if (bad.length) why.push(bad.length + ' 只不在全市场');
+    msg.textContent = why.length ? '没有可导入的：' + why.join('，') : '没识别到代码';
+    return;
+  }
+  watch = watch.concat(add);
+  saveWatch(); renderWatch(); loadTXQuotes();
+  var out = '新增 ' + add.length + ' 只';
+  if (dup) out += '，跳过重复 ' + dup;
+  if (bad.length) out += '，未收录 ' + bad.length;
+  msg.textContent = out;
+  toast(out);
 };
 
 document.body.addEventListener('click', function(e){
