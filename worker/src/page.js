@@ -549,6 +549,68 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   .rssec:has(.rstwrap>table:not(.indtbl)) > h4::after{
     content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:10px}
 }
+
+/* ---------- 板块地图 ---------- */
+.smhead{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap;margin-bottom:8px;
+  font-size:11.5px;color:var(--txt2)}
+.smhead b{font-variant-numeric:tabular-nums}
+.smgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+@media(max-width:1180px){.smgrid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:760px){
+  .smgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+  .scell{padding:6px 7px 5px}
+  .scell .sn{font-size:10.5px}
+  .scell .sv{font-size:14px}
+  .scell .ss{font-size:9.5px}
+  .scell .sbar{display:none}
+  .scell .ss .sa{display:none}
+}
+.scell{border:1px solid var(--line);border-radius:7px;padding:7px 9px 6px;background:var(--bg2);
+  cursor:pointer;position:relative;overflow:hidden}
+.scell:hover{border-color:#c3cad8}
+.scell.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.scell .sn{font-size:11.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scell .sv{font-size:16px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;
+  letter-spacing:-.2px}
+.scell .ss{font-size:10px;color:var(--txt3);white-space:nowrap;margin-top:1px;
+  font-variant-numeric:tabular-nums}
+.scell .sbar{height:2px;border-radius:2px;background:var(--bg3);margin-top:6px;overflow:hidden}
+.scell .sbar i{display:block;height:2px;border-radius:2px;background:var(--txt3);opacity:.45}
+.scell .sz{position:absolute;left:0;top:0;bottom:0;width:2.5px}
+.sdet{margin-top:9px;border-top:1px dashed var(--line);padding-top:7px;display:none}
+.sdet.show{display:block}
+.sdet .sdhd{font-size:11px;color:var(--txt3);margin-bottom:4px}
+.sdet .sr{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:11.5px;
+  border-bottom:1px dotted var(--line)}
+.sdet .sr:last-child{border-bottom:0}
+.sdet .sr .nm2{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sdet .sr .cd2{font-family:var(--mono);color:var(--txt3);font-size:10.5px;width:52px;text-align:right}
+.sdet .sr .v2{font-variant-numeric:tabular-nums;width:56px;text-align:right;font-weight:600}
+.sdet .sr .a2{font-variant-numeric:tabular-nums;width:62px;text-align:right;color:var(--txt3)}
+/* ---------- 盘中提醒 ---------- */
+.alertbar{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.abtn{cursor:pointer;padding:2px 9px;border-radius:20px;border:1px solid var(--line);
+  color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:11.5px;user-select:none}
+.abtn:hover{border-color:#c3cad8}
+.abtn.on{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
+.abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#d93a3a;
+  margin-right:4px;vertical-align:1px}
+.aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:11px}
+.aset.show{display:inline-flex}
+.aset input{width:40px;padding:1px 3px;font-size:11px;border:1px solid var(--line);
+  border-radius:4px;background:var(--bg2);color:var(--txt);text-align:center;
+  font-variant-numeric:tabular-nums}
+.aset input:focus{outline:none;border-color:var(--accent)}
+#alertBox{position:fixed;right:14px;top:14px;z-index:999;display:flex;flex-direction:column;
+  gap:6px;pointer-events:none}
+.aitem{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--txt3);
+  border-radius:6px;padding:7px 11px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:12px;
+  min-width:220px;max-width:300px;animation:ain .18s ease-out}
+@keyframes ain{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+.aitem.up{border-left-color:var(--up)}
+.aitem.dn{border-left-color:var(--down)}
+.aitem b{font-size:12.5px;font-variant-numeric:tabular-nums}
+.aitem small{display:block;color:var(--txt2);font-size:11px;margin-top:2px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -565,6 +627,16 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
   <div class="card"><div class="k">全市场成交额</div><div class="v" id="cAmt">-</div><div class="s">合计</div></div>
   <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
+</div>
+
+<div class="sec" id="secSec">
+  <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
+    <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
+  <div class="dnote">同一跟踪指数的多只 ETF 只算一次——40 只中证A500 不该占掉 AI 的权重。
+    这一栏回答的是「今天钱在往哪条线走」，不是「谁涨得最多」。</div>
+  <div class="smhead" id="secHead"><span>读取中…</span></div>
+  <div class="smgrid" id="secGrid"><div class="empty">正在读取行情…</div></div>
+  <div class="sdet" id="secDet"></div>
 </div>
 
 <div class="sec">
@@ -625,6 +697,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
     <button class="pri" id="btnAdd">添加</button>
     <button id="btnClear">清空</button>
+    <span class="alertbar">
+      <span class="abtn" id="btnAlert" title="在页面开着的时候，自选出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
+      <span class="aset" id="alertSet">
+        涨跌≥<input id="aChg" value="2.0">%
+        急变≥<input id="aSpd" value="0.8">%/3分
+        溢价≥<input id="aPm" value="2.0">%
+        <span class="abtn" id="btnPerm" title="允许后，页面在后台也能弹系统通知">开桌面通知</span>
+      </span>
+    </span>
     <span class="n" id="quoteTip" style="font-size:11px;color:var(--txt3)"></span>
   </div>
   <div class="tbl"><table>
@@ -685,6 +766,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </footer>
 </div>
 <div id="toast"></div>
+<div id="alertBox"></div>
 
 <div id="histMask">
   <div class="hpanel">
@@ -1007,6 +1089,160 @@ function groupCounts(){
   var c = {all:DATA.length, broad:0, cross:0, industry:0, bond:0, money:0, commodity:0};
   for (var i=0;i<DATA.length;i++){ var k=DATA[i].g; if(c[k]!=null) c[k]++; }
   return c;
+}
+
+/* ---------- 板块地图 ----------
+   为什么按「跟踪指数」聚合而不是按 ETF 名：
+   中证A500 有 40 只 ETF、沪深300 有 29 只、半导体主题下 6 个不同的指数。
+   直接对 ETF 求平均，权重被「同指数发得多」的板块吃掉，看到的不是轮动而是发行数量。
+   所以先把 ETF 归到指数（一个指数只出一票），再按指数归到板块。
+
+   涨跌幅取「该指数下成交额最大的那只 ETF」——同指数各只 ETF 的涨跌幅本该一样，
+   取大的是为了避开新发/迷你份额的跟踪误差。成交额则是**求和**，那是真实发生的钱。 */
+var SEC_DEF = [
+  ['半导体', ['芯片','半导体','集成电路','存储','光刻','晶圆']],
+  ['医药',   ['医药','医疗','生物','创新药','疫苗','中药','器械','健康','制药']],
+  ['人工智能', ['人工智能','算力','云计算','数据中心','大数据']],
+  ['软件信创', ['软件','计算机','信息技术','信创','数字经济']],
+  ['通信传媒', ['通信','5G','互联网','传媒','游戏','影视']],
+  ['新能源', ['光伏','电池','储能','新能源','风电','锂','碳中和','氢']],
+  ['军工',   ['军工','航天','航空','国防','卫星','兵器']],
+  ['金融',   ['证券','银行','保险','金融','非银','券商']],
+  ['消费',   ['食品','饮料','白酒','消费','家电','旅游','零售','美容','纺织',
+              '农业','畜牧','养殖','粮食','种植','饲料']],
+  ['资源',   ['化工','有色','钢铁','煤炭','石油','天然气','稀有金属','矿业','能源','建材','水泥']],
+  ['制造基建', ['地产','基建','建筑','工程机械','机械','工业','制造','机器人','汽车','智能驾驶']],
+  ['公用环保', ['电力','公用','水务','环保','燃气']]
+];
+var SEC_CACHE = {};
+function sectorOf(ix){
+  var v = SEC_CACHE[ix];
+  if (v !== undefined) return v;
+  v = null;
+  for (var i=0;i<SEC_DEF.length;i++){
+    var ws = SEC_DEF[i][1];
+    for (var j=0;j<ws.length;j++) if (ix.indexOf(ws[j]) >= 0){ v = SEC_DEF[i][0]; break; }
+    if (v) break;
+  }
+  SEC_CACHE[ix] = v;
+  return v;
+}
+
+var SECS = [], SEC_OPEN = null;
+
+function buildSectors(){
+  var byIx = {};
+  for (var i=0;i<DATA.length;i++){
+    var x = DATA[i];
+    if (x.g !== 'industry' || !x.ix) continue;
+    if (!isFinite(x.chg) || !isFinite(x.amt)) continue;
+    var o = byIx[x.ix];
+    if (!o) o = byIx[x.ix] = { ix:x.ix, c:x.c, n:x.n, chg:x.chg, best:x.amt, amt:x.amt, cnt:1 };
+    else {
+      o.cnt++; o.amt += x.amt;
+      if (x.amt > o.best){ o.best = x.amt; o.c = x.c; o.n = x.n; o.chg = x.chg; }
+    }
+  }
+  var sec = {};
+  for (var k in byIx){
+    var s = sectorOf(k);
+    if (!s) continue;
+    var t = sec[s] || (sec[s] = { k:s, ix:[], amt:0 });
+    t.ix.push(byIx[k]); t.amt += byIx[k].amt;
+  }
+  var arr = [];
+  for (var s2 in sec){
+    var t2 = sec[s2], wsum = 0, vsum = 0, up = 0;
+    for (var j=0;j<t2.ix.length;j++){
+      var q = t2.ix[j];
+      // 成交额为 0 的（停牌/新发）不参与加权，否则会把板块涨幅拉向 0
+      if (q.amt > 0){ wsum += q.amt; vsum += q.chg * q.amt; }
+      if (q.chg > 0) up++;
+    }
+    var ret = wsum > 0 ? vsum / wsum : 0;
+    arr.push({ k:s2, ret:ret, amt:t2.amt, n:t2.ix.length, up:up,
+               ix:t2.ix.slice().sort(function(a,b){ return b.chg - a.chg; }) });
+  }
+  arr.sort(function(a,b){ return b.ret - a.ret; });
+  return arr;
+}
+
+function fmtAmt(v){
+  if (!(v > 0)) return '—';
+  if (v >= 1e8) return (v/1e8).toFixed(v >= 1e9 ? 1 : 2) + '亿';
+  return Math.round(v/1e4) + '万';
+}
+
+function renderSectors(){
+  SECS = buildSectors();
+  var gd = document.getElementById('secGrid');
+  var hd = document.getElementById('secHead');
+  if (!SECS.length){
+    gd.innerHTML = '<div class="empty">暂无行业主题数据（非交易时段或行情源未就绪）</div>';
+    hd.innerHTML = '<span>—</span>';
+    document.getElementById('secDet').className = 'sdet';
+    return;
+  }
+  var tot = 0, mx = 0, nUp = 0, mxAmt = 0;
+  for (var i=0;i<SECS.length;i++){
+    tot += SECS[i].amt;
+    mx = Math.max(mx, Math.abs(SECS[i].ret));
+    mxAmt = Math.max(mxAmt, SECS[i].amt);
+    if (SECS[i].ret > 0) nUp++;
+  }
+  mx = Math.max(mx, 0.2);
+  // 分化度：最强减最弱。差值大＝结构性行情，差值小＝普涨普跌。
+  // 这是「轮动」和「一起动」的分界，比单看涨幅有用。
+  var spread = SECS[0].ret - SECS[SECS.length-1].ret;
+  hd.innerHTML = '<span>最强 <b class="up">' + SECS[0].k + ' ' + fpc(SECS[0].ret) + '</b></span>'
+    + '<span>最弱 <b class="down">' + SECS[SECS.length-1].k + ' ' + fpc(SECS[SECS.length-1].ret) + '</b></span>'
+    + '<span>分化 <b>' + spread.toFixed(2) + '</b> 个点</span>'
+    + '<span>' + SECS.length + ' 个板块 ' + nUp + ' 涨 ' + (SECS.length-nUp) + ' 跌</span>';
+
+  var h = '';
+  for (var j=0;j<SECS.length;j++){
+    var s = SECS[j];
+    var cls = s.ret > 0 ? 'up' : (s.ret < 0 ? 'down' : 'flat');
+    var sh = Math.min(1, Math.abs(s.ret) / mx);
+    var rgb = s.ret > 0 ? '217,58,58' : '14,154,97';
+    var share = tot > 0 ? s.amt / tot * 100 : 0;
+    var barW = mxAmt > 0 ? s.amt / mxAmt * 100 : 0;
+    h += '<div class="scell' + (SEC_OPEN === s.k ? ' on' : '') + '" data-sec="' + s.k + '"'
+      + ' title="' + s.k + '：' + s.n + ' 个跟踪指数，成交额 ' + fmtAmt(s.amt)
+      + '（占行业板块 ' + share.toFixed(1) + '%），' + s.up + '/' + s.n + ' 个指数上涨">'
+      + '<i class="sz" style="background:rgba(' + rgb + ',' + (0.15 + 0.85*sh).toFixed(2) + ')"></i>'
+      + '<div class="sn">' + s.k + '</div>'
+      + '<div class="sv ' + cls + '">' + fpc(s.ret) + '</div>'
+      + '<div class="ss">' + s.up + '/' + s.n + ' 指数<span class="sa"> · ' + fmtAmt(s.amt) + '</span></div>'
+      + '<div class="sbar" title="成交额占行业板块合计 ' + share.toFixed(1) + '%"><i style="width:'
+      + barW.toFixed(1) + '%;background:rgba(' + rgb + ',.55)"></i></div>'
+      + '</div>';
+  }
+  gd.innerHTML = h;
+
+  var det = document.getElementById('secDet');
+  if (SEC_OPEN){
+    var cur = null;
+    for (var q=0;q<SECS.length;q++) if (SECS[q].k === SEC_OPEN) cur = SECS[q];
+    if (!cur){ SEC_OPEN = null; det.className = 'sdet'; return; }
+    var rows = cur.ix.slice(0, 8), dh = '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
+      + cur.n + ' 个跟踪指数（同指数多只 ETF 已合并）</div>';
+    for (var r=0;r<rows.length;r++){
+      var o = rows[r];
+      var c2 = o.chg > 0 ? 'up' : (o.chg < 0 ? 'down' : 'flat');
+      dh += '<div class="sr" data-code="' + esc(o.c) + '">'
+        + '<span class="nm2">' + esc(o.ix) + '</span>'
+        + '<span class="cd2">' + esc(o.c) + '</span>'
+        + '<span class="v2 ' + c2 + '">' + fpc(o.chg) + '</span>'
+        + '<span class="a2">' + fmtAmt(o.amt) + '</span></div>';
+    }
+    if (cur.n > rows.length) dh += '<div class="sr"><span class="nm2" style="color:var(--txt3)">'
+      + '其余 ' + (cur.n - rows.length) + ' 个指数未列出</span></div>';
+    det.innerHTML = dh;
+    det.className = 'sdet show';
+  } else {
+    det.className = 'sdet';
+  }
 }
 
 /* ---------- 渲染 ---------- */
@@ -4301,7 +4537,7 @@ function loadFull(){
     var hasPm = items.some(function(x){ return x.pm != null; });
     void hasPm;
 
-    renderCards(); renderList(); renderWatch();
+    renderCards(); renderList(); renderWatch(); renderSectors();
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
     // 涨速榜的池子是从这份快照里挑的，第一次拿到数据才有得挑
     if (!SPD.rows.length && !SPD.loading) spdFetch();
@@ -4327,6 +4563,154 @@ function toTX(c){
   if (c.charAt(0) === '0' || c.charAt(0) === '1') return 'sz' + c;
   return 'sh' + c;
 }
+
+/* ---------- 盘中提醒 ----------
+   只对「自选」生效，不做全市场扫描：432 只全市场每 5 秒扫一遍，一天能弹几百条，
+   弹到第二次就没人看了。盯市要的是「我关心的东西出事了」，不是「市场在动」。
+
+   能力边界写在明处：这是**页面内**提醒，标签页关掉就没了。真要做 7×24 推送得配
+   Web Push（需要 VAPID 密钥和订阅端点持久化），或走企业微信机器人，那是另一套东西。
+   这里不假装自己是推送。 */
+var ALERT = { on:false, chg:2.0, spd:0.8, pm:2.0 };
+var ALERT_MUTE = {};          // key -> 上次提醒时间，不落盘
+var ALERT_HIT = {};           // 当日已提醒过的 key（涨跌幅这类一天只提一次）
+var ALERT_SPD = {};           // code -> [{t,p}]，用来算 3 分钟变化
+var ALERT_DAY = new Date().toDateString();
+
+try {
+  var aj = localStorage.getItem('etf_alert');
+  if (aj){ var ao = JSON.parse(aj);
+    ALERT.chg = +ao.chg || 2.0; ALERT.spd = +ao.spd || 0.8; ALERT.pm = +ao.pm || 2.0; }
+} catch(e){}
+
+function alertSave(){
+  try { localStorage.setItem('etf_alert', JSON.stringify({chg:ALERT.chg, spd:ALERT.spd, pm:ALERT.pm})); } catch(e){}
+}
+
+function alertPush(title, body, cls, key){
+  var box = document.getElementById('alertBox');
+  if (!box) return;
+  var d = document.createElement('div');
+  d.className = 'aitem ' + (cls || '');
+  d.innerHTML = '<b>' + esc(title) + '</b><small>' + esc(body) + '</small>';
+  box.appendChild(d);
+  setTimeout(function(){ if (d.parentNode) d.parentNode.removeChild(d); }, 9000);
+  while (box.children.length > 4) box.removeChild(box.firstChild);
+
+  if (window.Notification && Notification.permission === 'granted'){
+    try { new Notification(title, { body: body, tag: key, silent: false }); } catch(e){}
+  }
+  if (document.hidden){
+    document.title = '● ' + title.replace(/^.*?·/, '') + ' · ETF 盯盘';
+  }
+}
+
+/* 冷却：同一标的同一类型 10 分钟内只响一次。没有这个，一只票在阈值附近来回抖，
+   5 秒一条，比不提醒更糟。 */
+function alertCool(key, min){
+  var now = Date.now(), last = ALERT_MUTE[key];
+  if (last && now - last < (min || 10) * 60000) return false;
+  ALERT_MUTE[key] = now;
+  return true;
+}
+
+function alertScan(items){
+  if (!ALERT.on || !isOpen()) return;
+  var today = new Date().toDateString();
+  if (today !== ALERT_DAY){ ALERT_DAY = today; ALERT_HIT = {}; ALERT_SPD = {}; }
+
+  var now = Date.now();
+  for (var c in items){
+    var x = items[c];
+    if (!x || !isFinite(x.chg)) continue;
+
+    // 1) 当日涨跌幅越线：一天只提一次，否则每 5 秒响一遍
+    if (Math.abs(x.chg) >= ALERT.chg){
+      var k1 = 'chg|' + c + '|' + ALERT_DAY;
+      if (!ALERT_HIT[k1]){
+        ALERT_HIT[k1] = 1;
+        alertPush(x.n + ' ' + (x.chg > 0 ? '+' : '') + x.chg.toFixed(2) + '%',
+          '自选当日涨跌幅越过 ' + ALERT.chg + '% 阈值 · 现价 ' + x.p.toFixed(3),
+          x.chg > 0 ? 'up' : 'dn', k1);
+      }
+    }
+
+    // 2) 3 分钟急变：滚动窗口，超出阈值再按冷却去重
+    var arr = ALERT_SPD[c] || (ALERT_SPD[c] = []);
+    arr.push({ t: now, p: x.p });
+    while (arr.length && now - arr[0].t > 180000) arr.shift();
+    if (arr.length >= 3){
+      var base = arr[0].p, mv = base > 0 ? (x.p / base - 1) * 100 : 0;
+      if (Math.abs(mv) >= ALERT.spd){
+        var k2 = 'spd|' + c;
+        if (alertCool(k2, 10)){
+          alertPush(x.n + ' 3 分钟 ' + (mv > 0 ? '+' : '') + mv.toFixed(2) + '%',
+            '从 ' + base.toFixed(3) + ' 到 ' + x.p.toFixed(3) + ' · 成交 ' + fmtAmt(x.amt),
+            mv > 0 ? 'up' : 'dn', k2);
+        }
+      }
+    }
+
+    // 3) 溢价越线：跨境 ETF 最容易出事，折价反而是机会，两个方向都提
+    if (x.pm != null && isFinite(x.pm) && Math.abs(x.pm) >= ALERT.pm){
+      var k3 = 'pm|' + c + '|' + Math.round(x.pm);
+      if (alertCool(k3, 30)){
+        alertPush(x.n + ' 溢价 ' + (x.pm > 0 ? '+' : '') + x.pm.toFixed(2) + '%',
+          (x.pm > 0 ? '场内比净值贵，追高要付溢价' : '场内比净值便宜，注意流动性和限购')
+            + ' · IOPV ' + (x.iopv != null ? x.iopv.toFixed(3) : '—'),
+          x.pm > 0 ? 'up' : 'dn', k3);
+      }
+    }
+  }
+}
+
+(function(){
+  var btn = document.getElementById('btnAlert');
+  var set = document.getElementById('alertSet');
+  if (!btn) return;
+  var paint = function(){
+    btn.className = 'abtn' + (ALERT.on ? ' on' : '');
+    btn.innerHTML = ALERT.on ? '<i></i>提醒 开' : '提醒 关';
+    set.className = 'aset' + (ALERT.on ? ' show' : '');
+  };
+  paint();
+  btn.onclick = function(){
+    ALERT.on = !ALERT.on;
+    paint();
+    if (ALERT.on){
+      ALERT_MUTE = {}; ALERT_SPD = {};
+      var n = Object.keys(LIVE).length || watch.length;
+      alertPush('盯盘提醒已开启', '监控 ' + n + ' 只自选 · 涨跌≥' + ALERT.chg + '% · 3分钟≥'
+        + ALERT.spd + '% · 溢价≥' + ALERT.pm + '%', '', 'on');
+    }
+    if (ALERT.on && window.Notification && Notification.permission === 'default'){
+      try { Notification.requestPermission(); } catch(e){}
+    }
+  };
+  var bind = function(id, key){
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.onchange = function(){
+      var v = parseFloat(this.value);
+      if (!isFinite(v) || v <= 0){ this.value = ALERT[key].toFixed(1); return; }
+      ALERT[key] = v; alertSave();
+      if (key === 'chg') ALERT_HIT = {};
+    };
+  };
+  bind('aChg','chg'); bind('aSpd','spd'); bind('aPm','pm');
+  var pb = document.getElementById('btnPerm');
+  if (pb) pb.onclick = function(){
+    if (!window.Notification){ toast('这台设备的浏览器不支持桌面通知'); return; }
+    Notification.requestPermission().then(function(r){
+      toast(r === 'granted' ? '已允许桌面通知' : '通知被拒绝，只能看页面浮层');
+    });
+  };
+})();
+
+document.addEventListener('visibilitychange', function(){
+  if (!document.hidden) document.title = 'ETF 全市场盯盘';
+});
+
 function loadTXQuotes(){
   if (!watch.length) return;
   var tx = [];
@@ -4355,6 +4739,7 @@ function loadTXQuotes(){
     if (Object.keys(out).length){
       LIVE = out;
       renderWatch();
+      alertScan(out);
       hRefresh();                    // 自选 5 秒一刷，弹窗里那只也一起动
       var tip = document.getElementById('quoteTip');
       if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒')
@@ -4420,6 +4805,19 @@ document.getElementById('btnClear').onclick = function(){
 };
 
 document.body.addEventListener('click', function(e){
+  var sc = e.target.closest('[data-sec]');
+  if (sc){
+    var sk = sc.getAttribute('data-sec');
+    SEC_OPEN = (SEC_OPEN === sk) ? null : sk;
+    renderSectors();
+    return;
+  }
+  var sr = e.target.closest('.sdet .sr[data-code]');
+  if (sr){
+    var scd = sr.getAttribute('data-code');
+    openHist(scd, (findItem(scd) || {}).n || scd);
+    return;
+  }
   var ix = e.target.closest('[data-ix]');
   if (ix){
     var v = ix.getAttribute('data-ix');
@@ -4463,6 +4861,10 @@ Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
     renderList();
   };
 });
+(function(){
+  var b = document.getElementById('btnSec');
+  if (b) b.onclick = function(){ SEC_CACHE = {}; SECS = buildSectors(); renderSectors(); toast('已按最新快照重算板块'); };
+})();
 document.getElementById('sortSel').onchange = function(){ sortKey = this.value; renderList(); };
 document.getElementById('limitSel').onchange = function(){ limit = parseInt(this.value,10); renderList(); };
 (function(){

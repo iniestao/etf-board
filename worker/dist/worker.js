@@ -776,6 +776,9 @@ function sinaSymOf(secid) {
  */
 function parseHq(sym, raw) {
   if (!raw) return null;
+  /* 腾讯用 ~ 分隔、新浪用 , 分隔。同一份代码里两个源都留着（腾讯主、新浪备），
+     解析按分隔符自动分派，调用方不用关心这条行情是谁给的。 */
+  if (raw.indexOf('~') >= 0) return parseHqTx(raw);
   const f = raw.split(',');
   if (!f.length) return null;
   if (sym.slice(0, 3) === 'gb_') {
@@ -795,7 +798,65 @@ function parseHq(sym, raw) {
   return { p, chg: (p / prev - 1) * 100, prev };
 }
 
-async function fetchHq(syms) {
+/**
+ * 腾讯行情串 → 和 parseHq 同一套结构。
+ *
+ * 字段（v_sz000001="51~平安银行~000001~11.60~11.64~11.62~…~-0.04~-0.34~…"）：
+ *   1 名称  3 现价  4 昨收  32 涨跌幅%
+ * A 股 / 港股 / 美股**下标完全一致**——这比新浪省事得多（新浪是三套下标：
+ * A 股现价在 3、港股在 6、美股在 1，还各有一套涨跌幅口径）。所以腾讯这条
+ * 只按一套下标取，不再分市场。
+ */
+function parseHqTx(raw) {
+  const f = raw.split('~');
+  const p = +f[3], prev = +f[4];
+  if (!(p > 0) || !(prev > 0)) return null;
+  const c = +f[32];
+  const chg = isFinite(c) ? c : (p / prev - 1) * 100;
+  return { p, chg, prev };
+}
+
+/** 内部代码（sh/sz/hk/gb_）→ 腾讯代码（美股是 us 前缀 + 纯大写） */
+function toTxSym(sym) {
+  return sym.slice(0, 3) === 'gb_' ? 'us' + sym.slice(3).toUpperCase() : sym;
+}
+
+/** 内部代码（sh/sz/hk/gb_）→ 新浪代码 */
+function toSinaSym(sym) {
+  return sym.slice(0, 2) === 'us' ? 'gb_' + sym.slice(2).toLowerCase() : sym;
+}
+
+/**
+ * 腾讯批量行情。返回 { 内部代码: 原始串 }。
+ *
+ * 为什么拿它当主源：hq.sinajs.cn 对云端出口 IP 有随机风控，实测同一批代码
+ * 连测 6 次，403 出现 2~3 次，且**与批量大小无关**（30 只和 279 只一样会 403）。
+ * 也就是说失败不是「请求太大」，重试一次只有 4 成概率撞回来；一只 300 成分的
+ * 宽基 ETF 只要这一批失手，整张成分表就变成「有持仓、零行情」。
+ * qt.gtimg.cn 同样的代码连测 24 次（60/120/200/279 只各 6 次）零失败。
+ */
+async function fetchHqTx(syms) {
+  if (!syms.length) return {};
+  const r = await fetch('https://qt.gtimg.cn/q=' + syms.map(toTxSym).join(','), {
+    headers: { 'User-Agent': HOLD_UA, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('HQ(tx) HTTP ' + r.status);
+  const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const out = {};
+  const re = /v_([A-Za-z0-9_]+)="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(text))) {
+    // 键换回内部代码，下游一律按 sym 取值，不关心上游是谁
+    const sym = toSinaSym(m[1]);
+    if (m[2]) out[sym] = m[2];
+  }
+  if (!Object.keys(out).length) throw new Error('HQ(tx) empty');
+  return out;
+}
+
+/** 新浪批量行情（备用源）。腾讯那条挂了才走这里。 */
+async function fetchHqSina(syms) {
   if (!syms.length) return {};
   const r = await fetch('https://hq.sinajs.cn/list=' + syms.join(','), {
     headers: { 'User-Agent': HOLD_UA, Referer: 'https://finance.sina.com.cn/' },
@@ -808,21 +869,32 @@ async function fetchHq(syms) {
   let m;
   while ((m = re.exec(text))) out[m[1]] = m[2];
   /* 新浪这条链路会偶发「HTTP 200 但正文是 Forbidden / 空」——只解出 0 条却
-     不报错，前端就拿不到任何涨跌幅。这里当失败抛出，交给上层重试一次。 */
+     不报错，前端就拿不到任何涨跌幅。这里当失败抛出，交给上层重试。 */
   if (!Object.keys(out).length) throw new Error('HQ empty');
   return out;
 }
 
-/** 一次批量行情，失败重试一次：股票行情是这一栏的全部内容，宁可多打一次上游 */
+/**
+ * 一次批量行情：腾讯 3 次（退避）→ 新浪 2 次兜底。
+ *
+ * 重试次数为什么从 1 提到 3：新浪 403 是随机风控，不是请求有问题，多打两次
+ * 就回来了；而这一批失手的代价是整张成分表没有涨跌幅，比多一次子请求贵得多。
+ */
 async function fetchHqRetry(syms) {
-  for (let a = 0; ; a++) {
-    try {
-      return await fetchHq(syms);
-    } catch (e) {
-      if (a >= 1) throw e;
-      await new Promise((res) => setTimeout(res, 250));
+  let last = null;
+  for (let a = 0; a < 3; a++) {
+    try { return await fetchHqTx(syms); } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 180 + a * 320 + Math.random() * 160));
     }
   }
+  for (let a = 0; a < 2; a++) {
+    try { return await fetchHqSina(syms); } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 250 + a * 350));
+    }
+  }
+  throw last || new Error('HQ 失败');
 }
 
 /* ---------------------------------------------------- 交易所每日 PCF（申购赎回清单）
@@ -914,7 +986,13 @@ function parsePcfSzseTxt(txt) {
   const items = [];
   // 一行长这样（列间是多空格）：
   // 000001   平安银行   1,600   允许   34.00%   0.00%   0.0000   0.0000   深圳市场
-  const re = /^[ \t]*(\d{6}|[A-Z]{1,6})[ \t]+(.+?)[ \t]+([\d,]+)[ \t]+(?:允许|必须|禁止)/gm;
+  /* 代码位数按市场分：沪深 6 位、港股 4~6 位、美股是纯字母。
+     港股这一列**位数不固定**：同一个交易所的文件，有的写 00700、有的写 100、
+     1211、1698（去掉前导零）。之前只写了 (\d{6}|[A-Z]{1,6})，于是 159792 互联网、
+     159740 恒生科技、159303 HS医疗这一整类深市港股通 ETF 一行都匹配不上——
+     文件明明下下来了（9~23KB），解析出来却是 0 只，界面报「清单里没有可取成分」，
+     看起来像交易所没发布。 */
+  const re = /^[ \t]*(\d{4,6}|[A-Z]{1,6})[ \t]+(.+?)[ \t]+([\d,]+)[ \t]+(?:允许|必须|禁止)/gm;
   let m;
   while ((m = re.exec(txt))) {
     const c = m[1];
@@ -927,7 +1005,7 @@ function parsePcfSzseTxt(txt) {
     // 用行尾的挂牌市场判沪深：看代码首位靠不住（688/605 是沪、300/301 是深）
     if (line.indexOf('上海市场') >= 0) sym = 'sh' + c;
     else if (line.indexOf('深圳市场') >= 0) sym = 'sz' + c;
-    // 港股同样要补前导零（和上交所一个毛病）
+    // 港股同样要补前导零（清单里是 00700 这种 5 位，补到 5 位不变）
     else if (line.indexOf('香港市场') >= 0) sym = 'hk' + c.padStart(5, '0');
     else if (/^[A-Z]/.test(c)) sym = 'gb_' + c.toLowerCase();
     if (!sym) continue;
@@ -954,13 +1032,27 @@ async function fetchPcfSzse(code, days) {
     const day = cstDay(off);
     const u = 'https://reportdocs.static.szse.cn/files/text/etf/ETF' + code + day + '.txt';
     let txt = null;
-    try {
-      const r = await fetch(u, {
-        headers: { 'User-Agent': HOLD_UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (r.ok) txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
-    } catch (e) { /* 换个日期再试 */ }
+    /* 403 要和 404 分开看：404 是「这一天没有这份文件」，403 是「现在不给」。
+       实测同一天同一只，单发 200、五路并发 403（静态文件服务器的并发保护），
+       隔一会儿再请求就正常。所以 403/429 在同一天内重试一次，别急着翻页——
+       翻到前一天等于把一份昨天的清单当成今天的用。
+
+       重试只在「现场拉」时做（days 省略）：预热一轮 20 只，每只多两次尝试就是
+       四十个子请求，直接顶穿 Cloudflare 的五十上限，整轮报废。预热的容错交给
+       后面轮次和盘中现场拉。 */
+    for (let a = 0; a < 2; a++) {
+      let st = 0;
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': HOLD_UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (r.ok) { txt = new TextDecoder('gbk').decode(await r.arrayBuffer()); break; }
+        st = r.status;
+      } catch (e) { /* 网络抖动，也算一次 */ }
+      if ((st !== 403 && st !== 429) || days > 0) break;
+      await new Promise((r2) => setTimeout(r2, 400));
+    }
     if (!txt) continue;
     const items = parsePcfSzseTxt(txt);
     if (items) return { ex: 'szse', day, items, idx: pcfSzseIndex(txt) };
@@ -1021,22 +1113,47 @@ async function getPcf(code, env) {
 
 /**
  * 一次批量取行情，返回 { sym: {p, prev, chg} }。
- * 500 只一批也可以（实测新浪 URL 2.7KB / 300 只 / 70ms 就返回），
- * 但按 300 一批更稳，也留住了失败时「部分成功」的能力。
+ *
+ * 分块 + **补抓缺失**：一次 150 只，某块整块失手（上游风控）时只丢这 150 只，
+ * 第二轮把这批「没回来的」单独再打一次。这一层很关键——原来的写法是
+ * Promise.all 里 catch(() => ({})) 静默吞掉，失败那一块的成分股直接不进
+ * rowsFromPcf 的分母，界面照样显示「权重合计 100%」，但其实是把 300 只的
+ * 盘子缩成了 150 只、权重全体放大一倍。宁可补抓，也不要这种看起来正常的错表。
+ *
+ * 剩下的零星缺失（退市、停牌无昨收、美股换代码）属于真没有，不算失败。
  */
 async function priceMap(syms) {
-  const out = {}, uniq = [];
-  for (const s of syms) if (s && !out[s]) { out[s] = 1; uniq.push(s); }
-  const chunks = [];
-  for (let k = 0; k < uniq.length; k += 300) chunks.push(uniq.slice(k, k + 300));
-  const got = await Promise.all(chunks.map((c) => fetchHqRetry(c).catch(() => ({}))));
+  const seen = {}, uniq = [];
+  for (const s of syms) if (s && !seen[s]) { seen[s] = 1; uniq.push(s); }
+
+  const slice = (arr, n) => {
+    const r = [];
+    for (let k = 0; k < arr.length; k += n) r.push(arr.slice(k, k + n));
+    return r;
+  };
+
   const q = {};
+  const got = await Promise.all(slice(uniq, 150).map((c) => fetchHqRetry(c).catch(() => ({}))));
   for (const g of got) Object.assign(q, g);
+
+  const miss = uniq.filter((s) => !q[s]);
+  if (miss.length) {
+    for (const c of slice(miss, 100)) {
+      try { Object.assign(q, await fetchHqRetry(c)); } catch (e) { /* 认了，下面按命中率兜 */ }
+    }
+  }
+
   const res = {};
   for (const s of uniq) {
     const o = parseHq(s, q[s]);
     if (o) res[s] = o;
   }
+
+  /* 命中率低于四成：不是「个别没有」，是行情源这一轮整体不可用。此时返回
+     那点残渣会让界面把权重归一化到极少数股票上，涨跌幅看着合理其实全错。
+     抛出去让上层明说「行情源暂时不可用」，比给一张假表强。 */
+  const n = Object.keys(res).length;
+  if (n && n < uniq.length * 0.4) throw new Error('行情源命中率过低 ' + n + '/' + uniq.length);
   return res;
 }
 
@@ -1104,15 +1221,28 @@ async function serveHoldPcf(ctx, code, pcf) {
     } catch (e) { /* 忽略 */ }
   }
 
-  const q = await priceMap(pcf.items.map((x) => x.sym));
+  let q = {};
+  try {
+    q = await priceMap(pcf.items.map((x) => x.sym));
+  } catch (e) {
+    /* 清单拿到了、行情没拿到——这两件事必须分开说。原来一律报「清单里没有
+       可取成分」，于是华泰柏瑞 510300 这种 300 只全 A 股的宽基也会显示
+       「黄金/债券/货币类常见，穿透不适用」，把人往错误方向带。 */
+    return json({
+      ok: false, code, src: 'pcf', day: pcf.day, total: pcf.items.length,
+      error: '成分清单已取到（' + pcf.items.length + ' 只），但这一轮成分行情没响应：'
+        + String(e.message || e) + '。稍等几秒再点一次。',
+    }, 0);
+  }
   const r = rowsFromPcf(pcf, q);
 
-  /* 持仓拿到了、一条行情都没回来：多半是商品/货币类（清单里只有黄金合约或现金
-     替代），也可能上游整批失败。别回一张空表让人以为是加载中。 */
+  /* 清单有成分、却一条行情都对不上：多半是商品/货币类（清单里只有黄金合约或
+     现金替代，代码不在股票行情范围），也可能是上游全挂。别回一张空表让人以为
+     是加载中。 */
   if (!r.rows.length) {
     return json({
-      ok: false, code, src: 'pcf', day: pcf.day,
-      error: '这只 ETF 的申购赎回清单里没有可取的股票成分（黄金 / 债券 / 货币类常见），穿透不适用',
+      ok: false, code, src: 'pcf', day: pcf.day, total: pcf.items.length,
+      error: '这只 ETF 的申购赎回清单里没有可取的股票成分（商品 / 境外指数 / 债券类常见），穿透不适用',
     });
   }
 
@@ -1120,6 +1250,7 @@ async function serveHoldPcf(ctx, code, pcf) {
     ok: true, code, src: 'pcf', ex: pcf.ex, day: pcf.day,
     name: '', asof: pcf.day,
     n: r.rows.length, total: pcf.items.length,
+    miss: Math.max(0, pcf.items.length - r.rows.length),
     wsum: +r.wsum.toFixed(2), hit: r.hit,
     rows: r.rows, ms: 0,
   }, r.hit > 0 ? 30 : 0);
@@ -1172,17 +1303,14 @@ async function serveHoldReport(ctx, code, env, pcfErr) {
     pair.push([it, sym]);
   }
 
+  /* 走和 PCF 同一条行情链路：腾讯主源 + 新浪兜底 + 缺失补抓。原来这里自己
+     分 50 只一批、失败静默吞掉，季报这条路会「有前十大、没有涨跌幅」。 */
   let q = {}, qErr = '';
-  try {
-    const chunks = [];
-    for (let k = 0; k < syms.length; k += 50) chunks.push(syms.slice(k, k + 50));
-    const got = await Promise.all(chunks.map((c) => fetchHqRetry(c).catch((e) => { qErr += String(e.message || e) + ' '; return {}; })));
-    for (const g of got) Object.assign(q, g);
-  } catch (e) { qErr = String(e.message || e); }
+  try { q = await priceMap(syms); } catch (e) { qErr = String(e.message || e); }
 
   let wsum = 0, ctr = 0, hit = 0;
   const rows = pair.map(([it, sym]) => {
-    const o = parseHq(sym, q[sym]);
+    const o = q[sym] || null;
     const w = it.w;
     wsum += w;
     // 贡献：权重 × 涨跌幅（百分点）。ETF 涨跌幅 ≈ 各成分贡献之和 + 折溢价
@@ -1422,6 +1550,12 @@ async function buildWarmPlan(day, env) {
       const nm = String(x.name || '');
       if (/债|货币|短融|添益|日利|保证金|理财/.test(nm)) continue;
       if (nm.indexOf('现金') >= 0 && !/自由现金|现金流/.test(nm)) continue;
+      /* 商品和境外指数也没有股票成分：黄金（518880 那批）、日经 / 东证 / 巴西、
+         豆粕、能源化工。实测 400 只成交额榜里这类有 21 只，每只预热要烧 1~3 个
+         子请求还必然失败，一轮二十只的预算直接被吃掉一小半。
+         注意别按「有色」筛：159980 有色ETF 是商品期货，但 159881 有色50 是股票
+         指数，同一个词两种品种，宁可留一只漏网的也不误伤。 */
+      if (/黄金|金ETF|上海金|日经|东证|巴西|豆粕|能源化工/.test(nm)) continue;
       got.push({ c, a: +x.amount || 0, m: String(x.name || '') });
     }
   }
@@ -1620,20 +1754,32 @@ function slotOf(t) {
 function weightOf(t) { return t === '15:00' ? 4 : 1; }
 
 /**
- * 最近 20 分钟的价格轨迹，降采样到最多 16 点。
+ * 当日 09:30 至今的走势，降采样到最多 48 点，**每个点是以今开为基准的涨跌幅（%）**。
+ *
  * 给前端画迷你线用——「+0.31%」这个数字看不出是一路缓涨还是最后两笔拉起来，
- * 形状才看得出。只传价格不传量，40 只 × 16 点约 3.8KB。
+ * 形状才看得出。原先只取最近 20 分钟，只能看到「刚才这一下」，上午冲高、午后
+ * 回落这种全天节奏全被截掉了；改成全天之后，「现在这个位置是从哪儿走过来的」
+ * 直接能从线的形状读出来。
+ *
+ * 为什么传百分比而不是价格：ETF 的价格最小变动单位是 0.001，512000 那种 0.48
+ * 元的低价品种，一整天在 0.483–0.486 之间走，只有三个台阶——画在 24 像素高的
+ * 框里就是一段阶梯，看不出形状。换成相对今开的百分比，同样的行情能落到 0.01%
+ * 的刻度上，而 0.62% 的振幅也就能画出六十多级。顺带还统一了纵向语义：中线永远
+ * 是今开，不用每行自己去猜基准价。
+ *
+ * 采样按点数均分，正好等于按交易分钟均分：分时数据本身就是一分钟一个点、
+ * 午休没有点，所以 11:30 到 13:00 之间不会凭空多出一段平线。
+ *
+ * 只传百分比不传量，40 只 × 48 点约 9KB（gzip 后三成）。
  */
 function trailOf(pts) {
-  const sl = slotOf(pts[pts.length - 1][0]);
-  const arr = [];
-  for (let i = 0; i < pts.length; i++) {
-    if (slotOf(pts[i][0]) >= sl - 20) arr.push(pts[i][1]);
-  }
-  if (!arr.length) return [];
-  if (arr.length <= 16) return arr.map((v) => +v.toFixed(3));
+  if (!pts.length) return [];
+  const base = pts[0][1];
+  if (!(base > 0)) return [];
+  const pct = (v) => +(((v / base) - 1) * 100).toFixed(2);
+  if (pts.length <= 48) return pts.map((x) => pct(x[1]));
   const out = [];
-  for (let k = 0; k < 16; k++) out.push(+arr[Math.round((k * (arr.length - 1)) / 15)].toFixed(3));
+  for (let k = 0; k < 48; k++) out.push(pct(pts[Math.round((k * (pts.length - 1)) / 47)][1]));
   return out;
 }
 
@@ -1714,7 +1860,10 @@ async function serveSpeed(ctx, codes) {
   const list = codes.slice(0, SPEED_MAX);
   const stamp = fpOf(list.join(','));
   const bucket = Math.floor(Date.now() / 30000);
-  const key = new Request('https://etf-board.internal/speed/v1/' + stamp + '/' + bucket, { method: 'GET' });
+  /* v2：pv 从「价格数组」改成了「相对今开的百分比数组」，键里必须带上版本，
+     否则部署后最先点开的几个人会撞上 30 秒内的旧缓存，前端按百分比画价格，
+     整条线会飞出框外。 */
+  const key = new Request('https://etf-board.internal/speed/v2/' + stamp + '/' + bucket, { method: 'GET' });
   const cache = await getCache();
   if (cache) {
     try {
@@ -2776,6 +2925,68 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   .rssec:has(.rstwrap>table:not(.indtbl)) > h4::after{
     content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:10px}
 }
+
+/* ---------- 板块地图 ---------- */
+.smhead{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap;margin-bottom:8px;
+  font-size:11.5px;color:var(--txt2)}
+.smhead b{font-variant-numeric:tabular-nums}
+.smgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+@media(max-width:1180px){.smgrid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:760px){
+  .smgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+  .scell{padding:6px 7px 5px}
+  .scell .sn{font-size:10.5px}
+  .scell .sv{font-size:14px}
+  .scell .ss{font-size:9.5px}
+  .scell .sbar{display:none}
+  .scell .ss .sa{display:none}
+}
+.scell{border:1px solid var(--line);border-radius:7px;padding:7px 9px 6px;background:var(--bg2);
+  cursor:pointer;position:relative;overflow:hidden}
+.scell:hover{border-color:#c3cad8}
+.scell.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.scell .sn{font-size:11.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scell .sv{font-size:16px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;
+  letter-spacing:-.2px}
+.scell .ss{font-size:10px;color:var(--txt3);white-space:nowrap;margin-top:1px;
+  font-variant-numeric:tabular-nums}
+.scell .sbar{height:2px;border-radius:2px;background:var(--bg3);margin-top:6px;overflow:hidden}
+.scell .sbar i{display:block;height:2px;border-radius:2px;background:var(--txt3);opacity:.45}
+.scell .sz{position:absolute;left:0;top:0;bottom:0;width:2.5px}
+.sdet{margin-top:9px;border-top:1px dashed var(--line);padding-top:7px;display:none}
+.sdet.show{display:block}
+.sdet .sdhd{font-size:11px;color:var(--txt3);margin-bottom:4px}
+.sdet .sr{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:11.5px;
+  border-bottom:1px dotted var(--line)}
+.sdet .sr:last-child{border-bottom:0}
+.sdet .sr .nm2{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sdet .sr .cd2{font-family:var(--mono);color:var(--txt3);font-size:10.5px;width:52px;text-align:right}
+.sdet .sr .v2{font-variant-numeric:tabular-nums;width:56px;text-align:right;font-weight:600}
+.sdet .sr .a2{font-variant-numeric:tabular-nums;width:62px;text-align:right;color:var(--txt3)}
+/* ---------- 盘中提醒 ---------- */
+.alertbar{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.abtn{cursor:pointer;padding:2px 9px;border-radius:20px;border:1px solid var(--line);
+  color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:11.5px;user-select:none}
+.abtn:hover{border-color:#c3cad8}
+.abtn.on{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
+.abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#d93a3a;
+  margin-right:4px;vertical-align:1px}
+.aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:11px}
+.aset.show{display:inline-flex}
+.aset input{width:40px;padding:1px 3px;font-size:11px;border:1px solid var(--line);
+  border-radius:4px;background:var(--bg2);color:var(--txt);text-align:center;
+  font-variant-numeric:tabular-nums}
+.aset input:focus{outline:none;border-color:var(--accent)}
+#alertBox{position:fixed;right:14px;top:14px;z-index:999;display:flex;flex-direction:column;
+  gap:6px;pointer-events:none}
+.aitem{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--txt3);
+  border-radius:6px;padding:7px 11px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:12px;
+  min-width:220px;max-width:300px;animation:ain .18s ease-out}
+@keyframes ain{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+.aitem.up{border-left-color:var(--up)}
+.aitem.dn{border-left-color:var(--down)}
+.aitem b{font-size:12.5px;font-variant-numeric:tabular-nums}
+.aitem small{display:block;color:var(--txt2);font-size:11px;margin-top:2px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -2792,6 +3003,16 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
   <div class="card"><div class="k">全市场成交额</div><div class="v" id="cAmt">-</div><div class="s">合计</div></div>
   <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
+</div>
+
+<div class="sec" id="secSec">
+  <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
+    <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
+  <div class="dnote">同一跟踪指数的多只 ETF 只算一次——40 只中证A500 不该占掉 AI 的权重。
+    这一栏回答的是「今天钱在往哪条线走」，不是「谁涨得最多」。</div>
+  <div class="smhead" id="secHead"><span>读取中…</span></div>
+  <div class="smgrid" id="secGrid"><div class="empty">正在读取行情…</div></div>
+  <div class="sdet" id="secDet"></div>
 </div>
 
 <div class="sec">
@@ -2852,6 +3073,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
     <button class="pri" id="btnAdd">添加</button>
     <button id="btnClear">清空</button>
+    <span class="alertbar">
+      <span class="abtn" id="btnAlert" title="在页面开着的时候，自选出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
+      <span class="aset" id="alertSet">
+        涨跌≥<input id="aChg" value="2.0">%
+        急变≥<input id="aSpd" value="0.8">%/3分
+        溢价≥<input id="aPm" value="2.0">%
+        <span class="abtn" id="btnPerm" title="允许后，页面在后台也能弹系统通知">开桌面通知</span>
+      </span>
+    </span>
     <span class="n" id="quoteTip" style="font-size:11px;color:var(--txt3)"></span>
   </div>
   <div class="tbl"><table>
@@ -2912,6 +3142,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </footer>
 </div>
 <div id="toast"></div>
+<div id="alertBox"></div>
 
 <div id="histMask">
   <div class="hpanel">
@@ -3234,6 +3465,160 @@ function groupCounts(){
   var c = {all:DATA.length, broad:0, cross:0, industry:0, bond:0, money:0, commodity:0};
   for (var i=0;i<DATA.length;i++){ var k=DATA[i].g; if(c[k]!=null) c[k]++; }
   return c;
+}
+
+/* ---------- 板块地图 ----------
+   为什么按「跟踪指数」聚合而不是按 ETF 名：
+   中证A500 有 40 只 ETF、沪深300 有 29 只、半导体主题下 6 个不同的指数。
+   直接对 ETF 求平均，权重被「同指数发得多」的板块吃掉，看到的不是轮动而是发行数量。
+   所以先把 ETF 归到指数（一个指数只出一票），再按指数归到板块。
+
+   涨跌幅取「该指数下成交额最大的那只 ETF」——同指数各只 ETF 的涨跌幅本该一样，
+   取大的是为了避开新发/迷你份额的跟踪误差。成交额则是**求和**，那是真实发生的钱。 */
+var SEC_DEF = [
+  ['半导体', ['芯片','半导体','集成电路','存储','光刻','晶圆']],
+  ['医药',   ['医药','医疗','生物','创新药','疫苗','中药','器械','健康','制药']],
+  ['人工智能', ['人工智能','算力','云计算','数据中心','大数据']],
+  ['软件信创', ['软件','计算机','信息技术','信创','数字经济']],
+  ['通信传媒', ['通信','5G','互联网','传媒','游戏','影视']],
+  ['新能源', ['光伏','电池','储能','新能源','风电','锂','碳中和','氢']],
+  ['军工',   ['军工','航天','航空','国防','卫星','兵器']],
+  ['金融',   ['证券','银行','保险','金融','非银','券商']],
+  ['消费',   ['食品','饮料','白酒','消费','家电','旅游','零售','美容','纺织',
+              '农业','畜牧','养殖','粮食','种植','饲料']],
+  ['资源',   ['化工','有色','钢铁','煤炭','石油','天然气','稀有金属','矿业','能源','建材','水泥']],
+  ['制造基建', ['地产','基建','建筑','工程机械','机械','工业','制造','机器人','汽车','智能驾驶']],
+  ['公用环保', ['电力','公用','水务','环保','燃气']]
+];
+var SEC_CACHE = {};
+function sectorOf(ix){
+  var v = SEC_CACHE[ix];
+  if (v !== undefined) return v;
+  v = null;
+  for (var i=0;i<SEC_DEF.length;i++){
+    var ws = SEC_DEF[i][1];
+    for (var j=0;j<ws.length;j++) if (ix.indexOf(ws[j]) >= 0){ v = SEC_DEF[i][0]; break; }
+    if (v) break;
+  }
+  SEC_CACHE[ix] = v;
+  return v;
+}
+
+var SECS = [], SEC_OPEN = null;
+
+function buildSectors(){
+  var byIx = {};
+  for (var i=0;i<DATA.length;i++){
+    var x = DATA[i];
+    if (x.g !== 'industry' || !x.ix) continue;
+    if (!isFinite(x.chg) || !isFinite(x.amt)) continue;
+    var o = byIx[x.ix];
+    if (!o) o = byIx[x.ix] = { ix:x.ix, c:x.c, n:x.n, chg:x.chg, best:x.amt, amt:x.amt, cnt:1 };
+    else {
+      o.cnt++; o.amt += x.amt;
+      if (x.amt > o.best){ o.best = x.amt; o.c = x.c; o.n = x.n; o.chg = x.chg; }
+    }
+  }
+  var sec = {};
+  for (var k in byIx){
+    var s = sectorOf(k);
+    if (!s) continue;
+    var t = sec[s] || (sec[s] = { k:s, ix:[], amt:0 });
+    t.ix.push(byIx[k]); t.amt += byIx[k].amt;
+  }
+  var arr = [];
+  for (var s2 in sec){
+    var t2 = sec[s2], wsum = 0, vsum = 0, up = 0;
+    for (var j=0;j<t2.ix.length;j++){
+      var q = t2.ix[j];
+      // 成交额为 0 的（停牌/新发）不参与加权，否则会把板块涨幅拉向 0
+      if (q.amt > 0){ wsum += q.amt; vsum += q.chg * q.amt; }
+      if (q.chg > 0) up++;
+    }
+    var ret = wsum > 0 ? vsum / wsum : 0;
+    arr.push({ k:s2, ret:ret, amt:t2.amt, n:t2.ix.length, up:up,
+               ix:t2.ix.slice().sort(function(a,b){ return b.chg - a.chg; }) });
+  }
+  arr.sort(function(a,b){ return b.ret - a.ret; });
+  return arr;
+}
+
+function fmtAmt(v){
+  if (!(v > 0)) return '—';
+  if (v >= 1e8) return (v/1e8).toFixed(v >= 1e9 ? 1 : 2) + '亿';
+  return Math.round(v/1e4) + '万';
+}
+
+function renderSectors(){
+  SECS = buildSectors();
+  var gd = document.getElementById('secGrid');
+  var hd = document.getElementById('secHead');
+  if (!SECS.length){
+    gd.innerHTML = '<div class="empty">暂无行业主题数据（非交易时段或行情源未就绪）</div>';
+    hd.innerHTML = '<span>—</span>';
+    document.getElementById('secDet').className = 'sdet';
+    return;
+  }
+  var tot = 0, mx = 0, nUp = 0, mxAmt = 0;
+  for (var i=0;i<SECS.length;i++){
+    tot += SECS[i].amt;
+    mx = Math.max(mx, Math.abs(SECS[i].ret));
+    mxAmt = Math.max(mxAmt, SECS[i].amt);
+    if (SECS[i].ret > 0) nUp++;
+  }
+  mx = Math.max(mx, 0.2);
+  // 分化度：最强减最弱。差值大＝结构性行情，差值小＝普涨普跌。
+  // 这是「轮动」和「一起动」的分界，比单看涨幅有用。
+  var spread = SECS[0].ret - SECS[SECS.length-1].ret;
+  hd.innerHTML = '<span>最强 <b class="up">' + SECS[0].k + ' ' + fpc(SECS[0].ret) + '</b></span>'
+    + '<span>最弱 <b class="down">' + SECS[SECS.length-1].k + ' ' + fpc(SECS[SECS.length-1].ret) + '</b></span>'
+    + '<span>分化 <b>' + spread.toFixed(2) + '</b> 个点</span>'
+    + '<span>' + SECS.length + ' 个板块 ' + nUp + ' 涨 ' + (SECS.length-nUp) + ' 跌</span>';
+
+  var h = '';
+  for (var j=0;j<SECS.length;j++){
+    var s = SECS[j];
+    var cls = s.ret > 0 ? 'up' : (s.ret < 0 ? 'down' : 'flat');
+    var sh = Math.min(1, Math.abs(s.ret) / mx);
+    var rgb = s.ret > 0 ? '217,58,58' : '14,154,97';
+    var share = tot > 0 ? s.amt / tot * 100 : 0;
+    var barW = mxAmt > 0 ? s.amt / mxAmt * 100 : 0;
+    h += '<div class="scell' + (SEC_OPEN === s.k ? ' on' : '') + '" data-sec="' + s.k + '"'
+      + ' title="' + s.k + '：' + s.n + ' 个跟踪指数，成交额 ' + fmtAmt(s.amt)
+      + '（占行业板块 ' + share.toFixed(1) + '%），' + s.up + '/' + s.n + ' 个指数上涨">'
+      + '<i class="sz" style="background:rgba(' + rgb + ',' + (0.15 + 0.85*sh).toFixed(2) + ')"></i>'
+      + '<div class="sn">' + s.k + '</div>'
+      + '<div class="sv ' + cls + '">' + fpc(s.ret) + '</div>'
+      + '<div class="ss">' + s.up + '/' + s.n + ' 指数<span class="sa"> · ' + fmtAmt(s.amt) + '</span></div>'
+      + '<div class="sbar" title="成交额占行业板块合计 ' + share.toFixed(1) + '%"><i style="width:'
+      + barW.toFixed(1) + '%;background:rgba(' + rgb + ',.55)"></i></div>'
+      + '</div>';
+  }
+  gd.innerHTML = h;
+
+  var det = document.getElementById('secDet');
+  if (SEC_OPEN){
+    var cur = null;
+    for (var q=0;q<SECS.length;q++) if (SECS[q].k === SEC_OPEN) cur = SECS[q];
+    if (!cur){ SEC_OPEN = null; det.className = 'sdet'; return; }
+    var rows = cur.ix.slice(0, 8), dh = '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
+      + cur.n + ' 个跟踪指数（同指数多只 ETF 已合并）</div>';
+    for (var r=0;r<rows.length;r++){
+      var o = rows[r];
+      var c2 = o.chg > 0 ? 'up' : (o.chg < 0 ? 'down' : 'flat');
+      dh += '<div class="sr" data-code="' + esc(o.c) + '">'
+        + '<span class="nm2">' + esc(o.ix) + '</span>'
+        + '<span class="cd2">' + esc(o.c) + '</span>'
+        + '<span class="v2 ' + c2 + '">' + fpc(o.chg) + '</span>'
+        + '<span class="a2">' + fmtAmt(o.amt) + '</span></div>';
+    }
+    if (cur.n > rows.length) dh += '<div class="sr"><span class="nm2" style="color:var(--txt3)">'
+      + '其余 ' + (cur.n - rows.length) + ' 个指数未列出</span></div>';
+    det.innerHTML = dh;
+    det.className = 'sdet show';
+  } else {
+    det.className = 'sdet';
+  }
 }
 
 /* ---------- 渲染 ---------- */
@@ -4221,29 +4606,47 @@ function spdPct(v){
   return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
 }
 
-/* 迷你线：横轴是最近 20 分钟，与「涨速」的窗口不是一回事，所以颜色按窗口
-   方向给、形状按 20 分钟给——「一路阴跌最后两分钟拉起来」这种形态才看得见。
-   颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量（--up/--down 改主题时
-   这里要跟着改）。
+/* 服务端给的 pv 是相对**今开**的百分比（0 = 今开）。但行情软件的 0 轴是**昨收**，
+   两者在跳空日会彻底背离：588000 低开 4.6%，全天都在昨收下方运行，按今开算却是
+   一路上扬 +2.2%——迷你线画出来像在涨，左边数字却是绿的，和分时图对照就是「对不上」。
+
+   这里换算到昨收基准，让迷你线、涨跌幅、分时图三者同向。不需要额外请求：服务端
+   给的最后一点 pv_last 对应现价 price，于是今开 = price / (1 + pv_last/100)，
+   再套一遍就得到相对昨收的百分比。用快照的 price/prev 而不是 chg 字段，
+   因为 chg 只有两位小数，低价品种会带来 0.01% 级别的抖动。 */
+function toPrevBase(pv, price, prev){
+  if (!pv || pv.length < 3 || !(price > 0) || !(prev > 0)) return pv;
+  var lastPct = pv[pv.length - 1];
+  if (!isFinite(lastPct)) return pv;
+  var open = price / (1 + lastPct / 100);
+  if (!(open > 0)) return pv;
+  var k = open / prev, out = [], i;
+  for (i = 0; i < pv.length; i++) out.push(+((k * (1 + pv[i] / 100) - 1) * 100).toFixed(2));
+  return out;
+}
+
+/* 迷你线：横轴是当日 9:30 至今的完整分时，与「涨速」的窗口不是一回事，所以颜色
+   按全天方向给、形状按全天给——「上午冲高、午后一路阴跌、最后两分钟拉起来」这种
+   形态，只有拉长到全天才看得见。颜色硬编码是因为 SVG 的 stroke 属性不吃 CSS 变量
+   （--up/--down 改主题时这里要跟着改）。
 
    纵向尺度是这一栏最容易画错的地方。原先每行按自己的 min/max 拉满，结果
    0.18% 的横盘和 0.45% 的急拉画出来一样高、一样陡——一列全是同形状的锯齿，
    看起来「比例很怪」，而且丢掉了「动得多不多」这个信息。
    现在：
-   - 中线 = 20 分钟前的价格，虚线画出来当基准，「贴着中线 = 没怎么动」；
+   - 中线 = 昨收，虚线画出来当基准，和分时图的 0 轴是同一根线；
    - 全池共用一把尺子（spdScale），幅度按同一比例换算，行与行之间可比；
    - 超尺的顶到边，短的自然就矮——10 只里谁走得最远一眼能排出来。 */
 function spdSpark(vals, up, sc){
+  // vals 是相对昨收的百分比：0 就是昨收，中线画在那儿
   if (!vals || vals.length < 3) return '<span class="spk"></span>';
   var w = 88, h = 24, pad = 3, i;
-  var base = vals[0];
-  if (!(base > 0)) return '<span class="spk"></span>';
-  // sc 是相对幅度（基准价的百分比），缺省 0.25% 不至于把线画成一条直杠
-  var rng = base * (sc > 0 ? sc : 0.0025);
+  // sc 是全池统一幅度（百分比），缺省 0.8% 不至于把线画成一条直杠
+  var rng = sc > 0 ? sc : 0.8;
   var mid = h / 2, half = mid - pad, d = '';
   for (i = 0; i < vals.length; i++){
     var x = pad + (i / (vals.length - 1)) * (w - pad * 2);
-    var y = mid - ((vals[i] - base) / rng) * half;
+    var y = mid - (vals[i] / rng) * half;
     if (y < pad) y = pad;
     if (y > h - pad) y = h - pad;
     d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
@@ -4256,27 +4659,32 @@ function spdSpark(vals, up, sc){
     + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>';
 }
 
-/* 全池共用一把纵向尺子：取每只「20 分钟内相对起点最大偏离」的 75 分位。
-   0.06% 是下限（那种一根直线的心电图没必要占满），0.8% 是上限（有一只暴涨
-   时不至于把其余 39 只全压成直线）。实测盘中这个分位落在 0.3%–0.5%。 */
+/* 全池共用一把纵向尺子：取每只「当日相对昨收最大偏离（%）」的 65 分位。
+   0.15% 是下限（那种一根直线的心电图没必要占满），5% 是上限（有一只暴涨
+   时不至于把其余 39 只全压成直线）。分位从 75 降到 65 是配合全天窗口调的：
+   20 分钟窗口里大家的振幅都在 0.3%~0.5%，75 分位正好把线铺满；拉到全天之后
+   振幅差得远（题材 ETF 3%、宽基 0.8%），75 分位会把大半的线压成矮墩墩一条，
+   降到 65 让多数线用掉六七成高度，代价是四分之一的线会顶到框边——顶边本身
+   也是信息（「这只今天动得比同类猛」）。
+
+   上限从 3% 放到 5%：基准换成昨收之后，跳空日的幅度不再被今开吃掉，
+   低开高走的那几只 max|pv| 能到 5%~7%，卡在 3% 会让一整列全顶边。 */
 function spdScale(rows){
-  var a = [], i, j, pv, base, m, dv;
+  var a = [], i, j, pv, m, dv;
   for (i = 0; i < rows.length; i++){
-    pv = rows[i].pv;
+    pv = rows[i].pvn || rows[i].pv;
     if (!pv || pv.length < 3) continue;
-    base = pv[0];
-    if (!(base > 0)) continue;
     m = 0;
-    for (j = 1; j < pv.length; j++){
-      dv = Math.abs(pv[j] - base) / base;
+    for (j = 0; j < pv.length; j++){
+      dv = Math.abs(pv[j]);
       if (dv > m) m = dv;
     }
     if (m > 0) a.push(m);
   }
-  if (!a.length) return 0.0025;
+  if (!a.length) return 0.8;
   a.sort(function(x, y){ return x - y; });
-  var q = a[Math.min(a.length - 1, Math.floor(a.length * 0.75))];
-  return Math.min(0.008, Math.max(0.0006, q));
+  var q = a[Math.min(a.length - 1, Math.floor(a.length * 0.65))];
+  return Math.min(5, Math.max(0.3, q));
 }
 
 function renderSpeed(){
@@ -4309,6 +4717,18 @@ function renderSpeed(){
   }
   up.sort(function(a, b){ return b.v - a.v; });
   dn.sort(function(a, b){ return a.v - b.v; });
+
+  /* 先把 pv 从「相对今开」换算到「相对昨收」——迷你线和分时图的 0 轴必须是同一根，
+     否则跳空日会出现「线在涨、数字在跌」。换算要用快照里的现价和昨收，缺任一只
+     就退回今开基准（线照样能画，只是那一行的 0 轴和别的行不是一个意思）。 */
+  var it0;
+  for (i = 0; i < SPD.rows.length; i++){
+    it0 = findItem(SPD.rows[i].c);
+    SPD.rows[i].pvn = (it0 && it0.p > 0 && it0.pc > 0)
+      ? toPrevBase(SPD.rows[i].pv, it0.p, it0.pc)
+      : SPD.rows[i].pv;
+  }
+
   // 尺子按整个池子算，不按这两栏算：左右两栏、切换 3/5 分钟都得同一把尺，
   // 否则「急涨第一名」和「急跌第一名」的波形幅度没法放在一起看
   var SC = spdScale(SPD.rows);
@@ -4317,13 +4737,18 @@ function renderSpeed(){
     var x = o.r, it = findItem(x.c);
     var nm = it ? it.n : x.c;
     var hot = o.q >= SPD_VOL_HOT;
+    /* 线的颜色跟全天方向走（相对昨收），不跟 3 分钟涨速走：否则跳空低开的日子
+       会出现「绿线一路向上」这种自相矛盾的图形。左边数字仍是涨速、仍按涨速
+       配色——那才是这一栏排序的依据，「急跌但今天还涨着」本身就是有用的信息。 */
+    var pvx = x.pvn || x.pv;
+    var dayUp = pvx && pvx.length ? pvx[pvx.length - 1] >= 0 : true;
     // sp 和标称窗口差得多就标 ~：可能是数据缺口把基准推远了（尾盘 14:56
     // 直接跳 15:00，3 分钟实际跨了 4 分钟），也可能是午后刚开盘窗口还没走满
     var far = Math.abs(x.sp - SPD.w) >= 2;
     return '<div class="spdrow" data-c="' + x.c + '">'
       + '<div class="spdnm" title="' + nm + '  ' + x.c + '">'
         + '<span class="nmx">' + nm + '</span><em>' + x.c + '</em></div>'
-      + spdSpark(x.pv, o.v >= 0, SC)
+      + spdSpark(pvx, dayUp, SC)
       + '<div class="spdv" style="color:' + (o.v >= 0 ? 'var(--up)' : 'var(--down)') + '">'
         + (far ? '~' : '') + spdPct(o.v) + '</div>'
       + '<div class="spdq' + (hot ? ' hot' : '') + '" title="量比：最近 ' + SPD.w
@@ -4365,8 +4790,8 @@ function renderSpeed(){
       + '量比 = 最近 ' + SPD.w + ' 分钟每分钟量 ÷ 此前 30 分钟每分钟量，'
       + '到 <b>' + SPD_VOL_HOT + '×</b> 标黄。收盘集合竞价那根按 4 分钟折算，'
       + '否则尾盘会凭空多出十倍放量。'
-      + '小走势线是<b>最近 20 分钟</b>的价格，虚线是 20 分钟前的位置——'
-      + '贴着虚线就是没怎么动，离得远才是真在走。'
+      + '小走势线是<b>当日 9:30 至今</b>的分时，虚线是<b>昨收</b>，和分时图同一根 0 轴——'
+      + '线在虚线上方就是全天还在涨，颜色也按这条线的方向给（数字仍是 ' + SPD.w + ' 分钟涨速，两者可以不同向）。'
       + (spdClosed() ? '<br>已收盘：这里是<b>今天最后几分钟</b>的涨速，明天 9:30 才重新走动。' : '');
   }
 }
@@ -4772,13 +5197,12 @@ function renderHold(j){
      混着写会出现「前 20 大 26%」这种在 PCF 下永远不可能的数字，用户会以为算错。 */
   var isPcf = j.src === 'pcf';
 
-  /* 先按权重取前 N 只，再按贡献排。权重 0.00% 的条目不进表——贡献恒为 0，
-     只占行高。
+  /* 一律按权重从大到小。权重 0.00% 的条目不进表——贡献恒为 0，只占行高。
 
      行数分两档：默认只列权重前 20，脚注写清还剩多少只、占多少权重，想看全量
      就点一下「展开全部」。PCF 是全量清单，中证500 那只有 500 个成分，一上来就
-     铺 500 行等于把「今天谁在拉」这件事埋进几十屏的滚动里——20 行刚好一屏，
-     按贡献排完，前几只就是答案。展开后仍然是同一份数据，不重新请求。 */
+     铺 500 行等于把「这只 ETF 押在哪」埋进几十屏的滚动里——20 行刚好一屏，
+     权重排序下前几只就是这只 ETF 的仓位骨架。展开后仍然是同一份数据，不重新请求。 */
   var all = (j.rows || []).filter(function(x){ return x.w >= 0.005; })
     .sort(function(a, b){ return b.w - a.w; });
   var lim = Math.min(H.holdAll ? all.length : 20, all.length);
@@ -4789,13 +5213,11 @@ function renderHold(j){
   var it = findItem(H.code);
   var ec = (it && isFinite(it.chg)) ? it.chg : null;
 
-  // 有行情的按贡献从拉到砸；停牌/取不到行情的沉到底，别插在中间打断阅读
-  rows.sort(function(a, b){
-    if (a.ctr == null && b.ctr == null) return b.w - a.w;
-    if (a.ctr == null) return 1;
-    if (b.ctr == null) return -1;
-    return b.ctr - a.ctr;
-  });
+  /* 按权重从大到小：这一栏回答的是「持仓长什么样」，先看谁占得重。
+     原来按贡献（权重×涨跌）排，涨得多的中小权重会挤到茅台前面，翻半天找不到
+     「这只 ETF 到底押在哪」；贡献有颜色条和数值，谁在拉谁在砸扫一眼就看得到，
+     不需要靠排序来回答。 */
+  rows.sort(function(a, b){ return b.w - a.w; });
 
   var sum = 0, got = 0, mx = 0, wsum = 0, i, r;
   for (i = 0; i < rows.length; i++){
@@ -4809,10 +5231,16 @@ function renderHold(j){
   // 注意这里是模板字符串：正则里的反斜杠要写两个，写成 \\d 会被当成 d
   var dayTxt = (j.asof || '-').replace(/^(\\\\d{4})(\\\\d{2})(\\\\d{2})$/, '$2-$3');
   if (isPcf){
-    hd.innerHTML = '<span>全部 <b>' + all.length + '</b> 只 · 权重合计 <b>100%</b>'
+    /* miss = 清单里有、但行情没取到的只数（退市、停牌无昨收、代码换过）。
+       这些不进行，权重就按剩下的归一化到 100%——数字看着正常，其实分母缩了。
+       所以「全部 N 只 · 权重合计 100%」这句话只在 miss=0 时成立，有缺就把缺的
+       只数写出来，别让人拿一张静默缩过水的表当全量。 */
+    var missN = j.miss || 0;
+    hd.innerHTML = '<span>清单 <b>' + (j.total || all.length + missN) + '</b> 只'
+      + (missN > 0 ? ' · <b>' + missN + '</b> 只无行情（权重按其余归一化）' : '')
+      + ' · 权重合计 <b>100%</b>'
       + ' · 交易所 PCF <b>' + esc(dayTxt) + '</b>'
       + (cut > 0 ? ' · 列出权重前 <b>' + rows.length + '</b>（可展开）' : '')
-      + (got < rows.length ? ' · <b>' + (rows.length - got) + '</b> 只无行情' : '')
       // 展开后表头给一个「收起」：几百行滚到底才能收，太远了
       + (H.holdAll ? ' · <i class="hcollapse" data-holdm="0">收起</i>' : '')
       + '</span><span>权重 = 股数 × 昨收归一化 · 贡献 = 权重 × 今日涨跌（百分点）</span>';
@@ -6485,7 +6913,7 @@ function loadFull(){
     var hasPm = items.some(function(x){ return x.pm != null; });
     void hasPm;
 
-    renderCards(); renderList(); renderWatch();
+    renderCards(); renderList(); renderWatch(); renderSectors();
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
     // 涨速榜的池子是从这份快照里挑的，第一次拿到数据才有得挑
     if (!SPD.rows.length && !SPD.loading) spdFetch();
@@ -6511,6 +6939,154 @@ function toTX(c){
   if (c.charAt(0) === '0' || c.charAt(0) === '1') return 'sz' + c;
   return 'sh' + c;
 }
+
+/* ---------- 盘中提醒 ----------
+   只对「自选」生效，不做全市场扫描：432 只全市场每 5 秒扫一遍，一天能弹几百条，
+   弹到第二次就没人看了。盯市要的是「我关心的东西出事了」，不是「市场在动」。
+
+   能力边界写在明处：这是**页面内**提醒，标签页关掉就没了。真要做 7×24 推送得配
+   Web Push（需要 VAPID 密钥和订阅端点持久化），或走企业微信机器人，那是另一套东西。
+   这里不假装自己是推送。 */
+var ALERT = { on:false, chg:2.0, spd:0.8, pm:2.0 };
+var ALERT_MUTE = {};          // key -> 上次提醒时间，不落盘
+var ALERT_HIT = {};           // 当日已提醒过的 key（涨跌幅这类一天只提一次）
+var ALERT_SPD = {};           // code -> [{t,p}]，用来算 3 分钟变化
+var ALERT_DAY = new Date().toDateString();
+
+try {
+  var aj = localStorage.getItem('etf_alert');
+  if (aj){ var ao = JSON.parse(aj);
+    ALERT.chg = +ao.chg || 2.0; ALERT.spd = +ao.spd || 0.8; ALERT.pm = +ao.pm || 2.0; }
+} catch(e){}
+
+function alertSave(){
+  try { localStorage.setItem('etf_alert', JSON.stringify({chg:ALERT.chg, spd:ALERT.spd, pm:ALERT.pm})); } catch(e){}
+}
+
+function alertPush(title, body, cls, key){
+  var box = document.getElementById('alertBox');
+  if (!box) return;
+  var d = document.createElement('div');
+  d.className = 'aitem ' + (cls || '');
+  d.innerHTML = '<b>' + esc(title) + '</b><small>' + esc(body) + '</small>';
+  box.appendChild(d);
+  setTimeout(function(){ if (d.parentNode) d.parentNode.removeChild(d); }, 9000);
+  while (box.children.length > 4) box.removeChild(box.firstChild);
+
+  if (window.Notification && Notification.permission === 'granted'){
+    try { new Notification(title, { body: body, tag: key, silent: false }); } catch(e){}
+  }
+  if (document.hidden){
+    document.title = '● ' + title.replace(/^.*?·/, '') + ' · ETF 盯盘';
+  }
+}
+
+/* 冷却：同一标的同一类型 10 分钟内只响一次。没有这个，一只票在阈值附近来回抖，
+   5 秒一条，比不提醒更糟。 */
+function alertCool(key, min){
+  var now = Date.now(), last = ALERT_MUTE[key];
+  if (last && now - last < (min || 10) * 60000) return false;
+  ALERT_MUTE[key] = now;
+  return true;
+}
+
+function alertScan(items){
+  if (!ALERT.on || !isOpen()) return;
+  var today = new Date().toDateString();
+  if (today !== ALERT_DAY){ ALERT_DAY = today; ALERT_HIT = {}; ALERT_SPD = {}; }
+
+  var now = Date.now();
+  for (var c in items){
+    var x = items[c];
+    if (!x || !isFinite(x.chg)) continue;
+
+    // 1) 当日涨跌幅越线：一天只提一次，否则每 5 秒响一遍
+    if (Math.abs(x.chg) >= ALERT.chg){
+      var k1 = 'chg|' + c + '|' + ALERT_DAY;
+      if (!ALERT_HIT[k1]){
+        ALERT_HIT[k1] = 1;
+        alertPush(x.n + ' ' + (x.chg > 0 ? '+' : '') + x.chg.toFixed(2) + '%',
+          '自选当日涨跌幅越过 ' + ALERT.chg + '% 阈值 · 现价 ' + x.p.toFixed(3),
+          x.chg > 0 ? 'up' : 'dn', k1);
+      }
+    }
+
+    // 2) 3 分钟急变：滚动窗口，超出阈值再按冷却去重
+    var arr = ALERT_SPD[c] || (ALERT_SPD[c] = []);
+    arr.push({ t: now, p: x.p });
+    while (arr.length && now - arr[0].t > 180000) arr.shift();
+    if (arr.length >= 3){
+      var base = arr[0].p, mv = base > 0 ? (x.p / base - 1) * 100 : 0;
+      if (Math.abs(mv) >= ALERT.spd){
+        var k2 = 'spd|' + c;
+        if (alertCool(k2, 10)){
+          alertPush(x.n + ' 3 分钟 ' + (mv > 0 ? '+' : '') + mv.toFixed(2) + '%',
+            '从 ' + base.toFixed(3) + ' 到 ' + x.p.toFixed(3) + ' · 成交 ' + fmtAmt(x.amt),
+            mv > 0 ? 'up' : 'dn', k2);
+        }
+      }
+    }
+
+    // 3) 溢价越线：跨境 ETF 最容易出事，折价反而是机会，两个方向都提
+    if (x.pm != null && isFinite(x.pm) && Math.abs(x.pm) >= ALERT.pm){
+      var k3 = 'pm|' + c + '|' + Math.round(x.pm);
+      if (alertCool(k3, 30)){
+        alertPush(x.n + ' 溢价 ' + (x.pm > 0 ? '+' : '') + x.pm.toFixed(2) + '%',
+          (x.pm > 0 ? '场内比净值贵，追高要付溢价' : '场内比净值便宜，注意流动性和限购')
+            + ' · IOPV ' + (x.iopv != null ? x.iopv.toFixed(3) : '—'),
+          x.pm > 0 ? 'up' : 'dn', k3);
+      }
+    }
+  }
+}
+
+(function(){
+  var btn = document.getElementById('btnAlert');
+  var set = document.getElementById('alertSet');
+  if (!btn) return;
+  var paint = function(){
+    btn.className = 'abtn' + (ALERT.on ? ' on' : '');
+    btn.innerHTML = ALERT.on ? '<i></i>提醒 开' : '提醒 关';
+    set.className = 'aset' + (ALERT.on ? ' show' : '');
+  };
+  paint();
+  btn.onclick = function(){
+    ALERT.on = !ALERT.on;
+    paint();
+    if (ALERT.on){
+      ALERT_MUTE = {}; ALERT_SPD = {};
+      var n = Object.keys(LIVE).length || watch.length;
+      alertPush('盯盘提醒已开启', '监控 ' + n + ' 只自选 · 涨跌≥' + ALERT.chg + '% · 3分钟≥'
+        + ALERT.spd + '% · 溢价≥' + ALERT.pm + '%', '', 'on');
+    }
+    if (ALERT.on && window.Notification && Notification.permission === 'default'){
+      try { Notification.requestPermission(); } catch(e){}
+    }
+  };
+  var bind = function(id, key){
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.onchange = function(){
+      var v = parseFloat(this.value);
+      if (!isFinite(v) || v <= 0){ this.value = ALERT[key].toFixed(1); return; }
+      ALERT[key] = v; alertSave();
+      if (key === 'chg') ALERT_HIT = {};
+    };
+  };
+  bind('aChg','chg'); bind('aSpd','spd'); bind('aPm','pm');
+  var pb = document.getElementById('btnPerm');
+  if (pb) pb.onclick = function(){
+    if (!window.Notification){ toast('这台设备的浏览器不支持桌面通知'); return; }
+    Notification.requestPermission().then(function(r){
+      toast(r === 'granted' ? '已允许桌面通知' : '通知被拒绝，只能看页面浮层');
+    });
+  };
+})();
+
+document.addEventListener('visibilitychange', function(){
+  if (!document.hidden) document.title = 'ETF 全市场盯盘';
+});
+
 function loadTXQuotes(){
   if (!watch.length) return;
   var tx = [];
@@ -6539,6 +7115,7 @@ function loadTXQuotes(){
     if (Object.keys(out).length){
       LIVE = out;
       renderWatch();
+      alertScan(out);
       hRefresh();                    // 自选 5 秒一刷，弹窗里那只也一起动
       var tip = document.getElementById('quoteTip');
       if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒')
@@ -6604,6 +7181,19 @@ document.getElementById('btnClear').onclick = function(){
 };
 
 document.body.addEventListener('click', function(e){
+  var sc = e.target.closest('[data-sec]');
+  if (sc){
+    var sk = sc.getAttribute('data-sec');
+    SEC_OPEN = (SEC_OPEN === sk) ? null : sk;
+    renderSectors();
+    return;
+  }
+  var sr = e.target.closest('.sdet .sr[data-code]');
+  if (sr){
+    var scd = sr.getAttribute('data-code');
+    openHist(scd, (findItem(scd) || {}).n || scd);
+    return;
+  }
   var ix = e.target.closest('[data-ix]');
   if (ix){
     var v = ix.getAttribute('data-ix');
@@ -6647,6 +7237,10 @@ Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
     renderList();
   };
 });
+(function(){
+  var b = document.getElementById('btnSec');
+  if (b) b.onclick = function(){ SEC_CACHE = {}; SECS = buildSectors(); renderSectors(); toast('已按最新快照重算板块'); };
+})();
 document.getElementById('sortSel').onchange = function(){ sortKey = this.value; renderList(); };
 document.getElementById('limitSel').onchange = function(){ limit = parseInt(this.value,10); renderList(); };
 (function(){
