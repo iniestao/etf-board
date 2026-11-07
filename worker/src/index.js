@@ -313,7 +313,7 @@ async function serveAll(env, ctx) {
 
    为什么让前端 POST 存档而不是服务端自己解析：全量快照是 600KB 的原始 JSON，
    在 Worker 里 parse 一次要吃掉不少 CPU；而且板块划分（SEC_DEF 关键词表）在
-   page.js 里，服务端再复制一份就会两边漂移。前端算完只 POST 12 个数字，成本可忽略。
+   page.js 里，服务端再复制一份就会两边漂移。前端算完只 POST 三十几个数字，成本可忽略。
    代价是「当天没人打开页面就缺一天」，5 日均值缺一两天不影响结论。
 
    2026-11-07 从 v1 升到 v2：板块成员变了（科创半导体/芯片/创新药 这类主题原先
@@ -323,9 +323,12 @@ async function serveAll(env, ctx) {
    同日再升到 v3：板块成交额改成「每个跟踪指数只算代表标的」，不再把同指数
    克隆的成交额相加（克隆倍数 1.1×~2.3×，半导体 39.8%→42.8%）。
 
-   同日再升到 v4：板块从 12 格重划成 16 格（申万骨架 + 港股单列），键不一样了。 */
+   同日再升到 v4：板块从 12 格重划成 16 格（申万骨架 + 港股单列），键不一样了。
 
-const SEC_DAILY_KEY = 'sec-daily-v4';
+   同日再升到 v5：板块分成 A股/港股/跨境 三组，各组独立分母，键改成「组码/板块名」
+   （A股和港股都有「医药」「消费」，只用板块名会互相覆盖）。 */
+
+const SEC_DAILY_KEY = 'sec-daily-v5';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {
@@ -352,14 +355,15 @@ async function saveSecDaily(request, env) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return json({ ok: false, error: 'bad_date' });
   if (!s || typeof s !== 'object' || Array.isArray(s)) return json({ ok: false, error: 'bad_sectors' });
 
-  // 只收 12 个数字，键名与成交额都做一次清洗：这个接口在前端跑，挡不住有人手搓
+  // 键名与成交额都做一次清洗：这个接口在前端跑，挡不住有人手搓。
+  // 上限 64 个：分三组后是 18+8+约 6 格，键名形如「hk/港股互联网」（组码/板块名）。
   const clean = {};
   let n = 0;
   for (const k in s) {
-    if (n++ > 20) break;
+    if (n++ > 64) break;
     const v = +s[k];
     if (!k || !isFinite(v) || v < 0) continue;
-    clean[k.slice(0, 12)] = Math.round(v);
+    clean[k.slice(0, 20)] = Math.round(v);
   }
   if (!Object.keys(clean).length) return json({ ok: false, error: 'empty' });
 

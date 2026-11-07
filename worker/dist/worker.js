@@ -312,7 +312,7 @@ async function serveAll(env, ctx) {
 
    为什么让前端 POST 存档而不是服务端自己解析：全量快照是 600KB 的原始 JSON，
    在 Worker 里 parse 一次要吃掉不少 CPU；而且板块划分（SEC_DEF 关键词表）在
-   page.js 里，服务端再复制一份就会两边漂移。前端算完只 POST 12 个数字，成本可忽略。
+   page.js 里，服务端再复制一份就会两边漂移。前端算完只 POST 三十几个数字，成本可忽略。
    代价是「当天没人打开页面就缺一天」，5 日均值缺一两天不影响结论。
 
    2026-11-07 从 v1 升到 v2：板块成员变了（科创半导体/芯片/创新药 这类主题原先
@@ -322,9 +322,12 @@ async function serveAll(env, ctx) {
    同日再升到 v3：板块成交额改成「每个跟踪指数只算代表标的」，不再把同指数
    克隆的成交额相加（克隆倍数 1.1×~2.3×，半导体 39.8%→42.8%）。
 
-   同日再升到 v4：板块从 12 格重划成 16 格（申万骨架 + 港股单列），键不一样了。 */
+   同日再升到 v4：板块从 12 格重划成 16 格（申万骨架 + 港股单列），键不一样了。
 
-const SEC_DAILY_KEY = 'sec-daily-v4';
+   同日再升到 v5：板块分成 A股/港股/跨境 三组，各组独立分母，键改成「组码/板块名」
+   （A股和港股都有「医药」「消费」，只用板块名会互相覆盖）。 */
+
+const SEC_DAILY_KEY = 'sec-daily-v5';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {
@@ -351,14 +354,15 @@ async function saveSecDaily(request, env) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return json({ ok: false, error: 'bad_date' });
   if (!s || typeof s !== 'object' || Array.isArray(s)) return json({ ok: false, error: 'bad_sectors' });
 
-  // 只收 12 个数字，键名与成交额都做一次清洗：这个接口在前端跑，挡不住有人手搓
+  // 键名与成交额都做一次清洗：这个接口在前端跑，挡不住有人手搓。
+  // 上限 64 个：分三组后是 18+8+约 6 格，键名形如「hk/港股互联网」（组码/板块名）。
   const clean = {};
   let n = 0;
   for (const k in s) {
-    if (n++ > 20) break;
+    if (n++ > 64) break;
     const v = +s[k];
     if (!k || !isFinite(v) || v < 0) continue;
-    clean[k.slice(0, 12)] = Math.round(v);
+    clean[k.slice(0, 20)] = Math.round(v);
   }
   if (!Object.keys(clean).length) return json({ ok: false, error: 'empty' });
 
@@ -3016,6 +3020,23 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .smhead{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap;margin-bottom:8px;
   font-size:11.5px;color:var(--txt2)}
 .smhead b{font-variant-numeric:tabular-nums}
+/* 三组（A股/港股/跨境）各自可折起。组头一行放得下「几个板块/合计/最强/最弱/分化/涨跌」，
+   收起后这行本身就是摘要，不用点开也能看个大概。 */
+.sgrp{margin-top:9px}
+.sgrp:first-child{margin-top:0}
+.sghd{display:flex;align-items:center;gap:3px 10px;flex-wrap:wrap;cursor:pointer;
+  padding:5px 9px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;
+  background:var(--bg3);font-size:11px;color:var(--txt2);user-select:none}
+.sghd:hover{border-color:#c3cad8}
+.sghd .sgc{width:0;height:0;flex:none;margin-right:2px;
+  border-left:4.5px solid var(--txt3);border-top:3.5px solid transparent;
+  border-bottom:3.5px solid transparent;transform:rotate(90deg);transition:transform .12s}
+.sgrp.fold .sghd .sgc{transform:rotate(0)}
+.sghd .sgk{font-size:12px;font-weight:700;color:var(--txt);letter-spacing:.2px}
+.sghd .sgt{color:var(--txt3)}
+.sghd .sgm{white-space:nowrap}
+.sghd .sgm b{font-variant-numeric:tabular-nums}
+.sgrp.fold .smgrid,.sgrp.fold .sdet{display:none}
 .smgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
 @media(max-width:1180px){.smgrid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:760px){
@@ -3049,6 +3070,12 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sdet{margin-top:9px;border-top:1px dashed var(--line);padding-top:7px;display:none}
 .sdet.show{display:block}
 .sdet .sdhd{font-size:11px;color:var(--txt3);margin-bottom:4px}
+/* 明细两列：指数多的时候（新能源 6 条、计算机 19 条）单列会把面板拉得很长，
+   两列在 1500px 下正好，窄屏退回单列。 */
+/* 用多列而不是 grid：这一列是按涨幅排序的，要竖着读。grid 是行优先，
+   第二行会跳到右边一列，读起来是横着串的。column-rule 顺带把两列分开。 */
+.sdet .sdrwrap{column-count:2;column-gap:28px;column-rule:1px solid #d7dce5}
+@media(max-width:900px){.sdet .sdrwrap{column-count:1}}
 .sdet .sr{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:11.5px;
   border-bottom:1px dotted var(--line)}
 .sdet .sr:last-child{border-bottom:0}
@@ -3119,13 +3146,14 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <div class="sec" id="secSec">
   <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
     <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
-  <div class="dnote">按申万一级做骨架：通信（光模块/CPO）与传媒（游戏影视）分开，半导体从电子里单列，
-    港股/中概单独一格不与 A 股混。宽基、美日欧、债券货币不计入——它们的驱动不是行业轮动。
-    同一跟踪指数的多只 ETF 只算一次，否则 40 只中证A500 会占掉 AI 的权重。
-    这一栏回答的是「今天钱在往哪条线走」，不是「谁涨得最多」。</div>
+  <div class="dnote">分三组：A股、港股、跨境。三组<b>各自算占比</b>，分母不混——跨市场的涨跌幅
+    本来也不可比（汇率、交易时段、投资者结构都不同）。A 股用申万一级骨架：通信（光模块/CPO）
+    与传媒（游戏影视）分开，半导体从电子里单列，上游资源（有色/煤炭/石油）与中游材料
+    （化工/钢铁/建材）分开。港股按同一套行业口径分格，跨境只按国家分。
+    宽基、风格（红利/价值）、商品、债券货币都不计入——它们不回答「钱往哪条线走」。
+    同一跟踪指数的多只 ETF 只算一次，否则 40 只中证A500 会占掉 AI 的权重。</div>
   <div class="smhead" id="secHead"><span>读取中…</span></div>
-  <div class="smgrid" id="secGrid"><div class="empty">正在读取行情…</div></div>
-  <div class="sdet" id="secDet"></div>
+  <div id="secBody"><div class="empty">正在读取行情…</div></div>
 </div>
 
 <div class="sec">
@@ -3611,76 +3639,105 @@ function groupCounts(){
    直接对 ETF 求平均，权重被「同指数发得多」的板块吃掉，看到的不是轮动而是发行数量。
    所以先把 ETF 归到指数（一个指数只出一票），再按指数归到板块。
 
-   2026-11-07 重划：骨架换成申万一级，但按 ETF 的实际供给做了三处调整——
-   1) 通信与传媒拆开。光模块/CPO 是通信设备（申万通信），游戏影视才是传媒；
-      原来合成一格，「通信传媒」里一半是港股互联网、另一半混着游戏，读不出东西。
-   2) 半导体从电子里单列。申万「电子」包含半导体/面板/元件/消费电子，但 ETF 供给
-      上半导体占了电子类的绝大多数，合在一格等于只剩半导体，拆开才有信息。
-   3) 港股/中概单列且优先匹配。中证港股通互联网、恒生科技、中概互联 这些是跨境，
-      驱动在港股，不能混进 A 股的通信/医药——原来就这么混着，通信传媒 14.6% 里
-      有一半是港股通互联网。恒生A股XX（恒生编的 A 股行业指数）例外，摘掉前缀照常归行业。
-   申万 31 个一级里，家电/纺服/轻工/商贸/社服并进「消费」，钢铁/煤炭/石油/化工/建材
-   并进「资源」，地产/建筑/机械并进「制造基建」，公用/交运/环保并进「公用环保」——
-   ETF 供给太少的行业单独占一格只会出现「—」。31 个行业的完整对照见 README。 */
-var SEC_DEF = [
-  ['港股',     ['恒生','港股通','港股','中概','中国互联网','H股','香港','港币']],
-  ['半导体',   ['半导体','芯片','集成电路','存储','光刻','晶圆','封测']],
-  ['电子',     ['消费电子','电子','面板','PCB','元件','光学','安防']],
-  ['通信',     ['通信','5G','光模块','光通信','CPO','运营商']],
-  ['传媒',     ['传媒','游戏','影视','动漫','出版','广告','院线','文化']],
-  ['计算机',   ['软件','计算机','信息技术','信创','云计算','大数据','网络安全',
-                '数字经济','金融科技','操作系统','数据库']],
-  ['人工智能', ['人工智能','AI','算力','数据中心']],
-  ['医药',     ['医药','医疗','生物','创新药','疫苗','中药','器械','健康','制药']],
-  ['新能源',   ['光伏','电池','储能','新能源','风电','锂','碳中和','氢','核电']],
-  ['汽车',     ['汽车','智能驾驶']],
-  ['军工',     ['军工','航天','航空','国防','卫星','兵器','船舶']],
-  ['金融',     ['证券','银行','保险','金融','非银','券商']],
-  ['消费',     ['食品','饮料','白酒','消费','家电','旅游','零售','美容','纺织',
-                '农业','畜牧','养殖','粮食','种植','饲料','酒店','免税','轻工']],
-  ['资源',     ['化工','有色','钢铁','煤炭','石油','天然气','稀有金属','矿业',
-                '能源','建材','水泥','稀土','黄金']],
-  ['制造基建', ['地产','基建','建筑','工程机械','机械','工业','制造','机器人',
-                '电网','电力设备']],
-  ['公用环保', ['电力','公用','水务','环保','燃气','运输','物流','港口','高速','交运']]
+   2026-11-07 第三次重划：分三组（A股 / 港股 / 跨境），各组独立分母。
+   为什么必须拆——A 股和港股同用一个分母时，半导体 41.8% 会被港股 190 亿稀释成 30.3%，
+   这个数既不表示 A 股内部分布，也不表示港股内部分布；跨市场涨跌幅同样不可比
+   （汇率、交易时段、投资者结构都不同），混排出来的「最强/最弱」没有意义。
+
+   A 股用申万一级做骨架，按 ETF 实际供给合并/拆分：
+   1) 通信与传媒拆开。光模块/CPO 是通信设备，游戏影视才是传媒；
+   2) 半导体从电子里单列。ETF 供给上半导体占电子类绝大多数，合起来等于只剩半导体；
+   3) 上游与中游分开。资源＝有色/煤炭/石油石化（申万上游），
+      材料＝化工/钢铁/建材（申万中游材料），机械＝机械设备/电网设备，
+      地产基建＝地产/建筑。原来把钢铁、建材塞进「资源」，读起来像上游涨价，
+      实际是地产链，方向会读反。
+   港股按同一套行业口径分格（互联网/科技/医药/金融/消费/汽车/红利/地产）。
+   跨境只按国家分（美国/日本/德国/欧洲/东南亚/印度/沙特/巴西/韩国/全球），不做行业。
+
+   商品价格指数（黄金9999、上海金、原油、豆粕）三组都不进：那是金价油价，不是行业。
+   宽基、风格（红利/价值/成长/现金流）、债券、货币同样不进——它们不回答「钱往哪条线走」。 */
+var SEC_GROUPS = [
+  { g:'A股', code:'a', defs:[
+    ['半导体',   ['半导体','芯片','集成电路','存储','光刻','晶圆','封测']],
+    ['电子',     ['消费电子','面板','PCB','元件','光学','安防','物联网','电子']],
+    ['通信',     ['通信','5G','光模块','光通信','CPO','运营商','电信']],
+    ['传媒',     ['传媒','游戏','影视','动漫','出版','广告','院线','文化']],
+    ['计算机',   ['软件','计算机','信息技术','信创','云计算','大数据','网络安全',
+                  '数字经济','金融科技','操作系统','数据库','工业互联网']],
+    ['人工智能', ['人工智能','算力','数据中心','AI']],
+    ['医药',     ['医药','医疗','生物','创新药','疫苗','中药','器械','健康','制药']],
+    ['汽车',     ['汽车','智能驾驶','汽零']],
+    ['光伏',     ['光伏','太阳能']],
+    ['电池储能', ['电池','储能','锂']],
+    ['新能源',   ['新能源','风电','核电','氢','碳中和','低碳']],
+    ['军工',     ['军工','航天','航空','国防','卫星','兵器','船舶']],
+    ['金融',     ['证券','银行','保险','金融','非银','券商']],
+    ['消费',     ['食品','饮料','白酒','消费','家电','家用电器','旅游','零售','美容',
+                  '纺织','酒店','免税','轻工','家居']],
+    ['农业',     ['农业','畜牧','养殖','粮食','种植','饲料','农牧渔','种业']],
+    ['资源',     ['有色','煤炭','石油','天然气','石化','稀土','稀有金属','矿业',
+                  '能源','黄金','油气']],
+    ['材料',     ['化工','钢铁','建材','水泥','玻璃','新材料']],
+    ['机械',     ['机械','工程机械','机床','机器人','工业','制造','装备','电网',
+                  '电力设备','工业母机']],
+    ['地产基建', ['地产','基建','建筑']],
+    ['公用环保', ['电力','公用','水务','环保','燃气','运输','物流','港口','高速',
+                  '交运','航运']]
+  ]},
+  { g:'港股', code:'hk', defs:[
+    ['港股互联网', ['互联网','中国互联网','电商']],
+    ['港股医药',   ['医药','医疗','生物','创新药','疫苗','中药','器械','健康']],
+    ['港股科技',   ['科技','信息技术','半导体','芯片','软件','云计算','通信']],
+    ['港股金融',   ['金融','银行','保险','证券','非银']],
+    ['港股消费',   ['消费','食品','饮料','家电','旅游','零售','美容']],
+    ['港股汽车',   ['汽车','汽零']],
+    ['港股红利',   ['红利','高股息','股息','低波']],
+    ['港股地产',   ['地产','建筑','基建']]
+  ]},
+  { g:'跨境', code:'x', defs:[
+    ['美国',   ['纳斯达克','纳指','标普500','标准普尔','标普油气','S&P','MSCIUSA',
+                '美国','美股','道琼斯']],
+    ['日本',   ['日经','东京','日本']],
+    ['德国',   ['德国','法兰克福','DAX']],
+    ['欧洲',   ['法国','欧洲','英国','意大利','西班牙','荷兰']],
+    ['东南亚', ['东南亚','越南','泰国','印尼','马来西亚','新加坡']],
+    ['印度',   ['印度']],
+    ['沙特',   ['沙特']],
+    ['巴西',   ['巴西']],
+    ['韩国',   ['韩国','中韩']],
+    ['全球',   ['全球','海外','亚太','世界']]
+  ]}
 ];
-/* 美/日/欧/东南亚这些也进不了板块：它们的驱动不在 A 股，也不是港股通能买的。
-   不放这里的话「标普全球消费」会被「消费」抓进 A 股消费。 */
-var SEC_OUT = ['纳斯达克','纳指','标普','道琼斯','日经','德国','法国','欧洲','英国',
-               '美国','全球','海外','东南亚','亚太','越南','沙特','印度','日本','韩国','中韩'];
-/* 港股的宽基（恒生指数/恒生国企/H股指数）也不单列：它们是港股整体，
-   放进「港股」格会把格子的涨跌幅变成恒指涨跌幅，主题反而看不见。 */
-var SEC_HK_BROAD = ['恒生指数','恒生中国企业','恒生综合','国企指数','H股指数'];
-/* 商品 ETF 跟踪的是价格（黄金9999、上海金、白银、原油、豆粕），不是行业。
-   黄金 37.8 亿曾占「资源」68%，把有色/化工全盖住——必须挡在外面。
-   注意只挡纯商品指数名：「中证沪深港黄金产业股票」是黄金股，属资源。 */
+/* 港股判定词。任一命中即进港股组，且不再进 A 股组——否则「中证港股通信息技术综合」
+   会被「信息技术」抓进 A 股计算机，「中证港股通医药」会被「医药」抓进 A 股医药。
+   「恒生A股XX」是恒生编的 A 股行业指数（恒生A股电网设备），判定前先摘掉品牌前缀。 */
+var SEC_HK = ['恒生','港股通','港股','中概','中国互联网','香港','H股','港币'];
+/* 商品价格指数：黄金9999 一天 37.8 亿，进「资源」会占 68%，把有色/化工全盖住。
+   只挡纯商品指数名——「中证沪深港黄金产业股票」是黄金股，仍算资源。 */
 var SEC_COMMOD = ['黄金9999','上海金','白银','原油','豆粕','商品'];
 var SEC_CACHE = {};
-function sectorOf(ix){
+function secClass(ix){
   var v = SEC_CACHE[ix];
   if (v !== undefined) return v;
-  // 「恒生A股电网设备」是恒生编的 A 股行业指数，不是港股——摘掉品牌前缀再判
   var probe = ix.indexOf('恒生A股') >= 0 ? ix.split('恒生A股').join('') : ix;
-  var b;
-  for (b=0;b<SEC_HK_BROAD.length;b++){
-    if (probe.indexOf(SEC_HK_BROAD[b]) >= 0){ SEC_CACHE[ix] = null; return null; }
+  var i, j;
+  for (i=0;i<SEC_COMMOD.length;i++){
+    if (probe.indexOf(SEC_COMMOD[i]) >= 0){ SEC_CACHE[ix] = null; return null; }
   }
-  for (b=0;b<SEC_COMMOD.length;b++){
-    if (probe.indexOf(SEC_COMMOD[b]) >= 0){ SEC_CACHE[ix] = null; return null; }
-  }
+  var isHK = false;
+  for (i=0;i<SEC_HK.length;i++) if (probe.indexOf(SEC_HK[i]) >= 0){ isHK = true; break; }
+  // 港股只跟港股组比；非港股先比跨境、再比 A 股——海外行业指数不能进 A 股同名格
+  var order = isHK ? ['hk'] : ['x','a'];
   v = null;
-  // 1) 港股/中概优先：跨境行业指数单列，不能混进 A 股同名板块
-  var hk = SEC_DEF[0][1];
-  for (var h=0;h<hk.length;h++) if (probe.indexOf(hk[h]) >= 0){ v = SEC_DEF[0][0]; break; }
-  if (!v){
-    // 2) 其余海外直接不进板块
-    for (var o=0;o<SEC_OUT.length;o++){
-      if (probe.indexOf(SEC_OUT[o]) >= 0){ SEC_CACHE[ix] = null; return null; }
-    }
-    // 3) A 股行业：先命中先归属
-    for (var i=1;i<SEC_DEF.length;i++){
-      var ws = SEC_DEF[i][1];
-      for (var j=0;j<ws.length;j++) if (probe.indexOf(ws[j]) >= 0){ v = SEC_DEF[i][0]; break; }
+  for (var m=0;m<order.length && !v;m++){
+    var G = null;
+    for (var gi=0;gi<SEC_GROUPS.length;gi++) if (SEC_GROUPS[gi].code === order[m]) G = SEC_GROUPS[gi];
+    if (!G) continue;
+    for (i=0;i<G.defs.length;i++){
+      var ws = G.defs[i][1];
+      for (j=0;j<ws.length;j++){
+        if (probe.indexOf(ws[j]) >= 0){ v = { g:G.g, code:G.code, k:G.defs[i][0] }; break; }
+      }
       if (v) break;
     }
   }
@@ -3690,7 +3747,8 @@ function sectorOf(ix){
 
 var SECS = [], SEC_OPEN = null;
 
-/* 每日板块成交额日档：昨日存下来的 12 个数字，用来回答「钱在进还是在出」。
+/* 每日板块成交额日档：存下来的三十二个数字（A股 20 + 港股 7 + 跨境 5），
+   用来回答「钱在进还是在出」。
    为什么比「占比」不比「绝对额」——盘中 10:30 的 3 亿和昨天全天的 8 亿不是一回事，
    直接比会得出「缩量」的错误结论。占比（板块 ÷ 行业合计）里分子分母同受时间进度
    影响，比值基本抵消。它衡量的是「钱有多集中在这条线」，不是「放了多大成交量」。
@@ -3704,13 +3762,19 @@ function loadSecBase(){
   }).catch(function(){ return null; });
 }
 
-/** 今日各板块占比，相对前几个交易日均值的变化（百分点）。没有基准时返回 null */
+/** 今日各板块占比相对前几个交易日均值的变化（百分点）。没有基准返回 null。
+    分母按「组」分别算：A股占比在 A股内、港股占比在港股内，不混。
+    key 形如 "a/半导体"，组码就是斜杠前那段。 */
 function secShareDelta(cur){
   var recs = SEC_BASE || [];
   if (!recs.length) return null;
-  var totCur = 0, nCur = 0;
-  for (var k in cur){ totCur += cur[k]; nCur++; }
-  if (!(totCur > 0) || nCur < 6) return null;
+  var nCur = 0, totCur = {};
+  for (var k in cur){
+    nCur++;
+    var c0 = k.slice(0, k.indexOf('/'));
+    totCur[c0] = (totCur[c0] || 0) + cur[k];
+  }
+  if (nCur < 6) return null;
 
   // 排除「与当前完全一致」的那一天：休市时拿到的是上一交易日的收盘值，
   // 不排除的话今天会混进基准里，把变化率稀释成 0。
@@ -3732,15 +3796,17 @@ function secShareDelta(cur){
 
   var out = {};
   for (var name in cur){
+    var code = name.slice(0, name.indexOf('/'));
+    if (!(totCur[code] > 0)) continue;
     var sum = 0, n = 0;
     for (var h=0;h<hist.length;h++){
       var sr = hist[h].s, totH = 0;
-      for (var kk in sr) totH += sr[kk];
+      for (var kk in sr){ if (kk.slice(0, kk.indexOf('/')) === code) totH += sr[kk]; }
       if (!(totH > 0) || sr[name] == null) continue;
       sum += sr[name] / totH; n++;
     }
     if (!n) continue;
-    var now = cur[name] / totCur;
+    var now = cur[name] / totCur[code];
     out[name] = { share: now, ds: (now - sum / n) * 100, days: n };
   }
   return out;
@@ -3794,12 +3860,13 @@ function maybeSaveSecDaily(){
    等于把「发行数量」混进「资金关注度」——2026-11-07 收盘实测克隆倍数 1.1×~2.3×，
    人工智能因此被抬到 5.7%（只算代表是 2.9%），通信传媒被压到 10.8%（14.6%）。
    与涨跌幅的「一指数一票」对齐之后，占比才是「钱落在哪条线」，不是「哪条线发得多」。 */
-function buildSectors(){
+var SEC_GROUPS_OUT = [];
+function buildGroups(){
   var byIx = {};
   for (var i=0;i<DATA.length;i++){
     var x = DATA[i];
-    // 不再用「行业/宽基/跨境」这一层筛：那是按 ETF 简称判的，简称里没写「港股」的
-    // 「互联网ETF」会被当成 A 股行业。板块归属一律看跟踪指数名，跨境在 sectorOf 里处理。
+    // 不再用「行业/宽基/跨境」那一层筛：那是按 ETF 简称判的，简称里没写「港股」的
+    // 「互联网ETF」会被当成 A 股行业。板块归属一律看跟踪指数名。
     if (!x.ix) continue;
     if (x.g === 'bond' || x.g === 'money') continue;   // 债/货币没有行业可言
     if (!isFinite(x.chg) || !isFinite(x.amt)) continue;
@@ -3816,28 +3883,64 @@ function buildSectors(){
     var pick = (q0.rep && q0.rep.amt > 0) ? q0.rep : q0.best;
     q0.c = pick.c; q0.n = pick.n; q0.chg = pick.chg; q0.amt = pick.amt;
   }
-  var sec = {};
+
+  // 先归组、再归格。key 用「组码/板块名」——A股与港股都有「医药」「消费」「汽车」，
+  // 只用板块名当日档 key 会互相覆盖。
+  var gmap = {};
   for (var k in byIx){
-    var s = sectorOf(k);
-    if (!s) continue;
-    var t = sec[s] || (sec[s] = { k:s, ix:[], amt:0 });
-    t.ix.push(byIx[k]); t.amt += byIx[k].amt;
+    var cls = secClass(k);
+    if (!cls) continue;
+    var G = gmap[cls.code];
+    if (!G) G = gmap[cls.code] = { g:cls.g, code:cls.code, amt:0, cells:{} };
+    var c = G.cells[cls.k];
+    if (!c) c = G.cells[cls.k] = { k:cls.k, key:cls.code + '/' + cls.k, g:cls.g,
+                                   code:cls.code, ix:[], amt:0 };
+    c.ix.push(byIx[k]);
+    c.amt += byIx[k].amt;
+    G.amt += byIx[k].amt;
   }
-  var arr = [];
-  for (var s2 in sec){
-    var t2 = sec[s2], wsum = 0, vsum = 0, up = 0;
-    for (var j=0;j<t2.ix.length;j++){
-      var q = t2.ix[j];
-      // 成交额为 0 的（停牌/新发）不参与加权，否则会把板块涨幅拉向 0
-      if (q.amt > 0){ wsum += q.amt; vsum += q.chg * q.amt; }
-      if (q.chg > 0) up++;
+
+  var out = [];
+  for (var gi=0; gi<SEC_GROUPS.length; gi++){
+    var def = SEC_GROUPS[gi], GG = gmap[def.code];
+    if (!GG) continue;
+    var cells = [];
+    for (var kk in GG.cells){
+      var t = GG.cells[kk], wsum = 0, vsum = 0, up = 0;
+      if (!(t.amt > 0)) continue;    // 全天没成交的格子不显示
+      for (var j=0;j<t.ix.length;j++){
+        var q = t.ix[j];
+        // 成交额为 0 的（停牌/新发）不参与加权，否则会把板块涨幅拉向 0
+        if (q.amt > 0){ wsum += q.amt; vsum += q.chg * q.amt; }
+        if (q.chg > 0) up++;
+      }
+      cells.push({ k:t.k, key:t.key, g:t.g, code:t.code, amt:t.amt,
+                   ret: wsum > 0 ? vsum / wsum : 0, n:t.ix.length, up:up,
+                   share: GG.amt > 0 ? t.amt / GG.amt : 0,
+                   ix: t.ix.slice().sort(function(a,b){ return b.chg - a.chg; }) });
     }
-    var ret = wsum > 0 ? vsum / wsum : 0;
-    arr.push({ k:s2, ret:ret, amt:t2.amt, n:t2.ix.length, up:up,
-               ix:t2.ix.slice().sort(function(a,b){ return b.chg - a.chg; }) });
+    if (!cells.length) continue;
+    cells.sort(function(a,b){ return b.ret - a.ret; });
+    out.push({ g:def.g, code:def.code, cells:cells, amt:GG.amt, n:cells.length });
   }
-  arr.sort(function(a,b){ return b.ret - a.ret; });
-  return arr;
+  return out;
+}
+
+/* 折叠状态存本地：三个组三十多个格子同屏太挤，默认只展开 A 股。
+   用户的展开/收起选择记在 localStorage，下次打开还是他上次的样子。 */
+var SEC_FOLD = null;
+function secFoldState(){
+  if (SEC_FOLD) return SEC_FOLD;
+  var s = null;
+  try { s = JSON.parse(localStorage.getItem('secFold') || 'null'); } catch(e){}
+  var fresh = (!s || typeof s !== 'object');
+  if (fresh) s = { a:false, hk:true, x:true };
+  SEC_FOLD = s;
+  if (fresh) saveSecFold();   // 第一次进来就把默认值落盘，别每次重新猜
+  return s;
+}
+function saveSecFold(){
+  try { localStorage.setItem('secFold', JSON.stringify(SEC_FOLD)); } catch(e){}
 }
 
 function fmtAmt(v){
@@ -3847,101 +3950,122 @@ function fmtAmt(v){
 }
 
 function renderSectors(){
-  SECS = buildSectors();
-  var gd = document.getElementById('secGrid');
+  SEC_GROUPS_OUT = buildGroups();
+  SECS = [];
+  for (var a=0;a<SEC_GROUPS_OUT.length;a++){
+    for (var b=0;b<SEC_GROUPS_OUT[a].cells.length;b++) SECS.push(SEC_GROUPS_OUT[a].cells[b]);
+  }
+  var body = document.getElementById('secBody');
   var hd = document.getElementById('secHead');
   if (!SECS.length){
-    gd.innerHTML = '<div class="empty">暂无行业主题数据（非交易时段或行情源未就绪）</div>';
+    body.innerHTML = '<div class="empty">暂无行业主题数据（非交易时段或行情源未就绪）</div>';
     hd.innerHTML = '<span>—</span>';
-    document.getElementById('secDet').className = 'sdet';
     return;
   }
-  var tot = 0, mx = 0, nUp = 0, mxAmt = 0;
-  for (var i=0;i<SECS.length;i++){
-    tot += SECS[i].amt;
-    mx = Math.max(mx, Math.abs(SECS[i].ret));
-    mxAmt = Math.max(mxAmt, SECS[i].amt);
-    if (SECS[i].ret > 0) nUp++;
-  }
-  mx = Math.max(mx, 0.2);
-  // 分化度：最强减最弱。差值大＝结构性行情，差值小＝普涨普跌。
-  // 这是「轮动」和「一起动」的分界，比单看涨幅有用。
-  var spread = SECS[0].ret - SECS[SECS.length-1].ret;
-
   var curAmt = {};
-  for (var ci=0;ci<SECS.length;ci++) curAmt[SECS[ci].k] = SECS[ci].amt;
+  for (var ci=0;ci<SECS.length;ci++) curAmt[SECS[ci].key] = SECS[ci].amt;
   var sdel = secShareDelta(curAmt);
 
-  hd.innerHTML = '<span>最强 <b class="up">' + SECS[0].k + ' ' + fpc(SECS[0].ret) + '</b></span>'
-    + '<span>最弱 <b class="down">' + SECS[SECS.length-1].k + ' ' + fpc(SECS[SECS.length-1].ret) + '</b></span>'
-    + '<span>分化 <b>' + spread.toFixed(2) + '</b> 个点</span>'
-    + (function(){
-        if (!sdel) return '<span title="每天收盘后自动记一份板块成交额，攒够两天才有得比">资金 <b class="na">基准积累中</b></span>';
-        var bk = null, bv = 0;
-        for (var k in sdel){ if (sdel[k].ds > bv){ bv = sdel[k].ds; bk = k; } }
-        if (!bk || bv < 0.5) return '<span>资金 <b>无板块明显流入</b></span>';
-        return '<span>资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>';
-      })()
-    + '<span>' + SECS.length + ' 个板块 ' + nUp + ' 涨 ' + (SECS.length-nUp) + ' 跌</span>';
+  // 顶部只放三组总量。不做跨组「最强/最弱」——港股和 A 股的涨跌幅不可比，
+  // 混排出来的第一名没有交易含义。组内对比放在各自组头。
+  var hh = '';
+  for (var hi=0;hi<SEC_GROUPS_OUT.length;hi++){
+    var GH = SEC_GROUPS_OUT[hi];
+    hh += '<span>' + GH.g + ' <b>' + fmtAmt(GH.amt) + '</b> · ' + GH.n + ' 个板块</span>';
+  }
+  hd.innerHTML = hh;
 
   var h = '';
-  for (var j=0;j<SECS.length;j++){
-    var s = SECS[j];
-    var cls = s.ret > 0 ? 'up' : (s.ret < 0 ? 'down' : 'flat');
-    var sh = Math.min(1, Math.abs(s.ret) / mx);
-    var rgb = s.ret > 0 ? '217,58,58' : '14,154,97';
-    var share = tot > 0 ? s.amt / tot * 100 : 0;
-    var barW = mxAmt > 0 ? s.amt / mxAmt * 100 : 0;
-    var dl = sdel && sdel[s.k];
-    // 0.5 个百分点的门槛：再小就是噪声。12 个格子里 8 个写着「0.1pt」，
-    // 读数的人两天就学会无视这一列了——那这个指标等于没做。
-    var dsCls = !dl ? 'na' : (dl.ds > 0.5 ? 'up' : (dl.ds < -0.5 ? 'down' : 'na'));
-    // 没有基准显示「—」，有基准但变化不到半个百分点就留空——
-    // 12 个格子里塞 8 个「0.1pt」，这一列两天就被无视了
-    var dsTxt = (!dl || Math.abs(dl.ds) <= 0.5) ? ''
-      : (dl.ds > 0 ? '↑' : '↓') + Math.abs(dl.ds).toFixed(1) + 'pt';
-    h += '<div class="scell' + (SEC_OPEN === s.k ? ' on' : '') + '" data-sec="' + s.k + '"'
-      + ' title="' + s.k + '：' + s.n + ' 个跟踪指数（每个指数只算成交额最大那只），成交额 ' + fmtAmt(s.amt)
-      + '（占行业板块 ' + share.toFixed(1) + '%），' + s.up + '/' + s.n + ' 个指数上涨'
-      + (dl ? '　·　资金占比 ' + (dl.share*100).toFixed(1) + '%，较前 ' + dl.days + ' 个交易日均值 '
-        + (dl.ds >= 0 ? '+' : '') + dl.ds.toFixed(1) + ' 个百分点' : '　·　资金占比基准还没攒够') + '">'
-      + '<i class="sz" style="background:rgba(' + rgb + ',' + (0.15 + 0.85*sh).toFixed(2) + ')"></i>'
-      + '<div class="sn"><span class="nm">' + s.k + '</span>'
-      + '<span class="sd ' + dsCls + '">' + dsTxt + '</span></div>'
-      + '<div class="sv ' + cls + '">' + fpc(s.ret) + '</div>'
-      + '<div class="ss"><span class="si">' + s.up + '/' + s.n + '</span>'
-      + '<span class="sa">' + fmtAmt(s.amt) + '</span></div>'
-      + '<div class="sbar" title="成交额占行业板块合计 ' + share.toFixed(1) + '%"><i style="width:'
-      + barW.toFixed(1) + '%;background:rgba(' + rgb + ',.55)"></i></div>'
-      + '</div>';
+  for (var g2=0;g2<SEC_GROUPS_OUT.length;g2++){
+    var G2 = SEC_GROUPS_OUT[g2], cs = G2.cells;
+    var mxAmt = 0, nUp = 0;
+    for (var m2=0;m2<cs.length;m2++){ mxAmt = Math.max(mxAmt, cs[m2].amt); if (cs[m2].ret > 0) nUp++; }
+    var top = cs[0], bot = cs[cs.length-1];
+    var spread = top.ret - bot.ret;
+    // 组内资金占比上升最多的那一格（不到 0.5pt 不报，噪声）
+    var bk = null, bv = 0;
+    if (sdel){
+      for (var m3=0;m3<cs.length;m3++){
+        var dl0 = sdel[cs[m3].key];
+        if (dl0 && dl0.ds > bv){ bv = dl0.ds; bk = cs[m3].k; }
+      }
+    }
+    h += '<div class="sgrp' + (secFoldState()[G2.code] ? ' fold' : '') + '" data-g="' + G2.code + '">'
+      + '<div class="sghd" data-fold="' + G2.code + '">'
+      + '<i class="sgc"></i><span class="sgk">' + G2.g + '</span>'
+      + '<span class="sgt">' + G2.n + ' 个板块 · ' + fmtAmt(G2.amt) + '</span>'
+      + '<span class="sgm">强 <b class="' + (top.ret >= 0 ? 'up' : 'down') + '">'
+      + top.k + ' ' + fpc(top.ret) + '</b></span>'
+      + '<span class="sgm">弱 <b class="down">' + bot.k + ' ' + fpc(bot.ret) + '</b></span>'
+      + '<span class="sgm">分化 <b>' + spread.toFixed(2) + '</b></span>'
+      + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
+      + '<span class="sgm t3">' + nUp + ' 涨 ' + (cs.length - nUp) + ' 跌</span>'
+      + '</div><div class="smgrid">';
+
+    for (var j2=0;j2<cs.length;j2++){
+      var s = cs[j2];
+      var cls = s.ret > 0 ? 'up' : (s.ret < 0 ? 'down' : 'flat');
+      var sh = Math.min(1, Math.abs(s.ret) / 2);
+      var rgb = s.ret > 0 ? '217,58,58' : '14,154,97';
+      var share = s.share * 100;
+      // 条长用开方：半导体 175 亿、公用环保 5.6 亿，线性比例下后者只有 3%、肉眼是空的。
+      // 开方后 3% 变 18%，量级差还在，但不至于看不出有没有量。
+      var barW = mxAmt > 0 ? Math.sqrt(s.amt / mxAmt) * 100 : 0;
+      var dl = sdel && sdel[s.key];
+      // 0.5 个百分点的门槛：再小就是噪声。三十几个格子里大半写着「0.1pt」，
+      // 读数的人两天就学会无视这一列——那这个指标等于没做。
+      var dsCls = !dl ? 'na' : (dl.ds > 0.5 ? 'up' : (dl.ds < -0.5 ? 'down' : 'na'));
+      var dsTxt = (!dl || Math.abs(dl.ds) <= 0.5) ? ''
+        : (dl.ds > 0 ? '↑' : '↓') + Math.abs(dl.ds).toFixed(1) + 'pt';
+      h += '<div class="scell' + (SEC_OPEN === s.key ? ' on' : '') + '" data-sec="' + s.key + '"'
+        + ' title="' + s.k + '：' + s.n + ' 个跟踪指数（每个指数只算成交额最大那只），成交额 '
+        + fmtAmt(s.amt) + '（占' + s.g + '板块 ' + share.toFixed(1) + '%），'
+        + s.up + '/' + s.n + ' 个指数上涨'
+        + (dl ? '　·　资金占比 ' + (dl.share*100).toFixed(1) + '%，较前 ' + dl.days + ' 个交易日均值 '
+          + (dl.ds >= 0 ? '+' : '') + dl.ds.toFixed(1) + ' 个百分点' : '　·　资金占比基准还没攒够') + '">'
+        + '<i class="sz" style="background:rgba(' + rgb + ',' + (0.15 + 0.85*sh).toFixed(2) + ')"></i>'
+        + '<div class="sn"><span class="nm">' + s.k + '</span>'
+        + '<span class="sd ' + dsCls + '">' + dsTxt + '</span></div>'
+        + '<div class="sv ' + cls + '">' + fpc(s.ret) + '</div>'
+        + '<div class="ss"><span class="si">' + s.up + '/' + s.n + '</span>'
+        + '<span class="sa">' + fmtAmt(s.amt) + '</span></div>'
+        + '<div class="sbar" title="成交额占' + s.g + '板块合计 ' + share.toFixed(1) + '%"><i style="width:'
+        + barW.toFixed(1) + '%;background:rgba(' + rgb + ',.55)"></i></div>'
+        + '</div>';
+    }
+    h += '</div><div class="sdet" id="secDet_' + G2.code + '"></div></div>';
   }
-  gd.innerHTML = h;
+  body.innerHTML = h;
   maybeSaveSecDaily();
 
-  var det = document.getElementById('secDet');
-  if (SEC_OPEN){
-    var cur = null;
-    for (var q=0;q<SECS.length;q++) if (SECS[q].k === SEC_OPEN) cur = SECS[q];
-    if (!cur){ SEC_OPEN = null; det.className = 'sdet'; return; }
-    var rows = cur.ix.slice(0, 8), dh = '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
-      + cur.n + ' 个跟踪指数（每个指数只算成交额最大那只）</div>';
-    for (var r=0;r<rows.length;r++){
-      var o = rows[r];
-      var c2 = o.chg > 0 ? 'up' : (o.chg < 0 ? 'down' : 'flat');
-      dh += '<div class="sr" data-code="' + esc(o.c) + '">'
-        + '<span class="nm2">' + esc(o.ix) + '</span>'
-        + '<span class="cd2">' + esc(o.c) + '</span>'
-        + '<span class="v2 ' + c2 + '">' + fpc(o.chg) + '</span>'
-        + '<span class="a2">' + fmtAmt(o.amt) + '</span></div>';
-    }
-    if (cur.n > rows.length) dh += '<div class="sr"><span class="nm2" style="color:var(--txt3)">'
-      + '其余 ' + (cur.n - rows.length) + ' 个指数未列出</span></div>';
-    det.innerHTML = dh;
-    det.className = 'sdet show';
-  } else {
-    det.className = 'sdet';
+  // 明细：只显示当前点开的那一格，放在它所属组的格子里。
+  // 全部指数都列出来（原先截前 8 个，新能源这种十几条线的板块，
+  // 光伏就被挤出列表了——看不看得见取决于它今天涨没涨，那是错的）。
+  var cur = null;
+  for (var q=0;q<SECS.length;q++) if (SECS[q].key === SEC_OPEN) cur = SECS[q];
+  if (!cur){ SEC_OPEN = null; return; }
+  if (secFoldState()[cur.code]){ secFoldState()[cur.code] = false; saveSecFold(); }
+  var det = document.getElementById('secDet_' + cur.code);
+  if (!det) return;
+  var grp = document.querySelector('.sgrp[data-g="' + cur.code + '"]');
+  if (grp) grp.className = 'sgrp';
+  var rows = cur.ix, dh = '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
+    + cur.n + ' 个跟踪指数（每个指数只算成交额最大那只，点一行看 K 线）</div>'
+    + '<div class="sdrwrap">';
+  for (var r=0;r<rows.length;r++){
+    var o = rows[r];
+    var c2 = o.chg > 0 ? 'up' : (o.chg < 0 ? 'down' : 'flat');
+    dh += '<div class="sr" data-code="' + esc(o.c) + '">'
+      + '<span class="nm2">' + esc(o.ix) + '</span>'
+      + '<span class="cd2">' + esc(o.c) + '</span>'
+      + '<span class="v2 ' + c2 + '">' + fpc(o.chg) + '</span>'
+      + '<span class="a2">' + fmtAmt(o.amt) + '</span></div>';
   }
+  dh += '</div>';
+  det.innerHTML = dh;
+  det.className = 'sdet show';
 }
+
 
 /* ---------- 渲染 ---------- */
 function ixBadge(x){
@@ -7696,6 +7820,17 @@ document.getElementById('btnClear').onclick = function(){
 };
 
 document.body.addEventListener('click', function(e){
+  // 组头折叠：只切 class，不重绘——重绘会把滚动位置弹回去
+  var fg = e.target.closest('[data-fold]');
+  if (fg){
+    var fcode = fg.getAttribute('data-fold');
+    var st = secFoldState();
+    st[fcode] = !st[fcode];
+    saveSecFold();
+    var grpEl = document.querySelector('.sgrp[data-g="' + fcode + '"]');
+    if (grpEl) grpEl.className = 'sgrp' + (st[fcode] ? ' fold' : '');
+    return;
+  }
   var sc = e.target.closest('[data-sec]');
   if (sc){
     var sk = sc.getAttribute('data-sec');
@@ -7754,7 +7889,7 @@ Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
 });
 (function(){
   var b = document.getElementById('btnSec');
-  if (b) b.onclick = function(){ SEC_CACHE = {}; SECS = buildSectors(); renderSectors(); toast('已按最新快照重算板块'); };
+  if (b) b.onclick = function(){ SEC_CACHE = {}; renderSectors(); toast('已按最新快照重算板块'); };
 })();
 document.getElementById('sortSel').onchange = function(){ sortKey = this.value; renderList(); };
 document.getElementById('limitSel').onchange = function(){ limit = parseInt(this.value,10); renderList(); };
