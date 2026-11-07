@@ -7,6 +7,7 @@ import { IDX_GROUPS } from './src/idx_data.js';
 import { RESEARCH } from './src/research_data.js';
 import { ALPHA_META } from './src/alpha_meta.js';
 import { LAB } from './src/lab_data.js';
+import { SEC_HIST } from './src/sec_hist.js';
 
 const page = readFileSync('src/page.js', 'utf8');
 const core = readFileSync('src/index.js', 'utf8');
@@ -33,15 +34,21 @@ if (!m[1].includes('${LAB_JS}')) {
   console.error('page.js 里找不到 ${LAB_JS} 占位符，第二批因子面板会空白');
   process.exit(1);
 }
+if (!m[1].includes('${SEC_HIST_JS}')) {
+  console.error('page.js 里找不到 ${SEC_HIST_JS} 占位符，板块占比走势会空白');
+  process.exit(1);
+}
 const idxJson = JSON.stringify(IDX_GROUPS);
 const rsJson = JSON.stringify(RESEARCH);
 const amJson = JSON.stringify(ALPHA_META);
 const labJson = JSON.stringify(LAB);
+const shJson = JSON.stringify(SEC_HIST);
 const filled = m[1]
   .replace(/\$\{IDX_JS\}/g, idxJson)
   .replace(/\$\{RESEARCH_JS\}/g, rsJson)
   .replace(/\$\{ALPHA_META_JS\}/g, amJson)
-  .replace(/\$\{LAB_JS\}/g, labJson);
+  .replace(/\$\{LAB_JS\}/g, labJson)
+  .replace(/\$\{SEC_HIST_JS\}/g, shJson);
 
 // 模板字符串再嵌套一层，需要转义 \ 、` 和 ${
 const html = filled
@@ -60,4 +67,5 @@ console.log('已生成 dist/worker.js  ' + (out.length / 1024).toFixed(1) + ' KB
   + '（内嵌指数映射 ' + (idxJson.length / 1024).toFixed(1) + ' KB'
   + ' / 因子研究 ' + (rsJson.length / 1024).toFixed(1) + ' KB'
   + ' / 因子说明 ' + (amJson.length / 1024).toFixed(1) + ' KB'
-  + ' / 第二批因子 ' + (labJson.length / 1024).toFixed(1) + ' KB）');
+  + ' / 第二批因子 ' + (labJson.length / 1024).toFixed(1) + ' KB'
+  + ' / 板块占比史 ' + (shJson.length / 1024).toFixed(1) + ' KB）');

@@ -2,6 +2,7 @@ import { IDX_GROUPS } from './idx_data.js';
 import { RESEARCH } from './research_data.js';
 import { ALPHA_META } from './alpha_meta.js';
 import { LAB } from './lab_data.js';
+import { SEC_HIST } from './sec_hist.js';
 
 // 注入到 HTML 里的紧凑映射：{ "沪深300": ["510300", ...], ... }
 // 18KB 一次随页面下发，比再开一个 /api 接口划算——省一次 RTT，也省 Worker 的 CPU 配额。
@@ -20,6 +21,11 @@ const ALPHA_META_JS = JSON.stringify(ALPHA_META);
 // 第二批因子：468 个指数（同指数只留流动性最好的一只）、100 个新因子 + Alpha101 同池，
 // 约 20KB。比上面那套大，主要是 201 行的两期统计和 90 个月末净值点。
 const LAB_JS = JSON.stringify(LAB);
+
+// 250 个交易日的板块占比（占本组行业格成交额），由 data/etf.db 的日线回算。
+// 31KB：换一次「这条线在一年里走到什么位置」，值得。页面上只有今天，
+// 而「今天 39%」和「今天 39%、一年 96 分位」是两个完全不同的判断。
+const SEC_HIST_JS = JSON.stringify(SEC_HIST);
 
 export const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -425,6 +431,28 @@ border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer;
 user-select:none;white-space:nowrap}
 .sechd .io:hover{border-color:#c3cad8}
 
+/* 板块地图标题下的一行体检：多少格、多少指数、多少只有报价、多少只进不来。
+   被「229 个单只指数整组丢掉」坑过一次，覆盖率要写在明面上，不靠人去猜。 */
+.secmeta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:10.5px;color:var(--txt3);
+padding:0 2px 7px;line-height:1.5}
+.secmeta b{color:var(--txt2);font-weight:600}
+.secmeta span{white-space:nowrap}
+@media(max-width:560px){.secmeta .opt{display:none}}
+
+/* 格子点开后的占比走势。存在的理由：页面只有「今天占比多少」，
+   看不出这个数是刚起步还是已经走了一半。 */
+.strend{margin:2px 0 10px;padding:9px 12px 7px;background:var(--bg2);
+border:1px solid var(--line);border-radius:8px}
+.sthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:11px;color:var(--txt3)}
+.sthd b{font-size:15px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.sthd .sttag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg3);
+color:var(--txt2);border:1px solid var(--line)}
+.sthd .sttag.hi{color:#a8541c;border-color:#f0dcc8;background:#fdf6ef}
+.sthd .sttag.lo{color:#1c6b8a;border-color:#cfe3ee;background:#f2f9fc}
+.strend svg{display:block;width:100%;height:76px;margin-top:5px}
+.stax{display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);
+margin-top:1px;font-variant-numeric:tabular-nums}
+
 /* ---- 自选导入导出 ---- */
 #ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
@@ -582,6 +610,11 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sghd .sgt{color:var(--txt3)}
 .sghd .sgm{white-space:nowrap}
 .sghd .sgm b{font-variant-numeric:tabular-nums}
+/* 集中度后面那个小数字是「近一年分位」，不是百分比，所以做得比正文轻一档，
+   避免被读成「集中 53.0% 的 89%」。 */
+.sghd .sgm em{font-style:normal;color:var(--txt3);font-size:10px;margin-left:2px}
+
+@media(max-width:880px){.sghd .sgm.opt{display:none}}
 .sgrp.fold .smgrid,.sgrp.fold .sdet{display:none}
 .smgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
 @media(max-width:1180px){.smgrid{grid-template-columns:repeat(4,minmax(0,1fr))}}
@@ -701,6 +734,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
     <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
   <div class="smhead" id="secHead"><span>读取中…</span></div>
+  <div class="secmeta" id="secMeta"></div>
   <div id="secBody"><div class="empty">正在读取行情…</div></div>
 </div>
 
@@ -909,6 +943,7 @@ var IDX_GROUPS = ${IDX_JS};
 var RESEARCH = ${RESEARCH_JS};
 var ALPHA_META = ${ALPHA_META_JS};
 var LAB = ${LAB_JS};
+var SEC_HIST = ${SEC_HIST_JS};
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -1332,9 +1367,167 @@ var SEC_BASE = null, SEC_SAVE_TS = 0, SEC_REQ = false;
 
 function loadSecBase(){
   return fetch('/api/secdaily').then(function(r){ return r.json(); }).then(function(j){
-    if (j && j.ok && Array.isArray(j.days)) SEC_BASE = j.days;
+    if (j && j.ok && Array.isArray(j.days)){
+      SEC_BASE = j.days;
+      SEC_EXTRA = null;                 // 日档换了，增量的缓存作废
+      // 盘子已经画出来了（用户先看了页面、日档后到）：重画一次，让曲线尾巴接上
+      if (SEC_OPEN) renderSectors();
+    }
     return SEC_BASE;
   }).catch(function(){ return null; });
+}
+
+/* ---------- 板块占比走势 ----------
+   数据来自 worker/src/sec_hist.js：250 个交易日的「占本组行业格成交额」，
+   按当前口径回算（每个指数只算成交额最大那只、主题不进分母、三组各算各的）。
+   页面原本只有今天一个点，看不出这个占比是刚起来还是已经走了一半；
+   一条曲线加一个分位，比再看十个涨跌幅有用。 */
+function bjToday(){
+  var bj = new Date(Date.now() + 8 * 3600 * 1000);
+  return bj.toISOString().slice(0, 10);
+}
+function dayGap(a, b){
+  var A = Date.parse(a + 'T00:00:00Z'), B = Date.parse(b + 'T00:00:00Z');
+  if (!isFinite(A) || !isFinite(B)) return 999;
+  return Math.round((B - A) / 86400000);
+}
+
+/* 静态基线只到生成那天（sec_hist.js 由日线回算）。不接增量的话，
+   一周后曲线就永远停在那个日期——图上看着「没变化」，实际是没数据。
+   这里用 secdaily 的日档（每天收盘存一份 36 格成交额）把尾巴接上：
+   日档只存成交额，占比在这里按当天的组内行业合计现算，口径和基线一致。
+   日档最多 64 条，约三个月，之后旧记录滑出——但基线覆盖更早的部分，接得上。 */
+var SEC_EXTRA = null, SEC_EXTRA_TS = 0;
+function secHistExtra(){
+  if (SEC_EXTRA && Date.now() - SEC_EXTRA_TS < 60000) return SEC_EXTRA;
+  var H = SEC_HIST, base = SEC_BASE || [];
+  if (!H || !H.d || !H.d.length || !base.length){ SEC_EXTRA = {}; SEC_EXTRA_TS = Date.now(); return SEC_EXTRA; }
+  var last = H.d[H.d.length-1], thMap = {}, i, k;
+  for (i=0;i<SECS.length;i++) if (SECS[i].th) thMap[SECS[i].key] = 1;
+  var out = {};
+  for (i=0;i<base.length;i++){
+    var r = base[i];
+    if (!r || !r.d || r.d <= last || !r.s) continue;
+    var den = {};
+    for (k in r.s){
+      if (thMap[k]) continue;
+      var g = k.split('/')[0];
+      den[g] = (den[g] || 0) + r.s[k];
+    }
+    for (k in r.s){
+      var g2 = k.split('/')[0];
+      if (!(den[g2] > 0)) continue;
+      if (!out[k]) out[k] = [];
+      out[k].push([r.d, Math.round(r.s[k] / den[g2] * 1000)]);
+    }
+  }
+  SEC_EXTRA = out; SEC_EXTRA_TS = Date.now();
+  return out;
+}
+
+/** 一格的完整占比序列：基线（跳掉上市前的 0）+ 日档增量。 */
+function secHistArr(key){
+  var H = SEC_HIST;
+  if (!H || !H.s || !H.s[key]) return null;
+  var raw = H.s[key], i, n = raw.length, started = false;
+  var v = [], d = [];
+  for (i=0;i<n;i++){
+    if (raw[i] > 0) started = true;
+    if (started){ v.push(raw[i]); d.push(H.d[i]); }
+  }
+  var ex = secHistExtra()[key] || [];
+  for (i=0;i<ex.length;i++){
+    if (!d.length || ex[i][0] > d[d.length-1]){ v.push(ex[i][1]); d.push(ex[i][0]); }
+  }
+  return { v:v, d:d };
+}
+
+/** 某格当前占比在过去一年里的分位。格子太多，不可能每格都点开看曲线，
+    所以把分位塞进 tooltip——鼠标停一下就知道「这条线是不是已经走到高位」。 */
+function secSharePct(key, share){
+  var h = secHistArr(key);
+  if (!h || h.v.length < 40) return null;
+  var a = h.v, cur = Math.round(share * 1000), n = 0, i;
+  for (i=0;i<a.length;i++) if (a[i] <= cur) n++;
+  return n / a.length * 100;
+}
+
+/** 当前值在过去一年里的分位（0 最低、100 最高）。没有历史返回 null。 */
+function secConcPct(v){
+  var H = SEC_HIST;
+  if (!H || !H.c || H.c.length < 40) return null;
+  var c = H.c, n = 0;
+  for (var i=0;i<c.length;i++) if (c[i] / 10 <= v) n++;
+  return n / c.length * 100;
+}
+
+/** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
+function secTrend(s){
+  var h = secHistArr(s.key);
+  if (!h || h.v.length < 20) return '';
+  var a = h.v.slice(), dates = h.d.slice(), i;
+  // 历史库只到上个交易日；差几天就把此刻的值接在后面。超过 5 天不接
+  // （长假、数据管道没跑），否则会把周五的读数画成今天。
+  var cur = Math.round(s.share * 1000);
+  var appended = false;
+  var lastD = dates[dates.length-1], today = bjToday();
+  if (lastD !== today && dayGap(lastD, today) <= 5){
+    a.push(cur); dates.push(today); appended = true;
+  }
+
+  var mn = a[0], mx = a[0];
+  for (i=1;i<a.length;i++){ if (a[i] < mn) mn = a[i]; if (a[i] > mx) mx = a[i]; }
+  var pad = (mx - mn) * 0.14 || 1;
+  var lo = Math.max(0, mn - pad), hi = mx + pad;
+  var W = 640, H0 = 84, yOf = function(v){ return H0 - 6 - (v - lo) / (hi - lo) * (H0 - 12); };
+  var xOf = function(k){ return k / (a.length - 1) * W; };
+
+  // 最后一点如果是「补上来的此刻」，单独用虚线连——中间漏了几个交易日，
+  // 画成实线等于假装这几天有数据。
+  var joined = appended && a.length > 1 && dayGap(dates[a.length-2], dates[a.length-1]) > 1;
+  var solidN = joined ? a.length - 1 : a.length;
+  var d = '';
+  for (i=0;i<solidN;i++){
+    d += (i ? 'L' : 'M') + xOf(i).toFixed(1) + ' ' + yOf(a[i]).toFixed(1);
+  }
+  var tail = joined
+    ? '<path d="M' + xOf(solidN-1).toFixed(1) + ' ' + yOf(a[solidN-1]).toFixed(1)
+      + 'L' + xOf(a.length-1).toFixed(1) + ' ' + yOf(a[a.length-1]).toFixed(1)
+      + '" fill="none" stroke="var(--accent)" stroke-width="1.7" stroke-dasharray="4 4"'
+      + ' vector-effect="non-scaling-stroke"/>'
+    : '';
+  var sorted = a.slice().sort(function(u,v){ return u - v; });
+  var med = sorted[Math.floor(sorted.length / 2)];
+  var yMed = yOf(med).toFixed(1);
+
+  var below = 0;
+  for (i=0;i<a.length;i++) if (a[i] <= a[a.length-1]) below++;
+  var pct = below / a.length * 100;
+
+  // 分位只说事实，不替人下结论。颜色分开只是为了扫一眼能找到。
+  var tagCls = pct >= 85 ? ' hi' : (pct <= 15 ? ' lo' : '');
+
+  var head = s.th ? '占本组行业合计（与行业格重叠）'
+    : (s.code === 'x' ? '占跨境地区成交额' : '占' + s.g + '行业成交额');
+  return '<div class="strend">'
+    + '<div class="sthd"><span>' + head + '</span>'
+    + '<b>' + (a[a.length-1] / 10).toFixed(1) + '%</b>'
+    + '<span class="sttag' + tagCls + '">近一年 ' + pct.toFixed(0) + ' 分位</span>'
+    + '<span style="margin-left:auto">区间 ' + (mn/10).toFixed(1) + '–' + (mx/10).toFixed(1)
+    + '% · 中位 ' + (med/10).toFixed(1) + '%</span></div>'
+    + '<svg viewBox="0 0 ' + W + ' ' + H0 + '" preserveAspectRatio="none">'
+    + '<line x1="0" y1="' + yMed + '" x2="' + W + '" y2="' + yMed
+    + '" stroke="#aeb6c4" stroke-dasharray="5 5" vector-effect="non-scaling-stroke"/>'
+    + '<path d="' + d + '" fill="none" stroke="var(--accent)" stroke-width="1.7"'
+    + ' stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+    + tail
+    + '<line x1="' + W + '" y1="' + yOf(a[a.length-1]).toFixed(1) + '" x2="' + W + '" y2="' + (H0-2)
+    + '" stroke="var(--accent)" stroke-opacity=".28" vector-effect="non-scaling-stroke"/>'
+    + '</svg>'
+    + '<div class="stax"><span>' + dates[0].slice(0, 7) + '</span>'
+    + '<span>虚线＝一年中位</span>'
+    + '<span>' + dates[dates.length-1].slice(0, 7) + '</span></div>'
+    + '</div>';
 }
 
 /** 今日各板块占比相对「上一交易日收盘」的变化（百分点）。没有基准返回 null。
@@ -1583,6 +1776,30 @@ function renderSectors(){
   }
   hd.innerHTML = hh;
 
+  // 这一行只回答「地图漏了什么」。被「229 个单只指数整组丢掉」坑过一次，
+  // 覆盖率得写在明面上：多少格、多少个指数、多少只有报价、多少只进不来。
+  var nQ = 0, nSt = 0, nNoIx = 0, noIxAmt = 0, nIx = 0, i0;
+  for (i0=0;i0<DATA.length;i0++){
+    var x0 = DATA[i0];
+    if (x0.p > 0) nQ++; else nSt++;
+    // 只数「本该进图却进不来」的：行业/主题、跨境。宽基、债券、货币、商品
+    // 本来就不进板块地图，把它们算成「漏掉」会把 592 亿的债券货基写得像事故。
+    if (!x0.ix && (x0.g === 'industry' || x0.g === 'cross')){
+      nNoIx++; noIxAmt += (x0.amt || 0);
+    }
+  }
+  for (i0=0;i0<SECS.length;i0++) nIx += SECS[i0].n;
+  var sm = document.getElementById('secMeta');
+  if (sm) sm.innerHTML =
+      '<span>' + SECS.length + ' 格 · <b>' + nIx + '</b> 个指数有成交</span>'
+    + '<span class="opt">每个指数只算成交额最大的一只</span>'
+    + '<span>报价 <b>' + nQ + '</b>' + (nSt ? ' · 停牌 ' + nSt : '') + '</span>'
+    + (nNoIx ? '<span title="这些 ETF 查不到跟踪标的（新发未收录、或数据源没给），进不了任何一格；'
+        + '括号里是它们今天的成交额合计">无跟踪标的 <b>' + nNoIx + '</b> 只'
+        + (noIxAmt > 0 ? '（' + fmtAmt(noIxAmt) + '）' : '') + '</span>' : '')
+    + '<span class="opt" title="宽基、债券、货币、商品、风格（红利/价值）都不进板块地图——'
+      + '它们不回答钱往哪条线走">宽基/债/货币/商品 不在表内</span>';
+
   var h = '';
   var cellHtml = function(G2, cs, mxAmt, sdel){
     var o = '';
@@ -1603,8 +1820,10 @@ function renderSectors(){
         : (dl.ds > 0 ? '↑' : '↓') + Math.abs(dl.ds).toFixed(1) + 'pt';
       // 主题格的分子不计入分母，占比会算出 135% 这种数——不是错，是「重叠」的定义。
       // 不报这个数，只报「与行业格重叠」，否则读者会以为分母算错了。
+      var shPct = secSharePct(s.key, s.share);
       var shNote = s.th ? '（主题：与行业格重叠，不计入分母）'
-        : '（占' + s.g + '板块 ' + share.toFixed(1) + '%）';
+        : '（占' + s.g + '板块 ' + share.toFixed(1) + '%）'
+          + (shPct != null ? '，近一年 ' + shPct.toFixed(0) + ' 分位' : '');
       o += '<div class="scell' + (SEC_OPEN === s.key ? ' on' : '') + (s.th ? ' th' : '') + '" data-sec="' + s.key + '"'
         + ' title="' + s.k + '：' + s.n + ' 个跟踪指数（每个指数只算成交额最大那只），成交额 '
         + fmtAmt(s.amt) + shNote + '，'
@@ -1637,6 +1856,16 @@ function renderSectors(){
     for (var m2=0;m2<core.length;m2++){ mxAmt = Math.max(mxAmt, core[m2].amt); if (core[m2].ret > 0) nUp++; }
     var top = core[0], bot = core[core.length-1];
     var spread = top.ret - bot.ret;
+    // 集中度只算 A 股：港股 7 格、跨境 8 地区，TOP3 占比天然很高，报了没有区分度。
+    // 它是「抱团还是扩散」的读数——宽度看涨跌家数，集中度看钱压在哪。
+    var t3 = null, t3p = null;
+    if (G2.code === 'a' && G2.core > 0 && core.length >= 5){
+      var byAmt = core.slice().sort(function(a,b){ return b.amt - a.amt; });
+      var s3 = 0;
+      for (var m5=0;m5<3 && m5<byAmt.length;m5++) s3 += byAmt[m5].amt;
+      t3 = s3 / G2.core * 100;
+      t3p = secConcPct(t3);
+    }
     // 组内资金占比上升最多的那一格（不到 0.5pt 不报，噪声）
     var bk = null, bv = 0;
     if (sdel){
@@ -1655,6 +1884,10 @@ function renderSectors(){
       + top.k + ' ' + fpc(top.ret) + '</b></span>'
       + '<span class="sgm">弱 <b class="down">' + bot.k + ' ' + fpc(bot.ret) + '</b></span>'
       + '<span class="sgm">分化 <b>' + spread.toFixed(2) + '</b></span>'
+      + (t3 != null ? '<span class="sgm opt" title="前三大板块占 A 股行业成交额的比重。'
+          + '高＝钱压在少数几条线上（抱团，赚指数不赚面）；低＝扩散（轮动快，追高容易挨打）。'
+          + (t3p != null ? '　括号里是它在近一年里的分位。' : '') + '">集中 <b>'
+          + t3.toFixed(1) + '%</b>' + (t3p != null ? ' <em>' + t3p.toFixed(0) + ' 分位</em>' : '') + '</span>' : '')
       + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
       + '<span class="sgm t3">' + nUp + ' 涨 ' + (core.length - nUp) + ' 跌</span>'
       + '</div><div class="smgrid">'
@@ -1679,7 +1912,7 @@ function renderSectors(){
   if (!det) return;
   var grp = document.querySelector('.sgrp[data-g="' + cur.code + '"]');
   if (grp) grp.className = 'sgrp';
-  var rows = cur.ix, dh = '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
+  var rows = cur.ix, dh = secTrend(cur) + '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
     + cur.n + ' 个跟踪指数（每个指数只算成交额最大那只，点一行看 K 线）</div>'
     + '<div class="sdrwrap">';
   for (var r=0;r<rows.length;r++){
