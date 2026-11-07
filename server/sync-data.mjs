@@ -183,8 +183,11 @@ export async function syncData(opts = {}) {
       + ((Date.now() - t0) / 1000).toFixed(0) + 's  失败 ' + r.fail.length);
   });
 
-  // 顶层两个文件顺带更新（events.json 在 hist/ 里，已随上面一起拉下来）
-  for (const f of ['manifest.json', 'research.json']) {
+  // 顶层文件 + 异动快照。原先这里只拉 manifest 和 research，注释却写着
+  // 「events.json 已随上面一起拉下来」——上面循环拉的是 hist/{code}.bin，
+  // events 不在 codes 里，从来没同步过。沙箱版因此一直显示部署那天的快照
+  // （2026-11-07 实测：data 分支已是 11-06，页面还写着 11-04）。
+  for (const f of ['manifest.json', 'research.json', 'hist/events.json']) {
     try {
       const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
       if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));
