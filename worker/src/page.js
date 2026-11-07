@@ -232,9 +232,6 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
 .sechd{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;color:var(--txt2)}
 .sechd b{color:var(--txt);font-size:13.5px;font-weight:600;white-space:nowrap;flex:0 0 auto}
 .sechd .n{color:var(--txt3);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.sechd .sync{margin-left:auto;font-size:10.5px;color:var(--txt3);border:1px solid var(--line);
-border-radius:5px;padding:1px 7px;cursor:pointer;user-select:none;white-space:nowrap;flex:0 0 auto}
-.sechd .sync:hover{color:var(--txt);border-color:var(--accent)}
 .tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
 table{width:100%;border-collapse:collapse}
 thead th{background:var(--bg3);font-size:10.5px;font-weight:500;color:var(--txt2);
@@ -583,8 +580,10 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sth b{color:var(--txt2);font-weight:600}
 .scell.th{border-style:dashed}
 .scell .sn{font-size:11.5px;color:var(--txt);display:flex;align-items:baseline;gap:4px}
-.scell .sn .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.scell .sn .sd{margin-left:auto;flex:none;font-size:10px;font-weight:600;
+/* 箭头紧跟板块名，不推到格子右边：右对齐时它正好落在「-3.25%」上方，
+   读起来像涨跌幅的一部分。 */
+.scell .sn .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.scell .sn .sd{flex:none;font-size:10px;font-weight:700;
   font-variant-numeric:tabular-nums;letter-spacing:-.2px}
 .scell .sv{font-size:16px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;
   letter-spacing:-.2px}
@@ -732,8 +731,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
 <div class="sec">
   <div id="staleBar" class="stalebar" style="display:none"></div>
-  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
-    <span class="sync" id="btnSync" title="复制一条带同步码的链接，在别的设备打开就是这份自选">同步</span></div>
+  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span></div>
   <div class="bar">
     <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
     <button class="pri" id="btnAdd">添加</button>
@@ -944,13 +942,16 @@ var pushTimer = null;
 /* 自选分桶用的匿名编号。
    不同的人打开同一个网址，各自有一份，互不覆盖——共用一份的话，
    陌生人一按「+」就把别人的自选改掉了。
-   想跨设备带过去：复制页面上「同步」给出的链接（带 ?u=）在另一台打开。 */
+   「同步」按钮已删：它给的那条 /?u= 链接谁拿到谁能写，按一下就等同把自选共享出去。
+   ?u= 仍然认，但只在「本机还没有编号」时采用（换设备的第一次打开）。 */
 var WATCH_UID = (function(){
   var LSK = 'etfUid';
   var u = '';
   try { u = localStorage.getItem(LSK) || ''; } catch (e) {}
+  // 本机已有编号就无视 ?u=：早先是无条件覆盖，谁打开一条带 u 的链接，本机编号
+  // 就永久变成别人的，之后加自选全写进别人的桶——这正是「被别人打乱」的入口。
   var fromUrl = qs('u');
-  if (fromUrl) u = fromUrl;
+  if (fromUrl && !u) u = fromUrl;
   u = String(u).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
   if (u.length < 6){
     u = 'u' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-3);
@@ -1296,7 +1297,11 @@ function loadSecBase(){
   }).catch(function(){ return null; });
 }
 
-/** 今日各板块占比相对前几个交易日均值的变化（百分点）。没有基准返回 null。
+/** 今日各板块占比相对「上一交易日收盘」的变化（百分点）。没有基准返回 null。
+    为什么只跟一个日终比、不取近 5 日均值：均值口径要攒够几天才出数，而且「比一周
+    平均高」读不出「今天钱在往哪挪」。有一条日档就该出箭头，盘中也能读——分子分母
+    同受时间进度影响（10:30 的 3 亿 ÷ 同时点的行业合计），比值基本抵消，所以箭头
+    不必等收盘。它衡量的是「钱有多集中在这条线」，不是「放了多大成交量」。
     分母按「组」分别算：A股占比在 A股内、港股占比在港股内，不混。
     key 形如 "a/半导体"，组码就是斜杠前那段。 */
 function secShareDelta(cur){
@@ -1310,10 +1315,10 @@ function secShareDelta(cur){
   }
   if (nCur < 6) return null;
 
-  // 排除「与当前完全一致」的那一天：休市时拿到的是上一交易日的收盘值，
-  // 不排除的话今天会混进基准里，把变化率稀释成 0。
-  var hist = [];
-  for (var i=0;i<recs.length;i++){
+  // 从最近一天往前找第一条「与当前不一样」的日档。一样就说明现在看到的正是那天的
+  // 收盘值（休市、或刚收完盘写进去），拿它当基准会恒等于 0，必须跳过。
+  var base = null;
+  for (var i=recs.length-1;i>=0;i--){
     var r = recs[i];
     if (!r || !r.s) continue;
     var keys = 0, same = 0;
@@ -1323,62 +1328,73 @@ function secShareDelta(cur){
       if (Math.abs(cur[k2] - r.s[k2]) <= Math.max(1, r.s[k2] * 0.003)) same++;
     }
     if (keys >= 6 && same === keys) continue;
-    hist.push(r);
+    base = r; break;
   }
-  hist = hist.slice(-5);
-  if (!hist.length) return null;
+  if (!base) return null;
+
+  var totB = {};
+  for (var kb in base.s){
+    if (THEME_KEYS[kb]) continue;                 // 主题格不进分母
+    var c1 = kb.slice(0, kb.indexOf('/'));
+    totB[c1] = (totB[c1] || 0) + base.s[kb];
+  }
 
   var out = {};
   for (var name in cur){
     var code = name.slice(0, name.indexOf('/'));
-    if (!(totCur[code] > 0)) continue;
-    var sum = 0, n = 0;
-    for (var h=0;h<hist.length;h++){
-      var sr = hist[h].s, totH = 0;
-      for (var kk in sr){ if (!THEME_KEYS[kk] && kk.slice(0, kk.indexOf('/')) === code) totH += sr[kk]; }
-      if (!(totH > 0) || sr[name] == null) continue;
-      sum += sr[name] / totH; n++;
-    }
-    if (!n) continue;
+    if (!(totCur[code] > 0) || !(totB[code] > 0)) continue;
+    if (base.s[name] == null) continue;
     var now = cur[name] / totCur[code];
-    out[name] = { share: now, ds: (now - sum / n) * 100, days: n };
+    var was = base.s[name] / totB[code];
+    out[name] = { share: now, prev: was, ds: (now - was) * 100, d: base.d };
   }
   return out;
 }
 
 /* 收盘后把当天板块成交额存一份。三个约束：
-   1) 只在 15:00 之后存——盘中存进去的是半天的量，会污染基准；
-   2) 同一自然日 30 分钟节流——收盘后成交额不再变，没必要反复写；
-   3) 与上一交易日几乎一致就跳过——周末/节假日打开页面时，行情还是上一交易日的
-      收盘值，存进去会多一条日期对不上的假记录。 */
+   1) 盘中不存——存进去的是半天的量，会污染基准；
+   2) 同一天 30 分钟节流——收盘后成交额不再变，没必要反复写；
+   3) 值几乎不变就不存——长假打开页面时行情还是节前那天的，会多出一条错位记录。
+
+   日期取「行情对应的交易日」，不是「今天」。原先是「15:00 前直接 return、周末直接
+   return」，等于基准只在「收盘后恰好有人打开页面」那天才记得下来；漏一天，箭头就
+   跨两天比，漏几天就彻底没基准。现在非交易时段打开会补记最近一个工作日（行情正是
+   那天的收盘值），盘中只读不写。 */
 function maybeSaveSecDaily(){
   if (!SECS.length) return;
-  var bj = new Date(Date.now() + 8 * 3600 * 1000);
-  var wd = bj.getUTCDay();
-  // 周末直接不存。相似性判断能挡住「周末打开页面」，但挡不住全新的部署——
-  // 那时基准还是空的，没有可比的上一交易日，周六就会被记成一条日期错位的记录。
-  if (wd === 0 || wd === 6) return;
-  var hh = bj.getUTCHours(), mm = bj.getUTCMinutes();
-  if (hh * 60 + mm < 15 * 60) return;
   if (SEC_SAVE_TS && Date.now() - SEC_SAVE_TS < 30 * 60000) return;
 
-  var d = bj.toISOString().slice(0, 10);
+  var bj = new Date(Date.now() + 8 * 3600 * 1000);
+  var hh = bj.getUTCHours(), mm = bj.getUTCMinutes(), wd = bj.getUTCDay();
+  var mins = hh * 60 + mm;
+  if (wd >= 1 && wd <= 5 && mins >= 9 * 60 && mins < 15 * 60) return;   // 盘中不写
+
+  var dObj = new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate()));
+  var closed = wd >= 1 && wd <= 5 && mins >= 15 * 60;
+  if (!closed){
+    // 退到最近一个工作日：周末退到周五，开盘前退到昨天
+    do { dObj.setUTCDate(dObj.getUTCDate() - 1); }
+    while (dObj.getUTCDay() === 0 || dObj.getUTCDay() === 6);
+  }
+  var d = dObj.toISOString().slice(0, 10);
+
   var s = {};
   // 键必须和 secShareDelta 里读的一致（"a/半导体"），早先这里写的是 SECS[i].k，
   // 存进去是「半导体」、读的是「a/半导体」，永远对不上——基准攒了一年也画不出箭头。
   for (var i=0;i<SECS.length;i++) s[SECS[i].key] = Math.round(SECS[i].amt);
+
   var recs = SEC_BASE || [];
-  if (recs.length){
-    var last = recs[recs.length-1];
-    if (last && last.d !== d && last.s){
-      var keys = 0, same = 0;
-      for (var k in s){
-        if (last.s[k] == null) continue;
-        keys++;
-        if (Math.abs(s[k] - last.s[k]) <= Math.max(1, last.s[k] * 0.003)) same++;
-      }
-      if (keys >= 6 && same === keys) return;   // 行情还是上一交易日的，不存
+  var last = recs.length ? recs[recs.length-1] : null;
+  if (last && last.d === d) return;                 // 这天已经记过
+  if (last && last.s){
+    var keys = 0, same = 0;
+    for (var k in s){
+      if (last.s[k] == null) continue;
+      keys++;
+      if (Math.abs(s[k] - last.s[k]) <= Math.max(1, last.s[k] * 0.003)) same++;
     }
+    // 一格都没动，说明行情没换日（长假、临时休市），不能记成新的一天
+    if (keys >= 6 && same === keys) return;
   }
   SEC_SAVE_TS = Date.now();
   var pad = function(v){ return (v < 10 ? '0' : '') + v; };
@@ -1554,9 +1570,10 @@ function renderSectors(){
         + fmtAmt(s.amt) + shNote + '，'
         + s.up + '/' + s.n + ' 个指数上涨'
         + (s.th ? '。主题指数成分横跨多个行业，与上方行业格是同一批股票，不能再加一遍。' : '')
-        + (dl ? '　·　资金占比' + (s.th ? '' : ' ' + (dl.share*100).toFixed(1) + '%') + '，较前 '
-          + dl.days + ' 个交易日均值 '
-          + (dl.ds >= 0 ? '+' : '') + dl.ds.toFixed(1) + ' 个百分点' : '　·　资金占比基准还没攒够') + '">'
+        + (dl ? '　·　资金占比' + (s.th ? '' : ' ' + (dl.share*100).toFixed(1) + '%') + '，较 '
+          + (dl.d ? dl.d.slice(5) + ' 收盘' : '上一交易日') + ' '
+          + (dl.ds >= 0 ? '+' : '') + dl.ds.toFixed(1) + ' 个百分点'
+          : '　·　还没有收盘基准（收盘后自动记一条）') + '">'
         + '<i class="sz" style="background:rgba(' + rgb + ',' + (0.15 + 0.85*sh).toFixed(2) + ')"></i>'
         + '<div class="sn"><span class="nm">' + s.k + '</span>'
         + '<span class="sd ' + dsCls + '">' + dsTxt + '</span></div>'
@@ -4748,16 +4765,6 @@ function closeRs(){
 document.getElementById('rsClose').onclick = closeRs;
 document.getElementById('rsMask').onclick = function(e){
   if (e.target === this) closeRs();
-};
-
-document.getElementById('btnSync').onclick = function(){
-  var link = location.origin + '/?u=' + encodeURIComponent(WATCH_UID);
-  function fallback(){ window.prompt('在另一台设备打开这个链接，就是你现在的自选：', link); }
-  if (navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(link).then(function(){
-      toast('同步链接已复制，在另一台设备打开即可');
-    }).catch(fallback);
-  } else fallback();
 };
 
 document.getElementById('hSubs').onclick = function(e){
