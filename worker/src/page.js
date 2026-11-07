@@ -420,9 +420,10 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 }
 /* 自选标题行右侧的小按钮：上一版这里是「同步」，复制一条带编号的链接，
    谁打开谁能写。换成纯文本导入导出后，只需要一个入口。 */
-.sechd .io{margin-left:auto;font-size:10.5px;color:var(--txt3);border:1px solid var(--line);
-border-radius:5px;padding:2px 7px;cursor:pointer;user-select:none}
-.sechd .io:hover{color:var(--txt);border-color:var(--accent)}
+.sechd .io{margin-left:auto;font-size:11px;color:var(--txt);background:var(--bg3);
+border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer;
+user-select:none;white-space:nowrap}
+.sechd .io:hover{border-color:#c3cad8}
 
 /* ---- 自选导入导出 ---- */
 #ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
@@ -882,8 +883,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         导入<b>只追加</b>，不会删掉现有自选；重复的自动跳过。</div>
       <textarea id="ioTxt" spellcheck="false" placeholder="510300, 513180, 515880"></textarea>
       <div class="iobar">
-        <button class="pri" id="ioCopy">复制清单</button>
-        <button id="ioImport">导入清单</button>
+        <button id="ioCopy">复制清单</button>
+        <button class="pri" id="ioImport">导入清单</button>
         <span class="iom" id="ioMsg"></span>
       </div>
     </div>
