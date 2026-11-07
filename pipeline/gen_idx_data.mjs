@@ -15,17 +15,18 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const src = JSON.parse(await fs.readFile(path.join(ROOT, 'pipeline', 'index_map.json'), 'utf8'));
 
 /* 按指数分组：{ "沪深300": ["510300", ...], ... }
-   只保留 2 只及以上的组——单只的组去重时没有意义，还白占体积。
-   单只指数占比不小（约 230 个），砍掉后体积能少三成。 */
+   2026-11-07 恢复单只组。原先为省体积只留 2 只以上的组（约 230 个单只指数被砍），
+   后果是这 229 只 ETF 的 ix 变 null，而板块地图第一行就是 `if (!x.ix) continue`——
+   中概互联网 513050、港股创新药 513120、半导体 512480、通信 515880、中韩半导体
+   513310 全被整块丢掉，跨境只剩 40 亿、通信只剩 10 亿。去重只需要组内成员，
+   单只组一点都不多余，体积涨 11KB（gzip 约 4KB）远小于口径错误的代价。 */
 const all = {};
 for (const [code, v] of Object.entries(src.map)) {
   if (!v.idx) continue;
   (all[v.idx] ||= []).push(code);
 }
 const groups = {};
-let dropped = 0;
 for (const [k, v] of Object.entries(all)) {
-  if (v.length < 2) { dropped++; continue; }
   groups[k] = v.sort();
 }
 
@@ -41,6 +42,6 @@ await fs.writeFile(path.join(ROOT, 'worker', 'src', 'idx_data.js'), out, 'utf8')
 
 const n = Object.values(groups).reduce((a, b) => a + b.length, 0);
 console.log(`idx_data.js  ${(Buffer.byteLength(out) / 1024).toFixed(1)} KB`);
-console.log(`多只同指数 ${Object.keys(groups).length} 组 / 涉及 ${n} 只`);
-console.log(`单只指数 ${dropped} 个（不参与去重，已省略）`);
-console.log(`去重后全市场：${src.count} → 约 ${Object.keys(groups).length + (src.count - n)} 只`);
+const single = Object.values(groups).filter((v) => v.length === 1).length;
+console.log(`指数组 ${Object.keys(groups).length} 个 / 涉及 ${n} 只（其中单只指数 ${single} 个）`);
+console.log(`无跟踪标的：${src.count - n} 只（货币 27 只 + 新发未收录）`);

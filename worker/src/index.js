@@ -328,7 +328,7 @@ async function serveAll(env, ctx) {
    同日再升到 v5：板块分成 A股/港股/跨境 三组，各组独立分母，键改成「组码/板块名」
    （A股和港股都有「医药」「消费」，只用板块名会互相覆盖）。 */
 
-const SEC_DAILY_KEY = 'sec-daily-v5';
+const SEC_DAILY_KEY = 'sec-daily-v6';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {
