@@ -318,9 +318,12 @@ async function serveAll(env, ctx) {
 
    2026-11-07 从 v1 升到 v2：板块成员变了（科创半导体/芯片/创新药 这类主题原先
    被 '科创' 前缀判成宽基，整块不进分子），半导体一天差 170 多亿。口径变了，
-   旧记录不能混进均值，直接换 key 重新攒。 */
+   旧记录不能混进均值，直接换 key 重新攒。
 
-const SEC_DAILY_KEY = 'sec-daily-v2';
+   同日再升到 v3：板块成交额改成「每个跟踪指数只算代表标的」，不再把同指数
+   克隆的成交额相加（克隆倍数 1.1×~2.3×，半导体 39.8%→42.8%）。 */
+
+const SEC_DAILY_KEY = 'sec-daily-v3';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {

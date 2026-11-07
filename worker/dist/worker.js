@@ -317,9 +317,12 @@ async function serveAll(env, ctx) {
 
    2026-11-07 从 v1 升到 v2：板块成员变了（科创半导体/芯片/创新药 这类主题原先
    被 '科创' 前缀判成宽基，整块不进分子），半导体一天差 170 多亿。口径变了，
-   旧记录不能混进均值，直接换 key 重新攒。 */
+   旧记录不能混进均值，直接换 key 重新攒。
 
-const SEC_DAILY_KEY = 'sec-daily-v2';
+   同日再升到 v3：板块成交额改成「每个跟踪指数只算代表标的」，不再把同指数
+   克隆的成交额相加（克隆倍数 1.1×~2.3×，半导体 39.8%→42.8%）。 */
+
+const SEC_DAILY_KEY = 'sec-daily-v3';
 const SEC_DAILY_KEEP = 12;
 
 async function loadSecDaily(env) {
@@ -3737,6 +3740,11 @@ function maybeSaveSecDaily(){
   }).catch(function(){});
 }
 
+/* 一个指数只出一票：成交额和涨跌幅都取「代表标的」（KEEP = 同指数里成交额最大那只）。
+   为什么不把同指数所有 ETF 的成交额相加：一个指数发 14 只，14 只全进分子，
+   等于把「发行数量」混进「资金关注度」——2026-11-07 收盘实测克隆倍数 1.1×~2.3×，
+   人工智能因此被抬到 5.7%（只算代表是 2.9%），通信传媒被压到 10.8%（14.6%）。
+   与涨跌幅的「一指数一票」对齐之后，占比才是「钱落在哪条线」，不是「哪条线发得多」。 */
 function buildSectors(){
   var byIx = {};
   for (var i=0;i<DATA.length;i++){
@@ -3744,11 +3752,17 @@ function buildSectors(){
     if (x.g !== 'industry' || !x.ix) continue;
     if (!isFinite(x.chg) || !isFinite(x.amt)) continue;
     var o = byIx[x.ix];
-    if (!o) o = byIx[x.ix] = { ix:x.ix, c:x.c, n:x.n, chg:x.chg, best:x.amt, amt:x.amt, cnt:1 };
-    else {
-      o.cnt++; o.amt += x.amt;
-      if (x.amt > o.best){ o.best = x.amt; o.c = x.c; o.n = x.n; o.chg = x.chg; }
-    }
+    if (!o) o = byIx[x.ix] = { ix:x.ix, c:x.c, n:x.n, chg:x.chg, amt:0, cnt:0, rep:null, best:null };
+    o.cnt++;
+    if (KEEP[x.ix] === x.c) o.rep = x;
+    if (!o.best || x.amt > o.best.amt) o.best = x;
+  }
+  // 代表标的今天没成交（停牌/新发）就退到组内成交额最大的那只，
+  // 否则这个指数会带着 0 成交额混进板块，把涨幅加权拉向 0
+  for (var k0 in byIx){
+    var q0 = byIx[k0];
+    var pick = (q0.rep && q0.rep.amt > 0) ? q0.rep : q0.best;
+    q0.c = pick.c; q0.n = pick.n; q0.chg = pick.chg; q0.amt = pick.amt;
   }
   var sec = {};
   for (var k in byIx){
@@ -3835,7 +3849,7 @@ function renderSectors(){
     var dsTxt = (!dl || Math.abs(dl.ds) <= 0.5) ? ''
       : (dl.ds > 0 ? '↑' : '↓') + Math.abs(dl.ds).toFixed(1) + 'pt';
     h += '<div class="scell' + (SEC_OPEN === s.k ? ' on' : '') + '" data-sec="' + s.k + '"'
-      + ' title="' + s.k + '：' + s.n + ' 个跟踪指数，成交额 ' + fmtAmt(s.amt)
+      + ' title="' + s.k + '：' + s.n + ' 个跟踪指数（每个指数只算成交额最大那只），成交额 ' + fmtAmt(s.amt)
       + '（占行业板块 ' + share.toFixed(1) + '%），' + s.up + '/' + s.n + ' 个指数上涨'
       + (dl ? '　·　资金占比 ' + (dl.share*100).toFixed(1) + '%，较前 ' + dl.days + ' 个交易日均值 '
         + (dl.ds >= 0 ? '+' : '') + dl.ds.toFixed(1) + ' 个百分点' : '　·　资金占比基准还没攒够') + '">'
@@ -3858,7 +3872,7 @@ function renderSectors(){
     for (var q=0;q<SECS.length;q++) if (SECS[q].k === SEC_OPEN) cur = SECS[q];
     if (!cur){ SEC_OPEN = null; det.className = 'sdet'; return; }
     var rows = cur.ix.slice(0, 8), dh = '<div class="sdhd">' + cur.k + ' · 按涨幅排序 · '
-      + cur.n + ' 个跟踪指数（同指数多只 ETF 已合并）</div>';
+      + cur.n + ' 个跟踪指数（每个指数只算成交额最大那只）</div>';
     for (var r=0;r<rows.length;r++){
       var o = rows[r];
       var c2 = o.chg > 0 ? 'up' : (o.chg < 0 ? 'down' : 'flat');
