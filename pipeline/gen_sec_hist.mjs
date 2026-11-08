@@ -140,29 +140,11 @@ for (const [ix, codes] of Object.entries(IDX_GROUPS)) {
   ixDay.set(ix, arr);
 }
 
-// 涨跌幅另算：每个指数固定一只「代表」（整个窗口成交额合计最大的那只）。
-// 不能按天重选——最大额那只天天在换，价格序列拼起来会出现假跳空。
-// 用 close×adj_factor 消掉分红和份额拆分造成的台阶。
-const ixRet = new Map();
-for (const [ix, codes] of Object.entries(IDX_GROUPS)) {
-  let best = null, bestAmt = -1;
-  for (const c of codes) {
-    const m = byCode.get(c);
-    if (!m) continue;
-    let sum = 0;
-    for (let di = 0; di < dates.length; di++) sum += amtOf(c, dates[di]);
-    if (sum > bestAmt) { bestAmt = sum; best = c; }
-  }
-  const arr = new Array(dates.length).fill(NaN);
-  const m = best ? byCode.get(best) : null;
-  if (m) {
-    for (let di = 1; di < dates.length; di++) {
-      const p0 = m.get(dates[di - 1])?.c, p1 = m.get(dates[di])?.c;
-      if (p0 > 0 && p1 > 0) arr[di] = p1 / p0 - 1;
-    }
-  }
-  ixRet.set(ix, arr);
-}
+// 注：这里曾经还算过「ETF 口径的集中度与宽度」（18 个格 TOP3 占比、203 个指数里
+// 多少在涨）。2026-11-08 换成全 A 个股口径（见 gen_mkt_hist.mjs）：那个 57.7% 的分母
+// 只覆盖有 ETF 跟踪的行业，测的是「ETF 资金分布」不是市场结构，和全 A 的真实 24%
+// 差 2.4 倍。两个数并排放，会让人以为是同一件事的两个时点。
+// 现在这个脚本只管 36 格的占比，集中度 / 宽度归 gen_mkt_hist.mjs。
 
 // ---- 3. 归格 + 算占比 ----
 const meta = new Map();   // ix -> { key, code, th }
@@ -179,13 +161,6 @@ const cell = new Map();
 for (const k of keys.keys()) cell.set(k, new Array(dates.length).fill(0));
 
 const den = { a: [], hk: [], x: [] };
-const conc = [];
-// 宽度：A 股行业指数里当天上涨的占比（千分位）。集中度只说「钱压得多深」，
-// 宽度说「涨得多宽」——两个数单看都会误判：半导体 40% 既可能是主线，
-// 也可能是别的都塌了只剩它。四象限要把这两件事放在一起才读得出。
-// 按「指数」不按「格」数：只有 18 个格，宽度就成了 19 个离散台阶，图上是一条条竖线；
-// 指数有两百多个，同一个意思，分辨率够画散点。
-const brd = [];
 
 for (let di = 0; di < dates.length; di++) {
   const tot = { a: 0, hk: 0, x: 0 };
@@ -196,20 +171,6 @@ for (let di = 0; di < dates.length; di++) {
     if (!m.th) tot[m.code] += v;
   }
   den.a.push(tot.a); den.hk.push(tot.hk); den.x.push(tot.x);
-  // 集中度：A 股前三大板块占 A 股行业成交额的比重（抱团 vs 扩散）
-  const vals = [...keys].filter(([, v]) => v.code === 'a' && !v.th)
-    .map(([k]) => cell.get(k)[di]).sort((x, y) => y - x);
-  conc.push(tot.a > 0 ? Math.round((vals.slice(0, 3).reduce((s, v) => s + v, 0) / tot.a) * 1000) : 0);
-  let up = 0, nIx = 0;
-  for (const [ix, m] of meta) {
-    if (m.th || m.code !== 'a') continue;
-    if (!ixDay.get(ix)[di]) continue;
-    const r = ixRet.get(ix)[di];
-    if (!Number.isFinite(r)) continue;
-    nIx++;
-    if (r > 0) up++;
-  }
-  brd.push(nIx >= 40 ? Math.round((up / nIx) * 1000) : 0);
 }
 
 const s = {};
@@ -220,7 +181,7 @@ for (const [k, v] of keys) {
 }
 
 // ---- 4. 写文件 ----
-const body = JSON.stringify({ d: dates, s, c: conc, b: brd });
+const body = JSON.stringify({ d: dates, s });
 const js = '// 由 pipeline/gen_sec_hist.mjs 回算生成，勿手改。\n'
   + `// ${DAYS} 个交易日（${dates[0]} → ${dates[dates.length - 1]}）\n`
   + '// s[k] 是「占本组行业格成交额」的千分位整数（12.9% → 129），分母分组、主题不计入，与页面口径一致。\n'
@@ -256,5 +217,4 @@ console.log(`${DAILY_OUT}  ${(JSON.stringify(daily).length / 1024).toFixed(1)} K
   + `（${dailyDays.length} 天 × ${keys.size} 格）`);
 if (!JSON_ONLY) console.log(`${OUT}  ${(js.length / 1024).toFixed(1)} KB`);
 console.log(`  ${keys.size} 格 · ${dates.length} 个交易日 · ${dates[0]} → ${dates[dates.length - 1]}`);
-console.log(`  A股行业格占比合计 ${(sum / 10).toFixed(1)}% · 集中度 ${(conc[conc.length - 1] / 10).toFixed(1)}%`
-  + ` · 宽度 ${(brd[brd.length - 1] / 10).toFixed(1)}%`);
+console.log(`  A股行业格占比合计 ${(sum / 10).toFixed(1)}%`);
