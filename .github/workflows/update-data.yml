@@ -101,10 +101,14 @@ jobs:
       #   sec_daily.json  —— 90 天 × 36 格的绝对成交额（资金箭头的基准）
       #   mkt_hist.json   —— 250 天的全 A 集中度 / 宽度（四象限的散点云）
       # 以前前者靠浏览器收盘后写 KV（没人开页面就没那天），后者靠手动跑脚本提交源码。
+      # 这两步是「锦上添花」，不能因为它失败把整个数据发布带下来——
+      # 东财的板块接口限流比 ETF 行情狠，被限一次就红掉，等于当天的 K 线也没了。
+      # 失败就沿用 data 分支上上一次的那份，页面照常显示（只是那天的点不动）。
       - name: 回算板块日档与全 A 结构
+        continue-on-error: true
         run: |
-          node pipeline/gen_sec_hist.mjs --json-only
-          node pipeline/gen_mkt_hist.mjs
+          node pipeline/gen_sec_hist.mjs --json-only || echo "::warning::日档回算失败，沿用上一次发布的那份"
+          node pipeline/gen_mkt_hist.mjs || echo "::warning::全A结构回算失败，沿用上一次发布的那份"
           python3 - <<'PY'
           import json, pathlib
           d = json.loads(pathlib.Path('dist/sec_daily.json').read_text())
@@ -146,8 +150,8 @@ jobs:
           cp -r dist/hist "$PUB/"
           cp dist/manifest.json "$PUB/"
           cp dist/research.json "$PUB/"
-          cp dist/sec_daily.json "$PUB/"
-          cp dist/mkt_hist.json "$PUB/"
+          # 首次跑或回算失败时这两个文件可能不存在，别让 cp 把发布带崩
+          cp dist/sec_daily.json dist/mkt_hist.json "$PUB/" 2>/dev/null || true
           cd "$PUB"
           git init -q
           git config user.name "etf-board-bot"
