@@ -405,6 +405,35 @@ async function runContracts(base, pass) {
     if (!b.kv) bad('/api/status 显示 KV 未绑定（自选不会持久）');
   } else bad('/api/status 失败：' + r.text.slice(0, 160));
 
+  // 全 A 集中度 × 宽度：宽度必须是逐只个股，不是 128 个行业
+  r = await rawRequest(base, '/api/mkt', { cookie });
+  const mk = r.json();
+  if (mk && mk.ok) {
+    const su = mk.stockUp | 0, sd = mk.stockDn | 0;
+    const bExpect = (su + sd) > 0 ? su / (su + sd) * 100 : 0;
+    ok('/api/mkt ' + mk.d + ' 集中 ' + mk.c + '% · 宽度 ' + mk.b + '%（' + su + ' 涨 ' + sd + ' 跌）');
+    // 这一条是防回退的：上一版 b 用的是 upInd/n（行业口径），
+    // 数字看着也像模像样，只是系统性偏低一半。
+    if (Math.abs(mk.b - bExpect) > 0.05) {
+      bad('/api/mkt 宽度不是个股口径：b=' + mk.b + '，按 stockUp/(stockUp+stockDn) 应为 '
+        + bExpect.toFixed(2) + '（行业口径会明显偏低）');
+    }
+    if (su + sd < 3000) bad('/api/mkt 个股家数异常偏少 ' + (su + sd));
+    if (!(mk.c > 5 && mk.c < 90)) bad('/api/mkt 集中度越界 ' + mk.c + '%');
+    const h = mk.hist;
+    if (h && h.d && h.u && h.w) {
+      if (h.u.length === h.d.length && h.w.length === h.d.length) {
+        const li = h.d.length - 1;
+        ok('/api/mkt 历史 ' + h.d.length + ' 天，末点 ' + h.d[li] + ' '
+          + h.u[li] + ' 涨 ' + h.w[li] + ' 跌');
+        const hb = (h.u[li] + h.w[li]) > 0 ? h.u[li] / (h.u[li] + h.w[li]) * 1000 : 0;
+        if (Math.abs(h.b[li] - hb) > 5) {
+          bad('/api/mkt 历史宽度与家数对不上：b=' + h.b[li] + '‰，应为 ' + hb.toFixed(0) + '‰');
+        }
+      } else bad('/api/mkt 历史 u/w 与日期长度不一致，前端按索引取会错位');
+    } else bad('/api/mkt 历史缺少 u/w 家数数组，横轴无法显示个股口径');
+  } else bad('/api/mkt 失败：' + r.text.slice(0, 160));
+
   // 自选读写
   const wkey = 'watch:list:__selftest__';
   r = await rawRequest(base, '/api/watch?k=' + encodeURIComponent('__selftest__'), { cookie, method: 'POST', body: JSON.stringify({ list: ['510300'] }) });

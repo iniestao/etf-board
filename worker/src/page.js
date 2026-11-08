@@ -469,7 +469,7 @@ border:1px solid var(--line);border-radius:8px}
 background:var(--bg3);border:1px solid var(--line)}
 .scqhd .scqtag{margin-left:auto;font-size:9.5px;color:var(--txt3);letter-spacing:.2px;cursor:help}
 .scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
-.scqbody{display:grid;grid-template-columns:minmax(0,330px) 196px minmax(0,1fr);gap:18px;
+.scqbody{display:grid;grid-template-columns:minmax(0,360px) 190px minmax(0,1fr);gap:18px;
 align-items:start;margin-top:3px}
 .scqplot svg{display:block;width:100%;height:auto}
 .scqax{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;
@@ -479,13 +479,16 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:-1px}
 .scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
 .scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
 .scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
-.scqdesc{display:flex;flex-direction:column;gap:7px;padding-top:8px;min-width:0;max-width:620px}
+.scqdesc{display:flex;flex-direction:column;gap:7px;padding-top:8px;min-width:0;max-width:660px}
 .scqd{margin:0;font-size:12px;color:var(--txt2);line-height:1.7}
 .scqnote{margin:0;font-size:10px;color:var(--txt3);line-height:1.75}
 @media(max-width:820px){
   .scqbody{grid-template-columns:1fr;gap:4px}
   .scqplot{max-width:400px}
-  .scqstats{flex-direction:row;flex-wrap:wrap;gap:4px 20px;padding-top:6px}
+  /* 三项等宽并排、各自竖排。横排 wrap 会在 390px 下折成 2+1，
+     第三项孤零零占一整行，看着像漏了一块。 */
+  .scqstats{display:grid;grid-template-columns:repeat(3,1fr);gap:2px 8px;padding-top:6px}
+  .scqe{flex-direction:column;align-items:flex-start;gap:0}
   .scqdesc{padding-top:6px}
 }
 @media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:9.5px}}
@@ -1554,10 +1557,13 @@ function secQuadCard(){
   var now = MKT_NOW;
   var conc = now ? now.c : H.c[last] / 10;
   var brd = now ? now.b : (H.b[last] || 0) / 10;
-  var nInd = now ? now.n : (H.n[last] || 0);
-  var upInd = now ? now.up : Math.round((H.b[last] || 0) / 1000 * nInd);
+  // 宽度是个股口径：上涨家数 ÷ (上涨+下跌)。行业数只用来做数据完整性校验
+  // （MKT_INDS 匹配不全时 /api/mkt 会直接抛错，这里再兜一层）。
+  var upN = now ? now.stockUp : (H.u ? H.u[last] : 0);
+  var dnN = now ? now.stockDn : (H.w ? H.w[last] : 0);
+  var nStk = now ? (now.stockN || (upN + dnN)) : (H.n ? H.n[last] : 0);
   var top3 = (now && now.top3 && now.top3.length) ? now.top3 : (H.t3 || []);
-  if (!(conc > 0) || !(nInd >= 100)) return '';
+  if (!(conc > 0) || !(upN + dnN >= 1000)) return '';
 
   // 「今天」这个词只在真的是今天时才用。周六早上打开页面，行情还是周五收盘的，
   // 标成「今天」会让人以为周末在交易。
@@ -1643,48 +1649,52 @@ function secQuadCard(){
 
   var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
   var names = top3.length ? top3.join('、') : '前三大行业';
-  var upTxt = upInd + '/' + nInd;
+  var upTxt = upN + '/' + (upN + dnN);
+  // 描述里用「767 涨 4793 跌」而不是「767/5560 只在涨」——后者要读两遍才懂，
+  // 而且分母到底是「全部股票」还是「涨+跌」在句子里看不清。
+  var tally = upN + ' 涨 ' + dnN + ' 跌';
   var desc;
   if (hiC && !wide) desc = '钱压在 ' + names + ' 上（TOP3 占 ' + conc.toFixed(1) + '%），'
-    + nInd + ' 个行业只有 ' + upInd + ' 个在涨——赚了指数不赚面。';
+    + '全 A ' + tally + '——赚了指数不赚面。';
   else if (hiC && wide) desc = names + ' 领涨（TOP3 占 ' + conc.toFixed(1) + '%），'
-    + upTxt + ' 个行业在涨——有主线，也在扩散。';
-  else if (!hiC && wide) desc = upTxt + ' 个行业在涨，TOP3 只占 ' + conc.toFixed(1)
+    + tally + '——有主线，也在扩散。';
+  else if (!hiC && wide) desc = tally + '，TOP3 只占 ' + conc.toFixed(1)
     + '%——钱在轮着走，追高容易挨打。';
-  else desc = upTxt + ' 个行业在涨，TOP3 只占 ' + conc.toFixed(1)
+  else desc = tally + '，TOP3 只占 ' + conc.toFixed(1)
     + '%——没有主线，别硬找。';
 
-  // 行业数是 128 个「等权」样本，一只行业里几千只股票各涨各的，它看不见。
-  // 个股家数补这一层：今天 767 涨 4793 跌，和「9/128 个行业在涨」是同一件事的两个切面。
-  var stockLine = (now && now.stockUp > 0)
-    ? '<p class="scqstk">全 A 个股 ' + now.stockUp + ' 涨 ' + now.stockDn + ' 跌'
-      + (now.amt > 0 ? ' · 成交 ' + now.amt + ' 亿' : '') + '</p>' : '';
+  // 成交额单列：宽度回答「多少票在涨」，成交额回答「这个市场今天有多热」，
+  // 两个数放一起才看得出「缩量普涨」这类组合。
+  var stockLine = ''
+    + '<p class="scqstk">全 A 有成交 ' + nStk + ' 只'
+    + ((now && now.amt > 0) ? ' · 成交 ' + now.amt + ' 亿' : '') + '</p>';
 
   return '<div class="scq">'
     + '<div class="scqhd"><span>全 A 集中度 × 宽度</span>'
     + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em>'
-    + '<span class="scqtag" title="全 A 个股口径：东财 ' + nInd + ' 个行业、5563 只股票。'
+    + '<span class="scqtag" title="全 A 个股口径：5563 只 A 股逐只统计涨跌，当日有成交的 '
+    + nStk + ' 只进样本。集中度按东财 128 个行业的个股成交额加总。'
     + '与下方 36 格（ETF 成交额，532 亿）不是同一套数据，差 30 倍是正常的。">'
-    + nInd + ' 个行业 · ' + dayTag + '</span></div>'
+    + nStk + ' 只 · ' + dayTag + '</span></div>'
     + '<div class="scqbody"><div class="scqplot">' + svg
     + '<div class="scqax"><span>灰点＝近一年每个交易日</span>'
-    + '<span>横轴 上涨行业占比</span></div></div>'
+    + '<span>横轴 上涨个股占比</span></div></div>'
     + '<div class="scqstats">'
     + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
-    + '<em>' + upTxt + ' 个 · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
+    + '<em>' + upTxt + ' · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>同象限</span><b>' + samePct.toFixed(0) + '%</b>'
     + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
     + '</div>'
     + '<div class="scqdesc"><p class="scqd">' + desc + '</p>' + stockLine
-    + '<p class="scqnote">纵轴是全 A 前三大行业（东财口径，128 个行业）的成交额比重，'
-    + '横轴是当日上涨行业占比——都是个股数据，不是 ETF 成交额。'
-    + '两条虚线是近一年的中位（' + cMed.toFixed(1) + '% / 50%），把平面分成四种状态：'
-    + '左上抱团、右上主线上攻、右下轮动扩散、左下涣散。'
-    + '宽度天然两极——A 股要么普涨要么普跌，点云会分成左右两团，中间反而空，'
-    + '它不是均匀分布的。'
-    + '一年里有多少天跟你站在同一格，才算得出「这次是不是不一样」。</p></div>'
+    + '<p class="scqnote">纵轴：全 A 前三大行业（东财 128 个行业）的成交额占比。'
+    + '横轴：上涨个股占比，分母是「涨 + 跌」的家数，平盘停牌不进分母，50% 即涨跌各半。'
+    + '两个数都是逐只个股算的，不是 ETF 成交额；虚线是近一年中位（'
+    + cMed.toFixed(1) + '% / 50%），切出抱团、主线上攻、轮动扩散、涣散四种状态。'
+    + '个股家数比行业平滑——行业只有涨跌两种状态，一天 0/128 和 120/128 都常见；'
+    + '个股是几千个样本加总，点云铺得开，右侧（普涨）明显稀疏，这就是「跌多涨少」的形状。'
+    + '一年里有多少天跟你同格，才知道这次是不是不一样。</p></div>'
     + '</div></div>';
 }
 

@@ -100,6 +100,7 @@ jobs:
       # 板块地图要的两份「历史」，都不依赖任何人打开页面：
       #   sec_daily.json  —— 90 天 × 36 格的绝对成交额（资金箭头的基准）
       #   mkt_hist.json   —— 250 天的全 A 集中度 / 宽度（四象限的散点云）
+      # 后者是逐只个股回算的：5563 只 A 股各拉一次日 K，8 并发约 1-2 分钟。
       # 以前前者靠浏览器收盘后写 KV（没人开页面就没那天），后者靠手动跑脚本提交源码。
       # 这两步是「锦上添花」，不能因为它失败把整个数据发布带下来——
       # 东财的板块接口限流比 ETF 行情狠，被限一次就红掉，等于当天的 K 线也没了。
@@ -114,9 +115,14 @@ jobs:
           d = json.loads(pathlib.Path('dist/sec_daily.json').read_text())
           m = json.loads(pathlib.Path('dist/mkt_hist.json').read_text())
           print(f"日档 {len(d['days'])} 天 × {len(d['days'][-1]['s'])} 格，最新 {d['last_trade_date']}")
-          print(f"全A结构 {len(m['d'])} 天，行业 {m['inds']} 个，最新 {m['last_trade_date']}")
+          print(f"全A结构 {len(m['d'])} 天，行业 {m['inds']} 个，最新 {m['last_trade_date']}，"
+                f"{m['u'][-1]} 涨 {m['w'][-1]} 跌")
           assert len(d['days']) >= 60, '日档不足 60 天'
           assert len(m['d']) >= 200, '全A结构历史不足 200 天'
+          # 家数数组和日期必须同长，否则前端按索引取会错位到别的日子
+          assert len(m['u']) == len(m['d']) and len(m['w']) == len(m['d']), '涨跌家数与日期长度不一致'
+          # 全 A 有成交的股票常年在 4500-5500 之间。低于 3000 说明上游限流捞漏了
+          assert m['u'][-1] + m['w'][-1] > 3000, f"个股家数异常偏少 {m['u'][-1]}+{m['w'][-1]}"
           PY
 
       # 跟踪指数映射是盯盘页"同指数去重"的依据，季度手动更新一次即可

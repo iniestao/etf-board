@@ -780,13 +780,18 @@ async function serveMkt(env, ctx) {
     const d = back.toISOString().slice(0, 10);
     const t = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
 
+    // 宽度的分母是个股，不是行业：128 个行业里 9 个在涨（7.0%）和
+    // 716 只个股在涨（13.9%）是同一件事的两个切面，后者才是「有多少票在涨」。
+    // sUp/sDn 来自板块的 f104/f105（板块内上涨/下跌家数），128 个行业加总
+    // 就是全 A——11-06 实测 716 涨 4431 跌，与逐只个股 K 线回算的 716/4431 完全一致。
+    const sDir = sUp + sDn;
     const out = {
       ok: true, d, t,
       inds: want.size, n,
-      c: +t3.toFixed(2), b: n ? +(upInd / n * 100).toFixed(2) : 0,
+      c: +t3.toFixed(2), b: sDir ? +(sUp / sDir * 100).toFixed(2) : 0,
       up: upInd, top3: top3.map((b) => b.f14),
       amt: +(amt / 1e8).toFixed(0),
-      stockUp: sUp, stockDn: sDn,
+      stockUp: sUp, stockDn: sDn, stockN: sDir,
       src: 'eastmoney'
     };
 
@@ -799,7 +804,7 @@ async function serveMkt(env, ctx) {
         if (a) {
           const h = JSON.parse(await a.text());
           if (h && Array.isArray(h.d) && h.d.length >= 60) {
-            out.hist = { d: h.d, c: h.c, b: h.b, n: h.n, t3: h.t3 || [] };
+            out.hist = { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w, t3: h.t3 || [] };
           }
         }
       }
