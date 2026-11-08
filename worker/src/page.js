@@ -48,8 +48,20 @@ body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMa
 font-variant-numeric:tabular-nums;padding:14px 18px 40px}
 .wrap{max-width:1560px;margin:0 auto}
 header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
-h1{font-size:16px;font-weight:600;letter-spacing:.4px}
-h1 em{color:var(--txt3);font-weight:400;font-size:11.5px;font-style:normal;margin-left:8px}
+/* 标题：左边一个迷你柱线标识（三根递增柱），右边「ETF 盯盘」两段式——
+   ETF 用等宽小字压成标识词，盯盘是主语。比原来「ETF 全市场盯盘」一大串
+   平铺好读：一眼分得清「是什么」和「干什么」。 */
+h1{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:600;letter-spacing:.2px}
+h1 .mk{display:inline-flex;align-items:flex-end;gap:2px;width:24px;height:24px;padding:5px;
+  box-sizing:border-box;background:#eaf1ff;border-radius:7px}
+h1 .mk i{display:block;width:3px;border-radius:1px;background:var(--accent)}
+h1 .mk i:nth-child(1){height:5px;opacity:.4}
+h1 .mk i:nth-child(2){height:9px;opacity:.7}
+h1 .mk i:nth-child(3){height:14px}
+h1 .tag{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:1px;
+  color:var(--accent);background:#eaf1ff;border-radius:5px;padding:2px 6px}
+h1 em{color:var(--txt3);font-weight:400;font-size:12.5px;font-style:normal;margin-left:2px;
+  font-family:var(--mono);letter-spacing:.2px}
 .sp{flex:1}
 .dot{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;
 background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--txt2)}
@@ -904,7 +916,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <body>
 <div class="wrap">
 <header>
-  <h1>ETF 全市场盯盘 <em id="clock">--:--:--</em></h1>
+  <h1><span class="mk"><i></i><i></i><i></i></span><span class="tag">ETF</span>盯盘 <em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
   <span class="dot" id="d-src"><i></i><span id="srcName">连接中</span></span>
   <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
