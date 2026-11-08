@@ -733,6 +733,14 @@ const ON_FUT_SECIDS = [
 ];
 
 /** 期货主源：东财 push2delay（和全量快照同链路，数据中心出口不被 403） */
+/* 东财 ulist 偶发空返回/短超时（实测沙箱与 Worker 都遇到过，一次重试基本必中）。
+   这两个函数都是纯读取，重试无害。 */
+function emRetry(fn, wait) {
+  return fn().catch((e1) => new Promise((res, rej) => setTimeout(() => {
+    fn().then(res, (e2) => rej(e2 instanceof Error ? e2 : e1));
+  }, wait || 400)));
+}
+
 async function fetchFutEm() {
   const qs = ON_FUT_SECIDS.map((x) => x[0]).join(',');
   const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2'
@@ -822,10 +830,10 @@ async function serveOvernight() {
     return out;
   });
 
-  const futP = fetchFutEm()
+  const futP = emRetry(fetchFutEm)
     .catch(() => fetchFutSina())
     .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
-  const asiaP = fetchAsia().catch(() => []);   // 亚太失败同样只缺一行
+  const asiaP = emRetry(fetchAsia).catch(() => []);   // 亚太失败同样只缺一行
 
   const [us, fut, asia] = await Promise.all([usP, futP, asiaP]);
   return json({ ok: true, us, fut, asia, ts: Date.now() }, 600);
