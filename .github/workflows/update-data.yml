@@ -1,6 +1,7 @@
 name: 更新 ETF 数据
 
-# 每个交易日收盘后自动跑：拉数据 → 算因子 → 传 R2
+# 每个交易日收盘后自动跑：拉数据 → 算因子 → 补跟踪指数映射 → 传 data 分支
+# 映射有新增时会顺带把新分组重新部署到 Worker（见第 5 段），其余情况不碰线上。
 # 手动触发：Actions 页面点 Run workflow
 
 on:
@@ -97,6 +98,48 @@ jobs:
           assert h.get('bytes', 0) > 10e6, 'hist 总体积异常偏小'
           PY
 
+      # 跟踪指数映射是盯盘页「同指数去重」、「赛道→ETF」、PCF 预热的依据。
+      # 以前是季度手动重跑，结果新上市的 ETF 要等有人想起来才进表——这期间它们
+      # 各自成一组的独立行，同一只指数在榜单里重复出现，去重数字也对不上。
+      # 现在每天收盘后增量补一次：只抓 manifest 里还没有的代码（当天新上市那几只，
+      # 十几秒），抓完重新生成 idx_data.js。
+      #
+      # 放在「板块日档回算」之前：gen_sec_hist.mjs import 的就是 idx_data.js，
+      # 顺序反过来会让当天的板块日档还是旧分组。
+      # 失败不能带崩主流程——映射落后一天的代价只是新 ETF 暂不去重，不是错数。
+      - name: 增量补齐跟踪指数映射
+        id: idxmap
+        continue-on-error: true
+        run: |
+          node pipeline/fetch_index_map.mjs
+          node pipeline/gen_idx_data.mjs
+          # 两条脚本都是幂等的：内容没变不写盘，所以这里非空 = 真的有新 ETF 进来
+          if git diff --quiet -- pipeline/index_map.json worker/src/idx_data.js; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "映射无变化，跳过提交与重部署"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat -- pipeline/index_map.json worker/src/idx_data.js
+          fi
+
+      # 覆盖度体检：正常情况每天补完就是 98% 上下。掉下去只有两种可能——
+      # 上游限流导致上面那步大面积抓失败，或者真的涌进来一批新 ETF。
+      - name: 指数映射覆盖率检查
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          man = json.loads(pathlib.Path('dist/manifest.json').read_text())
+          src = json.loads(pathlib.Path('pipeline/index_map.json').read_text())
+          idx = src['map']
+          codes = [it['code'] for it in man['items']]
+          hit = sum(1 for c in codes if (idx.get(c) or {}).get('idx'))
+          rate = hit / len(codes)
+          print(f"跟踪指数已知 {hit}/{len(codes)} = {rate:.1%}（映射生成于 {src['generated_at'][:10]}）")
+          print(f"未收录 {len(codes) - hit} 只 → 这些不做同指数去重，会各自单独成行")
+          if rate < 0.95:
+              print('::warning::覆盖度低于 95%，多半是增量抓取被限流了，看「增量补齐跟踪指数映射」那步的日志')
+          PY
+
       # 板块地图要的两份「历史」，都不依赖任何人打开页面：
       #   sec_daily.json  —— 90 天 × 36 格的绝对成交额（资金箭头的基准）
       #   mkt_hist.json   —— 250 天的全 A 集中度 / 宽度（四象限的散点云）
@@ -123,23 +166,6 @@ jobs:
           assert len(m['u']) == len(m['d']) and len(m['w']) == len(m['d']), '涨跌家数与日期长度不一致'
           # 全 A 有成交的股票常年在 4500-5500 之间。低于 3000 说明上游限流捞漏了
           assert m['u'][-1] + m['w'][-1] > 3000, f"个股家数异常偏少 {m['u'][-1]}+{m['w'][-1]}"
-          PY
-
-      # 跟踪指数映射是盯盘页"同指数去重"的依据，季度手动更新一次即可
-      # （node pipeline/fetch_index_map.mjs && node pipeline/gen_idx_data.mjs，然后重新部署）。
-      # 这里只做覆盖度体检：新 ETF 上市会让覆盖率慢慢下滑，低于阈值就该重跑了。
-      - name: 指数映射覆盖率检查
-        run: |
-          python3 - <<'PY'
-          import json, pathlib, sys
-          man = json.loads(pathlib.Path('dist/manifest.json').read_text())
-          idx = json.loads(pathlib.Path('pipeline/index_map.json').read_text())['map']
-          codes = [it['code'] for it in man['items']]
-          hit = sum(1 for c in codes if (idx.get(c) or {}).get('idx'))
-          rate = hit / len(codes)
-          print(f'跟踪指数已知 {hit}/{len(codes)} = {rate:.1%}')
-          if rate < 0.90:
-              print('::warning::覆盖度低于 90%，重跑 pipeline/fetch_index_map.mjs 并重新部署 Worker')
           PY
 
       # ---------- 3. 发布历史数据 ----------
@@ -171,6 +197,52 @@ jobs:
                "$(ls "$PUB"/hist | wc -l) 个 hist"
           python3 -c "import json;d=json.load(open('$PUB/research.json'));print('因子研究数据:',d['generated_at'],'因子',d['ic']['n'],'个')"
 
+      # ---------- 5. 映射有变才回写仓库并重部署 ----------
+      # idx_data.js 是「构建时固化」进页面的（不额外发请求），所以补了映射必须重新部署
+      # 才生效。dist/worker.js 是网页粘贴部署用的单文件，必须跟源码同一次提交落地，
+      # 否则下次谁手动部署一次，就把今天补进来的 ETF 又抹掉了。
+      - name: 提交映射变更
+        id: idxcommit
+        if: steps.idxmap.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git config user.name "etf-board-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 单文件产物跟着重建（部署用的是 src/index.js，这份只是给人粘贴用的）
+          ( cd worker && node build.mjs && node --check dist/worker.js )
+          git add pipeline/index_map.json worker/src/idx_data.js worker/dist/worker.js
+          git commit -q -m "chore(idx): 增量补齐跟踪指数映射 $(date -u '+%Y-%m-%d')"
+          ok=0
+          for i in 1 2 3; do
+            # 先把提交重放到最新 main 上再推：checkout 的是开工那一刻的 main，
+            # 这十几分钟里有人推过代码的话，直接 push 会被 non-fast-forward 顶回来。
+            git fetch -q --depth=20 origin main
+            if ! git rebase -q origin/main; then
+              git rebase --abort || true
+              echo "::warning::与最新 main 冲突，放弃本次提交（明天会再补一次）"
+              break
+            fi
+            if git push -q origin HEAD:main; then ok=1; break; fi
+            echo "第 $i 次推送失败，5 秒后重试"; sleep 5
+          done
+          [ "$ok" = "1" ] || { echo "::error::映射提交推送失败"; exit 1; }
+          echo "已推送 $(git rev-parse --short HEAD)"
+
+      # 推送成功才部署：反过来的话线上会跑到仓库前面，下次有人部署就回退了。
+      # 用 GITHUB_TOKEN 的 push 不会触发 deploy-worker.yml（GitHub 的防递归约定），
+      # 所以这里自己调用一次 wrangler，而不能指望 push 去触发。
+      - name: 重新部署 Worker（映射已变）
+        if: steps.idxmap.outputs.changed == 'true' && steps.idxcommit.outcome == 'success'
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy
+
       # ---------- 4. 可选：同步到 R2 ----------
       # 只有在仓库变量 USE_R2=true（且配了那 4 个 secret）时才跑。
       # R2 比 GitHub raw 快，但开通要绑卡——不绑卡就跳过，不影响任何功能。
@@ -190,10 +262,24 @@ jobs:
 
       - name: 汇总
         if: always()
+        env:
+          IDX_OUTCOME: ${{ steps.idxmap.outcome }}
+          IDX_CHANGED: ${{ steps.idxmap.outputs.changed }}
+          IDX_DEPLOY: ${{ steps.idxcommit.outcome }}
         run: |
+          if [ "$IDX_OUTCOME" != "success" ]; then
+            idx="抓取失败，沿用旧映射（不影响行情与因子）"
+          elif [ "$IDX_CHANGED" != "true" ]; then
+            idx="无变化"
+          elif [ "$IDX_DEPLOY" = "success" ]; then
+            idx="新增 ETF 已补，Worker 已重部署"
+          else
+            idx="新增 ETF 已补，但提交/部署没走完，明天会再补"
+          fi
           {
             echo "### ETF 数据更新"
             echo "- 时间：$(date -u '+%Y-%m-%d %H:%M UTC')"
             echo "- 产物：$(du -sh dist 2>/dev/null | cut -f1)"
+            echo "- 跟踪指数映射：$idx"
             echo "- 状态：${{ job.status }}"
           } >> $GITHUB_STEP_SUMMARY

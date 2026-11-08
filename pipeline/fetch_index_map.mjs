@@ -12,6 +12,10 @@
  *   node pipeline/fetch_index_map.mjs --full              # 全量重抓
  *   node pipeline/fetch_index_map.mjs --concurrency 16
  *
+ * 增量模式已接进 .github/workflows/update-data.yml，每个交易日收盘后自动跑一次，
+ * 只抓当天新上市、映射表里还没有的代码（通常 5~15 只，十几秒）。内容没变化时
+ * 不写盘，所以不会每天产生一次空提交。
+ *
  * 输出：pipeline/index_map.json（183KB，属于源数据，随仓库走）
  *   { generated_at, count, indexes: { "沪深300": 42, ... },
  *     map: { "510300": { idx: "沪深300", raw: "沪深300指数" }, ... } }
@@ -181,15 +185,34 @@ async function writeOut(map, codes) {
   for (const v of Object.values(map)) if (v.idx) indexes[v.idx] = (indexes[v.idx] || 0) + 1;
 
   const missing = codes.filter((c) => !map[c]).length;
-  const out = {
-    generated_at: new Date().toISOString().slice(0, 19),
+  const body = {
     count: Object.keys(map).length,
     with_index: Object.values(map).filter((v) => v.idx).length,
     index_count: Object.keys(indexes).length,
     indexes: Object.fromEntries(Object.entries(indexes).sort((a, b) => b[1] - a[1])),
     map,
   };
-  await fs.writeFile(OUT, JSON.stringify(out, null, 0), 'utf8');
+  const out = { generated_at: new Date().toISOString().slice(0, 19), ...body };
+
+  /* 幂等写盘：内容没变就不碰文件。
+     这条脚本现在挂在每日 update-data 里跑，而 generated_at 每天都在变——
+     无条件写盘会让流水线每天产出一个「只改了时间戳」的提交，连带触发一次
+     Worker 重建部署。文件时间戳留成「上次真正变化的时间」，含义反而更准。 */
+  let prev = null;
+  try { prev = JSON.parse(await fs.readFile(OUT, 'utf8')); } catch { /* 首次运行 */ }
+  const prevBody = prev && {
+    count: prev.count,
+    with_index: prev.with_index,
+    index_count: prev.index_count,
+    indexes: prev.indexes,
+    map: prev.map,
+  };
+  if (prevBody && JSON.stringify(prevBody) === JSON.stringify(body)) {
+    console.log('映射无变化，跳过写盘（保留原 generated_at）');
+  } else {
+    await fs.writeFile(OUT, JSON.stringify(out, null, 0), 'utf8');
+    console.log(`已写入 ${path.relative(ROOT, OUT)}（generated_at ${out.generated_at}）`);
+  }
 
   const dedup = out.index_count + (out.count - out.with_index) + missing;
   console.log(`有跟踪标的 ${out.with_index} 只 / 无标的 ${out.count - out.with_index} 只 / 未抓 ${missing} 只`);

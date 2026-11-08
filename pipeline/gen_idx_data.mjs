@@ -31,17 +31,29 @@ for (const [k, v] of Object.entries(all)) {
 }
 
 const json = JSON.stringify(groups);
-const out = `// 由 pipeline/gen_idx_data.mjs 生成，勿手改
+const target = path.join(ROOT, 'worker', 'src', 'idx_data.js');
+const next = `// 由 pipeline/gen_idx_data.mjs 生成，勿手改
 // 来源：天天基金基金档案"跟踪标的"字段，逐只抓取后归一化
 // ${new Date().toISOString().slice(0, 10)} · ${Object.keys(groups).length} 组 / ${
   Object.values(groups).reduce((a, b) => a + b.length, 0)} 只
 export const IDX_GROUPS = ${json};
 `;
 
-await fs.writeFile(path.join(ROOT, 'worker', 'src', 'idx_data.js'), out, 'utf8');
+/* 幂等：分组没变就不重写文件。
+   update-data 每天都会调一次，若每次都刷新文件头里的日期，
+   `git diff` 天天非空，会拖着 Worker 每天重建部署一次。
+   判据只看分组 JSON 本身，日期只是「上次真正变化的时间」。 */
+let prevText = '';
+try { prevText = await fs.readFile(target, 'utf8'); } catch { /* 首次生成 */ }
+const same = prevText.includes(`export const IDX_GROUPS = ${json};`);
 
+if (same) {
+  console.log('idx_data.js 分组未变化，跳过写盘');
+} else {
+  await fs.writeFile(target, next, 'utf8');
+  console.log(`idx_data.js  ${(Buffer.byteLength(next) / 1024).toFixed(1)} KB`);
+}
 const n = Object.values(groups).reduce((a, b) => a + b.length, 0);
-console.log(`idx_data.js  ${(Buffer.byteLength(out) / 1024).toFixed(1)} KB`);
 const single = Object.values(groups).filter((v) => v.length === 1).length;
 console.log(`指数组 ${Object.keys(groups).length} 个 / 涉及 ${n} 只（其中单只指数 ${single} 个）`);
 console.log(`无跟踪标的：${src.count - n} 只（货币 27 只 + 新发未收录）`);
