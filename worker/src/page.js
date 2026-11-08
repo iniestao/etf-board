@@ -3,6 +3,7 @@ import { RESEARCH } from './research_data.js';
 import { ALPHA_META } from './alpha_meta.js';
 import { LAB } from './lab_data.js';
 import { SEC_HIST } from './sec_hist.js';
+import { MKT_HIST } from './mkt_hist.js';
 
 // 注入到 HTML 里的紧凑映射：{ "沪深300": ["510300", ...], ... }
 // 18KB 一次随页面下发，比再开一个 /api 接口划算——省一次 RTT，也省 Worker 的 CPU 配额。
@@ -26,6 +27,11 @@ const LAB_JS = JSON.stringify(LAB);
 // 31KB：换一次「这条线在一年里走到什么位置」，值得。页面上只有今天，
 // 而「今天 39%」和「今天 39%、一年 96 分位」是两个完全不同的判断。
 const SEC_HIST_JS = JSON.stringify(SEC_HIST);
+
+// 全 A 行业口径的 250 日集中度 / 宽度（东财 128 个行业），6KB。
+// 四象限用这份，不用 SEC_HIST——后者是 ETF 成交额口径，分母只有 18 个行业格，
+// TOP3 天然占一半以上（58.7%），测的是「ETF 资金分布」不是「市场结构」。
+const MKT_HIST_JS = JSON.stringify(MKT_HIST);
 
 export const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -461,6 +467,8 @@ border:1px solid var(--line);border-radius:8px}
 .scqhd>span:first-child{color:var(--txt2);font-weight:600}
 .scqhd .scqb{font-style:normal;font-weight:700;font-size:11px;padding:1px 7px;border-radius:4px;
 background:var(--bg3);border:1px solid var(--line)}
+.scqhd .scqtag{margin-left:auto;font-size:9.5px;color:var(--txt3);letter-spacing:.2px;cursor:help}
+.scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
 .scqbody{display:grid;grid-template-columns:minmax(0,330px) 196px minmax(0,1fr);gap:18px;
 align-items:start;margin-top:3px}
 .scqplot svg{display:block;width:100%;height:auto}
@@ -471,7 +479,7 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:-1px}
 .scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
 .scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
 .scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
-.scqdesc{display:flex;flex-direction:column;gap:7px;padding-top:8px;min-width:0}
+.scqdesc{display:flex;flex-direction:column;gap:7px;padding-top:8px;min-width:0;max-width:620px}
 .scqd{margin:0;font-size:12px;color:var(--txt2);line-height:1.7}
 .scqnote{margin:0;font-size:10px;color:var(--txt3);line-height:1.75}
 @media(max-width:820px){
@@ -973,6 +981,7 @@ var RESEARCH = ${RESEARCH_JS};
 var ALPHA_META = ${ALPHA_META_JS};
 var LAB = ${LAB_JS};
 var SEC_HIST = ${SEC_HIST_JS};
+var MKT_HIST = ${MKT_HIST_JS};
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -1406,6 +1415,27 @@ function loadSecBase(){
   }).catch(function(){ return null; });
 }
 
+/* 全 A 当天快照（集中度 / 宽度 / 涨跌行业数），给四象限卡片的「今天」那个点用。
+   60 秒边缘缓存，盘中不必秒级——这个数是「市场今天什么状态」，
+   不是「这一秒发生了什么」，一分钟的滞后不影响判断。
+   失败就保持 null：卡片退回基线最后一天，标日期，不留空白。 */
+var MKT_REQ = false;
+
+function loadMktSnap(){
+  if (MKT_REQ) return;
+  MKT_REQ = true;
+  return fetch('/api/mkt').then(function(r){ return r.json(); }).then(function(j){
+    if (j && j.ok && j.c > 0 && j.n >= 100){
+      MKT_NOW = j;
+      // 接口顺带带回 250 天历史（Actions 每天重写）。内联那份是部署时固化的，
+      // 不覆盖的话，一个月不发布散点云就停在原地，而「今天」每天往里走。
+      if (j.hist && j.hist.d && j.hist.d.length >= 60) MKT_HIST = j.hist;
+      if (SECS.length) renderSectors();   // 盘子已经画出来了，补上今天这个点
+    }
+    return MKT_NOW;
+  }).catch(function(){ MKT_REQ = false; return null; });
+}
+
 /* ---------- 板块占比走势 ----------
    数据来自 worker/src/sec_hist.js：250 个交易日的「占本组行业格成交额」，
    按当前口径回算（每个指数只算成交额最大那只、主题不进分母、三组各算各的）。
@@ -1481,23 +1511,17 @@ function secSharePct(key, share){
   return n / a.length * 100;
 }
 
-/** 当前值在过去一年里的分位（0 最低、100 最高）。没有历史返回 null。 */
-function secConcPct(v){
-  var H = SEC_HIST;
-  if (!H || !H.c || H.c.length < 40) return null;
-  var c = H.c, n = 0;
-  for (var i=0;i<c.length;i++) if (c[i] / 10 <= v) n++;
-  return n / c.length * 100;
+/** 某个值在一条历史序列里的分位（0 最低、100 最高）。没有历史返回 null。 */
+function mktPct(arr, v){
+  if (!arr || arr.length < 40) return null;
+  var n = 0;
+  for (var i=0;i<arr.length;i++) if (arr[i] / 10 <= v) n++;
+  return n / arr.length * 100;
 }
 
-/** 宽度（上涨格占比）在过去一年里的分位。 */
-function secBrdPct(v){
-  var H = SEC_HIST;
-  if (!H || !H.b || H.b.length < 40) return null;
-  var b = H.b, n = 0;
-  for (var i=0;i<b.length;i++) if (b[i] / 10 <= v) n++;
-  return n / b.length * 100;
-}
+/* 当天的全 A 快照，来自 /api/mkt。null 的时候卡片退回基线最后一天，
+   并标注日期——宁可显示「截至 11-06」，也不要在页面上留一块空白。 */
+var MKT_NOW = null;
 
 /* 集中度 × 宽度 四象限。
    单看集中度会误判：半导体占到 40%，可以是「主线就在这儿」，也可以是「别的全塌了
@@ -1515,58 +1539,32 @@ var QUAD_INFO = {
   lw:{ n:'轮动扩散', c:'#2563eb' },
   ll:{ n:'涣散无主线', c:'#5b6472' }
 };
-/* 今天的集中度与宽度。卡片和「收盘记日档」都用它——两处口径必须是同一个函数，
-   否则散点云的尾巴和今天的点会飘在两条口径上，图上看着像数据错乱。
-   宽度按指数数、不按格数：18 个格只有 19 个离散值，散点会排成一条条竖线。 */
-function secQuadOf(core, coreAmt){
-  var n = core ? core.length : 0, i, j, nIx = 0, nUp = 0;
-  for (i=0;i<n;i++){
-    var a = core[i].ix;
-    for (j=0;j<a.length;j++){
-      if (!(a[j].amt > 0)) continue;
-      nIx++;
-      if (a[j].chg > 0) nUp++;
-    }
-  }
-  var byAmt = (core || []).slice().sort(function(x,y){ return y.amt - x.amt; });
-  var s3 = 0;
-  for (i=0;i<3 && i<byAmt.length;i++) s3 += byAmt[i].amt;
-  return {
-    conc: coreAmt > 0 ? s3 / coreAmt * 100 : 0,
-    brd: nIx ? nUp / nIx * 100 : 0,
-    nUp: nUp, nIx: nIx,
-    top3: byAmt.slice(0, 3).map(function(o){ return o.k; })
-  };
-}
+function secQuadCard(){
+  var H = MKT_HIST;
+  if (!H || !H.c || H.c.length < 60 || !H.b) return '';
 
-function secQuadCard(core, coreAmt){
-  var H = SEC_HIST;
-  if (!H || !H.c || H.c.length < 40 || !H.b || H.b.length < 40) return '';
-  if (!core || core.length < 5) return '';
+  var last = H.c.length - 1;
+  var now = MKT_NOW;
+  var conc = now ? now.c : H.c[last] / 10;
+  var brd = now ? now.b : (H.b[last] || 0) / 10;
+  var nInd = now ? now.n : (H.n[last] || 0);
+  var upInd = now ? now.up : Math.round((H.b[last] || 0) / 1000 * nInd);
+  var top3 = (now && now.top3 && now.top3.length) ? now.top3 : (H.t3 || []);
+  if (!(conc > 0) || !(nInd >= 100)) return '';
 
-  var Q0 = secQuadOf(core, coreAmt);
-  var nIx = Q0.nIx, nUp = Q0.nUp, conc = Q0.conc, brd = Q0.brd;
-  if (nIx < 40 || !(conc > 0)) return '';
+  // 「今天」这个词只在真的是今天时才用。周六早上打开页面，行情还是周五收盘的，
+  // 标成「今天」会让人以为周末在交易。
+  var bjDay = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  var curDay = now ? now.d : H.d[last];
+  var dayTag = curDay === bjDay ? '今天' : curDay.slice(5) + ' 收盘';
 
-  // 历史序列（千分位 → 百分数）。c 与 b 同长，缺一天就整体不用。
   var i, C = [], B = [];
   for (i=0;i<H.c.length;i++){
-    var cv = H.c[i] / 10, bv = (H.b[i] || 0) / 10;
-    if (cv > 0 && H.b[i] > 0){ C.push(cv); B.push(bv); }
+    if (H.c[i] > 0){ C.push(H.c[i] / 10); B.push((H.b[i] || 0) / 10); }
   }
-  // 基线之后的尾巴用日档补：比基线新、且带了 c/b 的日档才用（这两个字段是后加的，
-  // 老记录没有）。不补的话，基线一旦停止更新，散点云就停在原地，
-  // 「今天」越走越远，看起来像异常值。
-  var recs = SEC_BASE || [], lastD = H.d[H.d.length - 1];
-  for (i=0;i<recs.length;i++){
-    var r = recs[i];
-    if (!r || !r.d || r.d <= lastD) continue;
-    if (!(r.c > 0) || !(r.b > 0)) continue;
-    C.push(r.c / 10); B.push(r.b / 10);
-  }
-  if (C.length < 40) return '';
+  if (C.length < 60) return '';
 
-  var sortedC = C.slice().sort(function(a,b){ return a - b; });
+  var sortedC = C.slice().sort(function(x,y){ return x - y; });
   var cMed = sortedC[Math.floor(sortedC.length / 2)];
   var hiC = conc >= cMed, wide = brd >= 50;
   var q = QUAD_INFO[(hiC ? 'h' : 'l') + (wide ? 'w' : 'l')];
@@ -1609,14 +1607,15 @@ function secQuadCard(core, coreAmt){
       + '" font-size="8.5" fill="#a7aeb9">' + xs[i] + '%</text>';
   }
 
+  // 角标签垫一圈白：点云密的地方（左下、右上）纯灰字会被点淹没，
+  // paint-order=stroke 让描边只画在字的外圈，不啃字形
   var lbl = function(t, x, y, anch){
     return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + anch
-      + '" font-size="8.5" fill="#c2c8d2">' + t + '</text>';
+      + '" font-size="8.5" fill="#b6bdc9" stroke="#fff" stroke-width="2.6"'
+      + ' paint-order="stroke" stroke-linejoin="round">' + t + '</text>';
   };
 
   var svg = '<svg viewBox="0 0 ' + W + ' ' + HT + '" role="img" aria-label="集中度与宽度四象限散点图">'
-    + '<rect x="' + x0 + '" y="' + y0 + '" width="' + (x1 - x0) + '" height="' + (y1 - y0)
-    + '" fill="none"/>'
     + '<line x1="' + px(50).toFixed(1) + '" y1="' + y0 + '" x2="' + px(50).toFixed(1)
     + '" y2="' + y1 + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
     + '<line x1="' + x0 + '" y1="' + py(cMed).toFixed(1) + '" x2="' + x1 + '" y2="'
@@ -1626,7 +1625,8 @@ function secQuadCard(core, coreAmt){
     + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="6.5" fill="' + q.c + '" fill-opacity=".14"/>'
     + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="3.3" fill="' + q.c + '" stroke="#fff" stroke-width="1"/>'
     + '<text x="' + (tX + txDx).toFixed(1) + '" y="' + (tY - 8).toFixed(1) + '" text-anchor="' + txAnchor
-    + '" font-size="9" font-weight="700" fill="' + q.c + '">今天</text>'
+    + '" font-size="9" font-weight="700" fill="' + q.c + '">'
+    + (curDay === bjDay ? '今天' : curDay.slice(5)) + '</text>'
     + lbl('抱团', x0 + 5, y0 + 11, 'start')
     + lbl('主线上攻', x1 - 5, y0 + 11, 'end')
     + lbl('涣散', x0 + 5, y1 - 5, 'start')
@@ -1634,37 +1634,50 @@ function secQuadCard(core, coreAmt){
     + tk + xRow
     + '</svg>';
 
-  var c3 = secConcPct(conc), b3 = secBrdPct(brd);
-  var names = Q0.top3.join('、'), upTxt = nUp + '/' + nIx;
+  var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
+  var names = top3.length ? top3.join('、') : '前三大行业';
+  var upTxt = upInd + '/' + nInd;
   var desc;
   if (hiC && !wide) desc = '钱压在 ' + names + ' 上（TOP3 占 ' + conc.toFixed(1) + '%），'
-    + nIx + ' 个指数只有 ' + nUp + ' 个在涨——赚了指数不赚面。';
+    + nInd + ' 个行业只有 ' + upInd + ' 个在涨——赚了指数不赚面。';
   else if (hiC && wide) desc = names + ' 领涨（TOP3 占 ' + conc.toFixed(1) + '%），'
-    + nUp + '/' + nIx + ' 个指数在涨——有主线，也在扩散。';
-  else if (!hiC && wide) desc = nUp + '/' + nIx + ' 个指数在涨，TOP3 只占 ' + conc.toFixed(1)
+    + upTxt + ' 个行业在涨——有主线，也在扩散。';
+  else if (!hiC && wide) desc = upTxt + ' 个行业在涨，TOP3 只占 ' + conc.toFixed(1)
     + '%——钱在轮着走，追高容易挨打。';
-  else desc = nUp + '/' + nIx + ' 个指数在涨，TOP3 只占 ' + conc.toFixed(1)
+  else desc = upTxt + ' 个行业在涨，TOP3 只占 ' + conc.toFixed(1)
     + '%——没有主线，别硬找。';
 
+  // 行业数是 128 个「等权」样本，一只行业里几千只股票各涨各的，它看不见。
+  // 个股家数补这一层：今天 767 涨 4793 跌，和「9/128 个行业在涨」是同一件事的两个切面。
+  var stockLine = (now && now.stockUp > 0)
+    ? '<p class="scqstk">全 A 个股 ' + now.stockUp + ' 涨 ' + now.stockDn + ' 跌'
+      + (now.amt > 0 ? ' · 成交 ' + now.amt + ' 亿' : '') + '</p>' : '';
+
   return '<div class="scq">'
-    + '<div class="scqhd"><span>集中度 × 宽度</span>'
-    + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em></div>'
+    + '<div class="scqhd"><span>全 A 集中度 × 宽度</span>'
+    + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em>'
+    + '<span class="scqtag" title="全 A 个股口径：东财 ' + nInd + ' 个行业、5563 只股票。'
+    + '与下方 36 格（ETF 成交额，532 亿）不是同一套数据，差 30 倍是正常的。">'
+    + nInd + ' 个行业 · ' + dayTag + '</span></div>'
     + '<div class="scqbody"><div class="scqplot">' + svg
     + '<div class="scqax"><span>灰点＝近一年每个交易日</span>'
-    + '<span>横轴 上涨指数占比</span></div></div>'
+    + '<span>横轴 上涨行业占比</span></div></div>'
     + '<div class="scqstats">'
     + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
-    + '<em>' + upTxt + ' 只 · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
+    + '<em>' + upTxt + ' 个 · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>同象限</span><b>' + samePct.toFixed(0) + '%</b>'
     + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
     + '</div>'
-    + '<div class="scqdesc"><p class="scqd">' + desc + '</p>'
-    + '<p class="scqnote">纵轴是 A 股前三大板块的成交额比重，横轴是当日上涨指数占比。'
+    + '<div class="scqdesc"><p class="scqd">' + desc + '</p>' + stockLine
+    + '<p class="scqnote">纵轴是全 A 前三大行业（东财口径，128 个行业）的成交额比重，'
+    + '横轴是当日上涨行业占比——都是个股数据，不是 ETF 成交额。'
     + '两条虚线是近一年的中位（' + cMed.toFixed(1) + '% / 50%），把平面分成四种状态：'
     + '左上抱团、右上主线上攻、右下轮动扩散、左下涣散。'
-    + '一年里有多少天跟你今天站在同一格，才算得出「这次是不是不一样」。</p></div>'
+    + '宽度天然两极——A 股要么普涨要么普跌，点云会分成左右两团，中间反而空，'
+    + '它不是均匀分布的。'
+    + '一年里有多少天跟你站在同一格，才算得出「这次是不是不一样」。</p></div>'
     + '</div></div>';
 }
 
@@ -1843,25 +1856,10 @@ function maybeSaveSecDaily(){
   }
   SEC_SAVE_TS = Date.now();
   var pad = function(v){ return (v < 10 ? '0' : '') + v; };
-  // 顺带记下当天的集中度和宽度。四象限的散点云靠这两列往后接：只存成交额的话，
-  // 基线一停止更新，云就停在原地，而「今天」每天往里走，看起来像异常值。
-  var qNow = null;
-  for (var ga=0;ga<SEC_GROUPS_OUT.length;ga++){
-    if (SEC_GROUPS_OUT[ga].code !== 'a') continue;
-    var cA = [];
-    for (var ca=0;ca<SEC_GROUPS_OUT[ga].cells.length;ca++){
-      if (!SEC_GROUPS_OUT[ga].cells[ca].th) cA.push(SEC_GROUPS_OUT[ga].cells[ca]);
-    }
-    if (cA.length) qNow = secQuadOf(cA, SEC_GROUPS_OUT[ga].core);
-  }
+  // 这里只是兜底：主来源是 Actions 每天回算的 sec_daily.json（不依赖有人打开页面）。
+  // 以前还顺带记集中度/宽度，现在四象限改用全 A 口径、由 gen_mkt_hist 回算，
+  // 这两个字段已经没人读，再写进去只会让两套口径的数据混在同一个文件里。
   var body = { d: d, t: pad(hh) + ':' + pad(mm), s: s };
-  if (qNow && qNow.nIx >= 40){
-    // 千分位整数（58.7% → 587），和 SEC_HIST 里 c / b 的单位一致。
-    // 写成 ×1000 会得到 58694——服务端的上限 1000 会把它当脏数据丢掉，
-    // 前端这边看起来就是「写了但没存」。
-    body.c = Math.round(qNow.conc * 10);
-    body.b = Math.round(qNow.brd * 10);
-  }
   fetch('/api/secdaily', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2108,7 +2106,7 @@ function renderSectors(){
       + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
       + '<span class="sgm t3">' + nUp + ' 涨 ' + (core.length - nUp) + ' 跌</span>'
       + '</div>'
-      + (G2.code === 'a' ? secQuadCard(core, G2.core) : '')
+      + (G2.code === 'a' ? secQuadCard() : '')
       + '<div class="smgrid">'
       + cellHtml(G2, core, mxAmt, sdel)
       + (ths.length
@@ -5420,6 +5418,7 @@ function loadFull(){
       SEC_REQ = true;
       loadSecBase().then(function(){ if (SECS.length) renderSectors(); });
     }
+    loadMktSnap();
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
     // 涨速榜的池子是从这份快照里挑的，第一次拿到数据才有得挑
     if (!SPD.rows.length && !SPD.loading) spdFetch();
@@ -6060,6 +6059,9 @@ if (RS_MODE){
   pullResearch();
 } else {
   pullWatch();
+  // 全 A 快照和全量行情并行：它只要 0.5 秒，等 loadFull 的三四秒跑完再发，
+  // 首屏那张卡片就已经用基线最后一天画完了（会显示「11-06」而不是「今天」）
+  loadMktSnap();
   loadFull().then(function(){
     renderCards();
     mktInit();

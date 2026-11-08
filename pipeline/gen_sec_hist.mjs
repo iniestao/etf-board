@@ -17,15 +17,19 @@
  * 用法：node pipeline/gen_sec_hist.mjs [data/etf.db]
  */
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { IDX_GROUPS } from '../worker/src/idx_data.js';
 
 const DAYS = 250;
-const ARG = process.argv[2];
+const ARGV = process.argv.slice(2);
+const JSON_ONLY = ARGV.includes('--json-only');     // GitHub Actions 只更新日档，不改源码
+const ARG = ARGV.find((a) => !a.startsWith('--'));
 const DB = ARG || 'data/etf.db';
 const HIST_DIR = 'dist/hist';
 const OUT = 'worker/src/sec_hist.js';
+const DAILY_OUT = 'dist/sec_daily.json';
+const DAILY_KEEP = 90;    // 日档只需要「最近一个基准」，90 天足够覆盖长假和长停牌
 
 // ---- 1. 从 page.js 取分类逻辑（只取这三段，取不到就停）----
 const page = readFileSync('worker/src/page.js', 'utf8');
@@ -222,14 +226,35 @@ const js = '// 由 pipeline/gen_sec_hist.mjs 回算生成，勿手改。\n'
   + '// s[k] 是「占本组行业格成交额」的千分位整数（12.9% → 129），分母分组、主题不计入，与页面口径一致。\n'
   + '// c 是 A 股行业格每日 TOP3 集中度（千分位），b 是当日上涨格数占比（千分位）。c×b 画四象限。\n'
   + 'export const SEC_HIST = ' + body + ';\n';
-writeFileSync(OUT, js);
+if (!JSON_ONLY) writeFileSync(OUT, js);
+
+// ---- 4b. 日档（38 格的绝对成交额，不是占比）----
+// 用途只有一个：资金箭头拿「今天某格占比」减去「上一交易日同一格占比」。
+// 必须存绝对值——两天的分母不同（今天半导体多、昨天通信多），存占比就减不出东西。
+// 以前这份数据由浏览器在收盘后写 KV，没人打开页面就没有那天；
+// 现在由 Actions 每天从全市场日线回算，与 hist 同源同时刻。
+const dailyDays = [];
+for (let di = Math.max(0, dates.length - DAILY_KEEP); di < dates.length; di++) {
+  const sd = {};
+  for (const [k] of keys) sd[k] = Math.round(cell.get(k)[di]);
+  dailyDays.push({ d: dates[di], s: sd });
+}
+const daily = {
+  generated_at: new Date().toISOString(),
+  last_trade_date: dates[dates.length - 1],
+  days: dailyDays
+};
+mkdirSync('dist', { recursive: true });
+writeFileSync(DAILY_OUT, JSON.stringify(daily));
 
 // ---- 5. 自检：占比合计必须接近 100%，否则就是分母或归格错了 ----
 let sum = 0;
 for (const [k, v] of keys) if (v.code === 'a' && !v.th) sum += s[k][dates.length - 1];
 if (Math.abs(sum / 10 - 100) > 2) throw new Error(`A 股行业格占比合计 ${sum / 10}%，应为 100% 左右`);
 
-console.log(`${OUT}  ${(js.length / 1024).toFixed(1)} KB`);
+console.log(`${DAILY_OUT}  ${(JSON.stringify(daily).length / 1024).toFixed(1)} KB`
+  + `（${dailyDays.length} 天 × ${keys.size} 格）`);
+if (!JSON_ONLY) console.log(`${OUT}  ${(js.length / 1024).toFixed(1)} KB`);
 console.log(`  ${keys.size} 格 · ${dates.length} 个交易日 · ${dates[0]} → ${dates[dates.length - 1]}`);
 console.log(`  A股行业格占比合计 ${(sum / 10).toFixed(1)}% · 集中度 ${(conc[conc.length - 1] / 10).toFixed(1)}%`
   + ` · 宽度 ${(brd[brd.length - 1] / 10).toFixed(1)}%`);

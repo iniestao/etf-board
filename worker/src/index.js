@@ -1,5 +1,6 @@
 import { HTML } from './page.js';
 import { IDX_GROUPS } from './idx_data.js';
+import { MKT_INDS } from './mkt_hist.js';
 
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
@@ -331,12 +332,34 @@ async function serveAll(env, ctx) {
 const SEC_DAILY_KEY = 'sec-daily-v6';
 const SEC_DAILY_KEEP = 12;
 
+/**
+ * 每日板块成交额日档。
+ *
+ * 曾经只有 KV 一份：前端收盘后打开页面才写一条，「今天没人开页面」就等于没记录。
+ * 漏一天，资金箭头就跨两天比；漏几天，箭头直接消失。
+ *
+ * 现在主来源换成 data 分支的 sec_daily.json——GitHub Actions 每天 16:35 拉完全市场
+ * 日线后顺手回算 90 天（pipeline/gen_sec_hist.mjs），不依赖任何人打开页面。
+ * KV 退成兜底：Actions 挂了、文件还没发布时，至少还有前端现场记的那几条。
+ */
 async function loadSecDaily(env) {
+  try {
+    if (histSource(env)) {
+      const a = await readAsset(env, 'sec_daily.json');
+      if (a) {
+        const j = JSON.parse(await a.text());
+        if (j && Array.isArray(j.days) && j.days.length) {
+          // 半小时边缘缓存：一天只变一次，没必要每次都穿透到 GitHub
+          return json({ ok: true, days: j.days, src: 'data', last: j.last_trade_date }, 1800);
+        }
+      }
+    }
+  } catch (e) { /* 源文件读不到，往下走 KV */ }
+
   try {
     const raw = env && env.WATCH ? await env.WATCH.get(SEC_DAILY_KEY) : null;
     const days = raw ? JSON.parse(raw) : [];
-    // 60 秒边缘缓存：这数据一天只变几次，不必每次穿透到 KV
-    return json({ ok: true, days: Array.isArray(days) ? days : [] }, 60);
+    return json({ ok: true, days: Array.isArray(days) ? days : [], src: 'kv' }, 60);
   } catch (e) {
     return json({ ok: false, error: String(e.message || e) });
   }
@@ -668,6 +691,128 @@ async function serveWatch(request, env) {
  *
  * 26KB，边缘缓存 30 分钟。它一天只变一次，缓存成本可以忽略。
  */
+/**
+ * 全 A 行业口径的市场结构快照（集中度 × 宽度）。
+ *
+ * 板块地图上的四象限原本用 ETF 成交额算，那是错的：ETF 池子里只有 18 个行业格，
+ * TOP3 天然占一半以上（11-06：58.7%），而全 A 真实的行业集中度只有 24.1%。
+ * 更根本的是——ETF 二级市场成交是份额转让、不产生股票成交，半导体 ETF 一天
+ * 200 亿和半导体个股一天 2245 亿是两套资金，前者不能代表后者。
+ *
+ * 口径：东财行业板块列表返回 496 个（含「电子」这种一级和「半导体」这种二级，
+ * 直接加总会把同一批股票算两遍）。这里只取 MKT_INDS 里那 128 个扁平行业名——
+ * 个股的 f100 就是这套名字，一只股票只归一个行业，所以互不重叠。
+ *
+ * 4 页 × 100 条，约 0.4 秒。60 秒边缘缓存：盘中不必秒级，收盘后基本不动。
+ */
+async function serveMkt(env, ctx) {
+  const cache = await getCache();
+  const key = new Request('https://etf-board.internal/mkt/v1', { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+  }
+
+  // 排序键必须是**不变**的字段。用 fid=f6（成交额）翻页，盘中成交额每秒都在动，
+  // 第 2 页可能混进第 1 页已经出现过的板块、又漏掉另一批——实测只捞到 98/128 个行业。
+  // f12 是板块代码，天然稳定，5 页 496 条实测零重复零遗漏。
+  const CL = 'https://push2.eastmoney.com/api/qt/clist/get?pn=%d&pz=100&po=1&np=1'
+    + '&fltt=2&invt=2&fid=f12&fs=m:90+t:2&fields=f12,f14,f3,f6,f104,f105';
+  const one = async (pn) => {
+    let last;
+    for (let k = 0; k < 2; k++) {
+      try {
+        const r = await fetch(CL.replace('%d', pn), {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          cf: { cacheTtl: 30 }
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return await r.json();
+      } catch (e) { last = e; }
+    }
+    throw last;
+  };
+
+  try {
+    // 顺序拉，不并发：并发 4 页会被上游断连（socket closed）。
+    // 5 页约 0.5 秒，比一次失败的 1.5 秒快。
+    const all = [];
+    let total = 0;
+    for (let pn = 1; pn <= 8; pn++) {
+      const j = await one(pn);
+      if (!j || !j.data || !j.data.diff) throw new Error('上游无数据 p' + pn);
+      total = j.data.total || total;
+      all.push(...j.data.diff);
+      if (!j.data.diff.length || all.length >= total) break;
+    }
+
+    const want = new Set(MKT_INDS);
+    const pick = [];
+    for (const b of all) if (want.has(b.f14)) pick.push(b);
+    if (pick.length < want.size * 0.9) throw new Error('行业匹配不全 ' + pick.length + '/' + want.size);
+
+    let amt = 0, upInd = 0, n = 0, sUp = 0, sDn = 0;
+    for (const b of pick) {
+      const a = +b.f6 || 0;
+      amt += a;
+      if (+b.f3 > 0) upInd++;
+      if (a > 0) n++;
+      sUp += +b.f104 || 0;
+      sDn += +b.f105 || 0;
+    }
+    pick.sort((x, y) => (+y.f6 || 0) - (+x.f6 || 0));
+    const top3 = pick.slice(0, 3);
+    const t3 = amt > 0 ? top3.reduce((s, b) => s + (+b.f6 || 0), 0) / amt * 100 : 0;
+
+    // 报「行情对应的交易日」，不是「北京今天」。周六早上打开页面，成交额还是周五
+    // 收盘的，报成今天会让人以为周末在交易。周末和开盘前一律退到上一个工作日；
+    // 盘中（09:15 之后）就是今天。法定节假日识别不了——那天本来就没人看。
+    const bj = new Date(Date.now() + 8 * 3600e3);
+    const mins = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+    const wd = bj.getUTCDay();
+    const back = new Date(bj);
+    if (wd === 0 || wd === 6 || mins < 9 * 60 + 15) {
+      do { back.setUTCDate(back.getUTCDate() - 1); } while (back.getUTCDay() === 0 || back.getUTCDay() === 6);
+    }
+    const d = back.toISOString().slice(0, 10);
+    const t = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
+
+    const out = {
+      ok: true, d, t,
+      inds: want.size, n,
+      c: +t3.toFixed(2), b: n ? +(upInd / n * 100).toFixed(2) : 0,
+      up: upInd, top3: top3.map((b) => b.f14),
+      amt: +(amt / 1e8).toFixed(0),
+      stockUp: sUp, stockDn: sDn,
+      src: 'eastmoney'
+    };
+
+    // 顺带把 250 天的历史也带回去：页面内联的那份是部署时固化的，
+    // 一个月不重新发布，「今天」就会飘到散点云外面去。这份由 Actions 每天重写。
+    // 读不到就不带，页面继续用内联兜底——不会因此让整张卡片挂掉。
+    try {
+      if (histSource(env)) {
+        const a = await readAsset(env, 'mkt_hist.json');
+        if (a) {
+          const h = JSON.parse(await a.text());
+          if (h && Array.isArray(h.d) && h.d.length >= 60) {
+            out.hist = { d: h.d, c: h.c, b: h.b, n: h.n, t3: h.t3 || [] };
+          }
+        }
+      }
+    } catch (e) { /* 历史读不到，只有今天这个点 */ }
+    const res = json(out, 60);
+    if (cache && ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+    }
+    return res;
+  } catch (e) {
+    return json({ ok: false, error: String((e && e.message) || e) });
+  }
+}
+
 async function serveEvents(env, ctx) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -2387,6 +2532,11 @@ export default {
     if (p === '/api/all') {
       // 三层：边缘缓存 → KV 最近一次成功 → 现场拉（只在前两者都没有时才等上游）
       return serveAll(env, ctx);
+    }
+
+    if (p === '/api/mkt') {
+      // 全 A 行业口径的集中度 / 宽度（四象限卡片的当天点）
+      return serveMkt(env, ctx);
     }
 
     if (p === '/api/secdaily') {
