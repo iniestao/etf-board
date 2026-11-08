@@ -332,6 +332,17 @@ const SEC_DAILY_KEY = 'sec-daily-v6';
 const MKT_LAST_KEY = 'mkt-last';   // /api/mkt 最近一次成功的结果，上游挂掉时兜底
 const SEC_DAILY_KEEP = 12;
 
+/* KV 免费额度是 1000 次写/天，而上面这份快照原来是「每次算完就写一份」。
+   页面 60 秒一刷、边缘缓存 TTL 也是 60 秒，等于每次都错过缓存、每次都写——
+   单个标签页开着 24 小时就是 1440 次写，一个人就把额度吃光。额度满了之后
+   KV 全线 429：自选存不上、PCF 预热停摆、失败兜底也读不到，页面看着就像挂了。
+   现在按「值变了 + 距上次写满 10 分钟」才落盘。这份快照的唯一用途是上游抽风时
+   退回上一次成功的结果，10 分钟的粒度远远够用（同一天里集中度不会十分钟就变个样）。
+   变量放模块级：同一个 isolate 内共享，isolate 被回收后最多多写一次，无妨。 */
+const MKT_SNAP_GAP = 10 * 60 * 1000;
+let mktSnapAt = 0;
+let mktSnapSig = '';
+
 /**
  * 每日板块成交额日档。
  *
@@ -1005,7 +1016,12 @@ async function serveMkt(env, ctx) {
     }
     // 留一份最近成功的快照。东财的板块接口限流比 ETF 行情狠，连续翻几页就可能被断，
     // 失败时退回「几小时前的那份」，比让卡片掉回基线（可能是好几天前）强得多。
-    if (env && env.WATCH) {
+    // 但写要有节制，见 MKT_SNAP_GAP 那段：十分钟一次、且数值真变了才写。
+    const sig = [out.c, out.b, out.u, out.w, out.t, out.p5].join('|');
+    const nowMs = Date.now();
+    if (env && env.WATCH && sig !== mktSnapSig && nowMs - mktSnapAt >= MKT_SNAP_GAP) {
+      mktSnapAt = nowMs;
+      mktSnapSig = sig;
       const keep = { ...out };
       delete keep.hist;
       const put = env.WATCH.put(MKT_LAST_KEY, JSON.stringify(keep), { expirationTtl: 259200 });
