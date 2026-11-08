@@ -548,7 +548,7 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
 .scqfoot{margin-top:0}
 .scqstats{display:flex;flex-direction:column;gap:10px;
   padding:0 0 9px;border-bottom:1px solid var(--line)}
-.scqe{display:flex;align-items:baseline;gap:6px}
+.scqe{display:flex;align-items:baseline;gap:6px;cursor:help}
 .scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
 .scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
 .scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
@@ -1822,14 +1822,23 @@ function secQuadCard(){
     + '<div class="scqfoot"><div class="scqstats">'
     // 个股块紧挨着集中块：两个都是集中度，行业口径 24% vs 个股口径 43.5%，
     // 放一起才读得出「行业抱团」和「个股抱团」是两件事。放最后会被当成凑数的。
-    + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
+    + '<div class="scqe" title="成交额最大的 3 个行业（东财 128 个行业口径）合计占全市场'
+    + '成交额的比重——抓「钱压在几个行业里」。高于近一年中位算高集中，虚线就是那条中位线。'
+    + '分位数＝今天这个数排在近一年第几：90 分位＝比一年里 90% 的日子都更集中。'
+    + '单看会误判：40% 可以是主线就在这儿，也可以是别的全塌了只剩它在成交，'
+    + '所以要配合右边「宽度」一起读。">'
+    + '<span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 行业 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe" title="成交额最大的 5% 个股占全市场成交额的比重——上一行的「集中」'
     + '按行业加总，抓的是行业抱团；这个数抓个股抱团：一只票单日吃下全市场百分之几的成交，'
     + '行业口径看不见它。两个口径一起看，才分得清钱压在一个行业还是压在几只票。">'
     + '<span>个股</span><b>' + (p5 != null ? p5.toFixed(1) + '%' : '—') + '</b>'
     + '<em>前 5% 成交 · ' + (p53 != null ? p53.toFixed(0) + ' 分位' : '—') + '</em></div>'
-    + '<div class="scqe"><span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
+    + '<div class="scqe" title="全 A 个股口径：上涨家数 ÷（上涨＋下跌），50% 线以上算「宽」。'
+    + '衡量涨的是不是普涨——15 个行业在涨也可能是每个都涨 0.1% 的假扩散，这个数能分辨。'
+    + '分位数＝今天排在近一年第几。和「集中」配着读：高集中＋窄＝抱团，高集中＋宽＝主线上攻，'
+    + '低集中＋宽＝轮动扩散，低集中＋窄＝涣散（点右上角 ? 看四格详解）。">'
+    + '<span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
     + '<em>' + upTxt + ' · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>同象限</span><b>' + samePct.toFixed(0) + '%</b>'
     + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
