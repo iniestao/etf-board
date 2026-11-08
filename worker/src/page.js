@@ -91,6 +91,11 @@ background:var(--bg3)}
 .mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10px;opacity:.7}
 .mhead,.mrow{display:grid;grid-template-columns:minmax(0,1fr) 44px 48px 46px 58px;
   gap:8px;align-items:center}
+/* 宽屏两栏：13 行铺满 1376px 时，第一列会被 1fr 撑到 1148px，
+   名称只有 120px，中间一大条空白，看着像错行。分两栏后每行 ~660px，
+   名称和数字挨得上，同样高度还能多放一倍。表头跟着每栏各出一份。 */
+.mcols{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;align-items:start}
+@media(max-width:1100px){.mcols{grid-template-columns:1fr;gap:0}}
 @media(max-width:560px){
   /* 手机上一行放五列本来就紧，指数名让位给 ETF 名称，名称被截断更伤 */
   .mn em{display:none}
@@ -489,27 +494,42 @@ border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:1px}
 .scqfoot{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--line);
 font-size:9.5px;color:var(--txt3);line-height:1.55}
 .scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
-.scqbody{display:grid;grid-template-columns:minmax(0,360px) 190px minmax(0,1fr);gap:18px;
-align-items:start;margin-top:3px}
+/* 电脑为主：图独占一行、放到 1000px，统计和描述缩到图下方一行。
+   原来的三栏（360 图 + 190 统计 + 1fr 说明）在 1440 屏上图只有 360px，
+   而右边 660px 全是小字——主次反了。 */
+/* 图占满左侧，统计和一句话判断缩进右侧 292px。
+   用 1000px 定宽会把卡片右边空出 400px，而散点图本来还能再宽。 */
+.scqbody{display:grid;grid-template-columns:minmax(0,1fr) 292px;gap:18px;
+  align-items:start;margin-top:4px}
+.scqplot{max-width:none}
 .scqplot svg{display:block;width:100%;height:auto}
-.scqax{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;
-font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:-1px}
-.scqstats{display:flex;flex-direction:column;gap:9px;padding-top:8px}
+.scqplot svg.m{display:none}
+.scqax{display:flex;justify-content:flex-start;gap:16px;flex-wrap:wrap;
+font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
+/* 底部三块按图宽三等分：图 1000px，三项挤在左边 500px 会留下半屏空白，
+   而且和上面的图对不齐。等分后每块一个竖排单元，读起来像一行表头。 */
+.scqfoot{margin-top:0}
+.scqstats{display:flex;flex-direction:column;gap:10px;
+  padding:0 0 9px;border-bottom:1px solid var(--line)}
 .scqe{display:flex;align-items:baseline;gap:6px}
 .scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
 .scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
 .scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
-.scqdesc{display:flex;flex-direction:column;gap:7px;padding-top:8px;min-width:0;max-width:660px}
+.scqdesc{display:flex;flex-direction:column;gap:5px;padding-top:0;min-width:260px;flex:1;max-width:680px}
 .scqd{margin:0;font-size:12px;color:var(--txt2);line-height:1.7}
 .scqnote{margin:0;font-size:10px;color:var(--txt3);line-height:1.75}
 @media(max-width:820px){
   .scqbody{grid-template-columns:1fr;gap:4px}
-  .scqplot{max-width:400px}
+  .scqplot{max-width:100%}
+  /* 窄屏换成 360 画布，字号在原尺寸渲染，不再缩成 5px */
+  .scqplot svg.d{display:none}
+  .scqplot svg.m{display:block}
+  .scqfoot{margin-top:4px}
   /* 三项等宽并排、各自竖排。横排 wrap 会在 390px 下折成 2+1，
      第三项孤零零占一整行，看着像漏了一块。 */
   .scqstats{display:grid;grid-template-columns:repeat(3,1fr);gap:2px 8px;padding-top:6px}
   .scqe{flex-direction:column;align-items:flex-start;gap:0}
-  .scqdesc{padding-top:6px}
+  .scqdesc{padding-top:6px;min-width:0}
 }
 @media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:9.5px}}
 
@@ -721,7 +741,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
    两列在 1500px 下正好，窄屏退回单列。 */
 /* 用多列而不是 grid：这一列是按涨幅排序的，要竖着读。grid 是行优先，
    第二行会跳到右边一列，读起来是横着串的。column-rule 顺带把两列分开。 */
-.sdet .sdrwrap{column-count:2;column-gap:28px;column-rule:1px solid #d7dce5}
+.sdet .sdrwrap{column-count:3;column-gap:26px;column-rule:1px solid #d7dce5}
+@media(max-width:1240px){.sdet .sdrwrap{column-count:2}}
 @media(max-width:900px){.sdet .sdrwrap{column-count:1}}
 .sdet .sr{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:11.5px;
   border-bottom:1px dotted var(--line)}
@@ -1612,64 +1633,80 @@ function secQuadCard(){
   for (i=0;i<C.length;i++) if ((C[i] >= cMed) === hiC && (B[i] >= 50) === wide) sameN++;
   var samePct = sameN / C.length * 100;
 
-  var W = 320, HT = 168, ml = 33, mr = 10, mt = 9, mb = 16;
-  var x0 = ml, x1 = W - mr, y0 = mt, y1 = HT - mb;
-  var px = function(v){ return x0 + Math.max(0, Math.min(100, v)) / 100 * (x1 - x0); };
-  var py = function(v){ return y1 - (v - ylo) / (yhi - ylo) * (y1 - y0); };
+  // 同一张图出两套画布：桌面 620×210（渲染到约 1050px，字号≈15px），
+  // 手机 360×190（渲染到 370px，几乎 1:1，字号 9.5px）。
+  // SVG 是矢量的，宽度缩小所有字等比缩小——用一套 620 的画布塞进 370px 屏，
+  // 9px 字会变成 5.4px，等于没有。两套各约 2KB，比自己算缩放便宜。
+  var mkSvg = function (W, HT, ml, mr, mt, mb, fs, dot, cls) {
+    var x0 = ml, x1 = W - mr, y0 = mt, y1 = HT - mb;
+    var px = function(v){ return x0 + Math.max(0, Math.min(100, v)) / 100 * (x1 - x0); };
+    var py = function(v){ return y1 - (v - ylo) / (yhi - ylo) * (y1 - y0); };
 
-  // 250 个点不用 250 个 <circle>：一个 path 里串起来，描边圆头就是点。
-  var pG = '', pA = '';
-  for (i=0;i<C.length;i++){
-    var seg = 'M' + px(B[i]).toFixed(1) + ' ' + py(C[i]).toFixed(1) + 'h0';
-    if ((C[i] >= cMed) === hiC && (B[i] >= 50) === wide) pA += seg; else pG += seg;
-  }
-  var tX = px(brd), tY = py(conc);
-  var txAnchor = tX > x1 - 26 ? 'end' : (tX < x0 + 26 ? 'start' : 'middle');
-  var txDx = txAnchor === 'end' ? -7 : (txAnchor === 'start' ? 7 : 0);
+    // 250 个点不用 250 个 <circle>：一个 path 里串起来，描边圆头就是点。
+    var pG = '', pA = '';
+    for (i=0;i<C.length;i++){
+      var seg = 'M' + px(B[i]).toFixed(1) + ' ' + py(C[i]).toFixed(1) + 'h0';
+      if ((C[i] >= cMed) === hiC && (B[i] >= 50) === wide) pA += seg; else pG += seg;
+    }
+    var tX = px(brd), tY = py(conc);
+    var txAnchor = tX > x1 - W * 0.08 ? 'end' : (tX < x0 + W * 0.08 ? 'start' : 'middle');
+    var txDx = txAnchor === 'end' ? -7 : (txAnchor === 'start' ? 7 : 0);
 
-  var yTick = [cMax, cMed, cMin];
-  var tk = '';
-  for (i=0;i<yTick.length;i++){
-    tk += '<text x="' + (ml - 4) + '" y="' + (py(yTick[i]) + 3).toFixed(1)
-      + '" text-anchor="end" font-size="8.5" fill="#a7aeb9">' + yTick[i].toFixed(0) + '%</text>';
-  }
-  var xRow = '';
-  var xs = [0, 50, 100];
-  for (i=0;i<xs.length;i++){
-    xRow += '<text x="' + px(xs[i]).toFixed(1) + '" y="' + (y1 + 11)
-      + '" text-anchor="' + (i === 0 ? 'start' : (i === 2 ? 'end' : 'middle'))
-      + '" font-size="8.5" fill="#a7aeb9">' + xs[i] + '%</text>';
-  }
+    var yTick = [cMax, cMed, cMin];
+    var tk = '';
+    for (i=0;i<yTick.length;i++){
+      tk += '<text x="' + (ml - 4) + '" y="' + (py(yTick[i]) + 3).toFixed(1)
+        + '" text-anchor="end" font-size="' + fs + '" fill="#a7aeb9">'
+        + yTick[i].toFixed(0) + '%</text>';
+    }
+    var xRow = '';
+    var xs = [0, 50, 100];
+    for (i=0;i<xs.length;i++){
+      xRow += '<text x="' + px(xs[i]).toFixed(1) + '" y="' + (y1 + 15)
+        + '" text-anchor="' + (i === 0 ? 'start' : (i === 2 ? 'end' : 'middle'))
+        + '" font-size="' + fs + '" fill="#a7aeb9">' + xs[i] + '%</text>';
+    }
 
-  // 角标签垫一圈白：点云密的地方（左下、右上）纯灰字会被点淹没，
-  // paint-order=stroke 让描边只画在字的外圈，不啃字形
-  var lbl = function(t, x, y, anch){
-    return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + anch
-      + '" font-size="8.5" fill="#b6bdc9" stroke="#fff" stroke-width="2.6"'
-      + ' paint-order="stroke" stroke-linejoin="round">' + t + '</text>';
+    // 角标签垫一圈白：点云密的地方（左下、右上）纯灰字会被点淹没，
+    // paint-order=stroke 让描边只画在字的外圈，不啃字形
+    var lbl = function(t, x, y, anch){
+      return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + anch
+        + '" font-size="' + (fs * 1.05).toFixed(1) + '" fill="#b6bdc9" stroke="#fff"'
+        + ' stroke-width="' + (fs * 0.3).toFixed(1) + '"'
+        + ' paint-order="stroke" stroke-linejoin="round">' + t + '</text>';
+    };
+
+    return '<svg class="' + cls + '" viewBox="0 0 ' + W + ' ' + HT + '"'
+      + ' role="img" aria-label="集中度与宽度四象限散点图">'
+      + '<line x1="' + px(50).toFixed(1) + '" y1="' + y0 + '" x2="' + px(50).toFixed(1)
+      + '" y2="' + y1 + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
+      + '<line x1="' + x0 + '" y1="' + py(cMed).toFixed(1) + '" x2="' + x1 + '" y2="'
+      + py(cMed).toFixed(1) + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
+      + '<path d="' + pG + '" stroke="#c3cad6" stroke-width="' + dot + '" stroke-linecap="round" fill="none"/>'
+      + '<path d="' + pA + '" stroke="' + q.c + '" stroke-width="' + (dot * 1.13).toFixed(2)
+      + '" stroke-linecap="round" fill="none" stroke-opacity=".6"/>'
+      + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="' + (dot * 3).toFixed(1)
+      + '" fill="' + q.c + '" fill-opacity=".14"/>'
+      + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="' + (dot * 1.47).toFixed(1)
+      + '" fill="' + q.c + '" stroke="#fff" stroke-width="1.4"/>'
+      + '<text x="' + (tX + txDx).toFixed(1) + '" y="' + (tY - dot * 2.7).toFixed(1)
+      + '" text-anchor="' + txAnchor + '" font-size="' + (fs * 1.1).toFixed(1)
+      + '" font-weight="700" fill="' + q.c + '">'
+      + (curDay === bjDay ? '今天' : curDay.slice(5)) + '</text>'
+      + lbl('抱团', x0 + 5, y0 + fs + 2, 'start')
+      + lbl('主线上攻', x1 - 5, y0 + fs + 2, 'end')
+      + lbl('涣散', x0 + 5, y1 - 5, 'start')
+      + lbl('轮动扩散', x1 - 5, y1 - 5, 'end')
+      + tk + xRow
+      + '</svg>';
   };
-
-  var svg = '<svg viewBox="0 0 ' + W + ' ' + HT + '" role="img" aria-label="集中度与宽度四象限散点图">'
-    + '<line x1="' + px(50).toFixed(1) + '" y1="' + y0 + '" x2="' + px(50).toFixed(1)
-    + '" y2="' + y1 + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
-    + '<line x1="' + x0 + '" y1="' + py(cMed).toFixed(1) + '" x2="' + x1 + '" y2="'
-    + py(cMed).toFixed(1) + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
-    + '<path d="' + pG + '" stroke="#c3cad6" stroke-width="2.4" stroke-linecap="round" fill="none"/>'
-    + '<path d="' + pA + '" stroke="' + q.c + '" stroke-width="2.6" stroke-linecap="round" fill="none" stroke-opacity=".55"/>'
-    + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="6.5" fill="' + q.c + '" fill-opacity=".14"/>'
-    + '<circle cx="' + tX.toFixed(1) + '" cy="' + tY.toFixed(1) + '" r="3.3" fill="' + q.c + '" stroke="#fff" stroke-width="1"/>'
-    + '<text x="' + (tX + txDx).toFixed(1) + '" y="' + (tY - 8).toFixed(1) + '" text-anchor="' + txAnchor
-    + '" font-size="9" font-weight="700" fill="' + q.c + '">'
-    + (curDay === bjDay ? '今天' : curDay.slice(5)) + '</text>'
-    + lbl('抱团', x0 + 5, y0 + 11, 'start')
-    + lbl('主线上攻', x1 - 5, y0 + 11, 'end')
-    + lbl('涣散', x0 + 5, y1 - 5, 'start')
-    + lbl('轮动扩散', x1 - 5, y1 - 5, 'end')
-    + tk + xRow
-    + '</svg>';
+  var svgD = mkSvg(620, 210, 42, 16, 14, 24, 9, 3, 'd');
+  var svgM = mkSvg(360, 190, 36, 10, 12, 20, 9.5, 2.6, 'm');
+  var svg = svgD + svgM;
 
   var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
-  var names = top3.length ? top3.join('、') : '前三大行业';  var upTxt = upN + '/' + (upN + dnN);
+  var names = top3.length ? top3.join('、') : '前三大行业';
+  var upTxt = upN + '/' + (upN + dnN);
   // 描述里用「767 涨 4793 跌」而不是「767/5560 只在涨」——后者要读两遍才懂，
   // 而且分母到底是「全部股票」还是「涨+跌」在句子里看不清。
   var tally = upN + ' 涨 ' + dnN + ' 跌';
@@ -1724,7 +1761,7 @@ function secQuadCard(){
     + '<div class="scqbody"><div class="scqplot">' + svg
     + '<div class="scqax"><span>灰点＝近一年每个交易日</span>'
     + '<span>横轴 上涨个股占比</span></div></div>'
-    + '<div class="scqstats">'
+    + '<div class="scqfoot"><div class="scqstats">'
     + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
@@ -1733,14 +1770,9 @@ function secQuadCard(){
     + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
     + '</div>'
     + '<div class="scqdesc"><p class="scqd">' + desc + '</p>' + stockLine
-    + '<p class="scqnote">纵轴：全 A 前三大行业（东财 128 个行业）的成交额占比。'
-    + '横轴：上涨个股占比，分母是「涨 + 跌」的家数，平盘停牌不进分母，50% 即涨跌各半。'
-    + '两个数都是逐只个股算的，不是 ETF 成交额；虚线是近一年中位（'
-    + cMed.toFixed(1) + '% / 50%），切出抱团、主线上攻、轮动扩散、涣散四种状态。'
-    + '个股家数比行业平滑——行业只有涨跌两种状态，一天 0/128 和 120/128 都常见；'
-    + '个股是几千个样本加总，点云铺得开，右侧（普涨）明显稀疏，这就是「跌多涨少」的形状。'
-    + '一年里有多少天跟你同格，才知道这次是不是不一样。</p></div>'
-    + '</div>' + pop + '</div>';
+    + '<p class="scqnote">虚线＝近一年中位（' + cMed.toFixed(1) + '% / 50%）。'
+    + '轴向和四格含义点右上角 ? 看。</p></div>'
+    + '</div></div>' + pop + '</div>';
 }
 
 /** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
@@ -2770,16 +2802,21 @@ function mktList(){
       + '<span>不是数据没加载，是真的没有——这种日子不用动手。</span></div>';
     return;
   }
-  var h = '<div class="mhead"><span>名称 / 跟踪指数</span><span>类型</span>'
+  var head = '<div class="mhead"><span>名称 / 跟踪指数</span><span>类型</span>'
     + '<span>位置</span><span>量能</span><span>今日</span></div>';
-  var cap = 13;
-  for (var i = 0; i < rows.length && i < cap; i++){
+  var cap = 14;
+  var shown = Math.min(rows.length, cap);
+  // 6 行以内单栏就够，分两栏会出现「左 3 右 3」而右边那半截没内容支撑
+  var two = shown > 6;
+  var half = two ? Math.ceil(shown / 2) : shown;
+  var colHtml = ['', ''];
+  for (var i = 0; i < shown; i++){
     var r = rows[i].r, tg = MKT_LABEL[rows[i].t] || ['', ''];
     var pos = mktPos(r), ev = mktEvr(r);
     // 最后一列放今日涨幅而不是 20 日：这一栏回答的是「今天发生了什么」，
     // 20 日累计放进标题提示，鼠标停上去能看到。
     var tip = r[1] + ' · 20日 ' + fpc(r[6]) + ' · 成交 ' + r[10].toFixed(1) + ' 亿';
-    h += '<div class="mrow" data-c="' + r[0] + '" title="' + esc(tip) + '">'
+    var row = '<div class="mrow" data-c="' + r[0] + '" title="' + esc(tip) + '">'
       + '<span class="mn">' + esc(r[1])
       + (r[2] ? '<em>' + esc(r[2]) + '</em>' : '') + '</span>'
       + '<span class="mtag ' + tg[1] + '">' + tg[0] + '</span>'
@@ -2787,7 +2824,12 @@ function mktList(){
       + '<span class="mnum">' + (ev == null ? '-' : ev.toFixed(1)) + '</span>'
       + '<span class="mnum ' + cc(r[7]) + '">' + fpc(r[7]) + '</span>'
       + '</div>';
+    colHtml[i < half ? 0 : 1] += row;
   }
+  var h = two
+    ? '<div class="mcols"><div class="mcol">' + head + colHtml[0] + '</div>'
+      + '<div class="mcol">' + head + colHtml[1] + '</div></div>'
+    : head + colHtml[0];
   if (rows.length > cap){
     h += '<div class="mfoot">另有 ' + (rows.length - cap) + ' 只变化更小，没列出来</div>';
   }
