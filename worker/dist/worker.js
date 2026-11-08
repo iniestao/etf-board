@@ -701,10 +701,11 @@ async function serveWatch(request, env) {
    - 美股/美股指数：腾讯 qt.gtimg.cn，v_usXXX 一批全量返回。a[3] 现价、
      a[4] 昨收、a[30] 时间、a[32] 涨跌幅%——和 A 股同一套下标，解析函数共用。
      美股此时已收盘，a[1] 就是最近一个完整交易日的收盘价。
-   - 外盘期货：新浪 hq.sinajs.cn 的 hf_ 系列。f0 现价、f7 昨结算、f12 日期、
-     f13 名称。涨跌基准用昨结算价而不是昨收盘（期货的规矩）。腾讯那条对
-     hf_/nf_ 不响应（实测 200 空体），所以期货只走新浪，失败就整个 fut 置空，
-     前端隐藏那一行，不挡美股主数据。
+   - 外盘期货：东财 push2delay 批量（103.NQ00Y 纳指 / 104.CN00Y A50 /
+     101.GC00Y 黄金 / 102.CL00Y 原油），f3 直接就是涨跌幅%，与全量快照同一条
+     链路——新浪 hq.sinajs.cn 对部分数据中心出口 IP 直接 403（workbuddy 发布
+     平台实测中招），腾讯对 hf_ 返回 200 空体，所以东财当主源，新浪降级备源，
+     两边都挂才空，前端隐藏期货行不挡美股主数据。
    - 汇率/夜期恒指这类字段不稳定（fx_ 偶发 403），v1 不接，宁缺毋滥。
 
    美股收盘时间：美东 16:00 = 北京 04:00（冬令时 05:00）。盘前看这个数，
@@ -715,7 +716,58 @@ const ON_US_SYMS = ['usNVDA','usAMD','usAVGO','usTSM','usMRVL','usAMAT','usLRCX'
   'usVST','usCEG','usTLN','usNRG','usGEV','usAAPL','usDELL','usSMCI','usTSLA',
   'usUBER','usBABA','usJD','usPDD','usBIDU','usNTES','usLLY','usMRK','usAZN',
   'usNVO','usPFE','usNDX','usINX','usDJI'];
-const ON_FUT_SYMS = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
+
+const ON_FUT_SECIDS = [
+  ['103.NQ00Y', 'hf_NQ', '纳指期货'],
+  ['104.CN00Y', 'hf_CHA50CFD', '富时A50期货'],
+  ['101.GC00Y', 'hf_GC', 'COMEX黄金'],
+  ['102.CL00Y', 'hf_CL', 'NYMEX原油'],
+];
+
+/** 期货主源：东财 push2delay（和全量快照同链路，数据中心出口不被 403） */
+async function fetchFutEm() {
+  const qs = ON_FUT_SECIDS.map((x) => x[0]).join(',');
+  const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2'
+    + '&secids=' + qs + '&fields=f2,f3,f12,f14', {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('FUT(EM) HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.data && j.data.diff;
+  if (!rows || !rows.length) throw new Error('FUT(EM) empty');
+  const out = {};
+  for (const row of (Array.isArray(rows) ? rows : Object.values(rows))) {
+    const hit = ON_FUT_SECIDS.find((x) => x[0].split('.')[1] === row.f12);
+    if (!hit || !isFinite(+row.f3)) continue;
+    out[hit[1]] = { n: hit[2], p: +row.f2, chg: +row.f3 };
+  }
+  if (!Object.keys(out).length) throw new Error('FUT(EM) unparseable');
+  return out;
+}
+
+/** 期货备源：新浪 hf_（f0 现价、f7 昨结算，涨跌基准是昨结算——期货的规矩） */
+async function fetchFutSina() {
+  const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  const r = await fetch('https://hq.sinajs.cn/list=' + ON_FUT_SECIDS.map((x) => x[1]).join(','), {
+    headers: { 'User-Agent': UA2, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('FUT HTTP ' + r.status);
+  const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const out = {};
+  const re = /var hq_str_(\S+?)="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const f = m[2].split(',');
+    const p = +f[0], base = +f[7];
+    if (!(p > 0) || !(base > 0)) continue;
+    const hit = ON_FUT_SECIDS.find((x) => x[1] === m[1]);
+    out[m[1]] = { n: hit ? hit[2] : (f[13] || m[1]), p, chg: (p / base - 1) * 100 };
+  }
+  return out;
+}
 
 async function serveOvernight() {
   const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -741,23 +793,9 @@ async function serveOvernight() {
     return out;
   });
 
-  const futP = fetch('https://hq.sinajs.cn/list=' + ON_FUT_SYMS.join(','), {
-    headers: { 'User-Agent': UA2, Referer: 'https://finance.sina.com.cn/' },
-    signal: AbortSignal.timeout(9000),
-  }).then(async (r) => {
-    if (!r.ok) throw new Error('FUT HTTP ' + r.status);
-    const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
-    const out = {};
-    const re = /var hq_str_(\S+?)="([^"]*)"/g;
-    let m;
-    while ((m = re.exec(text))) {
-      const f = m[2].split(',');
-      const p = +f[0], base = +f[7];
-      if (!(p > 0) || !(base > 0)) continue;
-      out[m[1]] = { n: f[13] || m[1], p, chg: (p / base - 1) * 100, d: f[12] || '' };
-    }
-    return out;   // 期货整体失败允许：返回空对象，前端隐藏该行
-  }).catch(() => ({}));
+  const futP = fetchFutEm()
+    .catch(() => fetchFutSina())
+    .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
 
   const [us, fut] = await Promise.all([usP, futP]);
   return json({ ok: true, us, fut, ts: Date.now() }, 600);
