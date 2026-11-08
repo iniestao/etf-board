@@ -395,18 +395,30 @@ async function runContracts(base, pass) {
     bad('/api/pcfwarm 失败：' + r.text.slice(0, 160));
   }
 
-  // 隔夜行情：美股批量 + 外盘期货，赛道映射在前端做，这里只验行情本身
+  // 隔夜行情：美股批量 + 外盘期货 + 亚太指数，赛道映射在前端做，这里只验行情本身
   r = await rawRequest(base, '/api/overnight', { cookie });
   const on = r.json();
   if (on && on.ok) {
     const nUs = Object.keys(on.us || {}).length;
     const nFut = Object.keys(on.fut || {}).length;
-    ok('/api/overnight 美股 ' + nUs + ' 只 · 期货 ' + nFut + ' 个');
+    const nAsia = (on.asia || []).length;
+    ok('/api/overnight 美股 ' + nUs + ' 只 · 期货 ' + nFut + ' 个 · 亚太 ' + nAsia + ' 个');
     if (nUs < 40) bad('/api/overnight 美股少于 40 只，赛道均涨跌会失真');
     const nv = (on.us || {}).usnvda;
     if (!nv || !isFinite(nv.chg)) bad('/api/overnight 缺英伟达或涨跌幅非法');
-    if (nFut === 0) bad('/api/overnight 期货全空（新浪 hf_ 链路挂了，只影响期货行不影响主数据）');
+    if (nFut === 0) bad('/api/overnight 期货全空（东财+新浪两条都挂了，只影响期货行不影响主数据）');
+    if (nAsia === 0) bad('/api/overnight 亚太全空（日经/KOSPI/恒生一行没数据）');
   } else bad('/api/overnight 失败：' + r.text.slice(0, 160));
+
+  // 分时代理：secid 白名单 + 最近一个完整时段
+  r = await rawRequest(base, '/api/ovmin?sid=100.N225', { cookie });
+  const ovm = r.json();
+  if (ovm && ovm.ok) {
+    ok('/api/ovmin 日经分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）');
+    if (!ovm.pts || ovm.pts.length < 50) bad('/api/ovmin 日经分时点数过少');
+  } else bad('/api/ovmin 失败：' + r.text.slice(0, 160));
+  r = await rawRequest(base, '/api/ovmin?sid=1.000001', { cookie });
+  if (r.status === 200 && r.json().ok) bad('/api/ovmin 白名单失效：A 股 secid 竟然放行了');
 
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });

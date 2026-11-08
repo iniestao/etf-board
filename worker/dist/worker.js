@@ -716,6 +716,10 @@ const ON_US_SYMS = ['usNVDA','usAMD','usAVGO','usTSM','usMRVL','usAMAT','usLRCX'
   'usVST','usCEG','usTLN','usNRG','usGEV','usAAPL','usDELL','usSMCI','usTSLA',
   'usUBER','usBABA','usJD','usPDD','usBIDU','usNTES','usLLY','usMRK','usAZN',
   'usNVO','usPFE','usNDX','usINX','usDJI'];
+/* 亚太行：和美股/期货同一批 ulist 拉回来。日经/KOSPI/恒生都是「今天已经在交易
+   或刚收盘」的市场，和隔夜（还没开盘的美股）正好互补——A股开盘前，亚太已经是
+   「今天」的了。代码来自东财搜索接口（MktNum 100 = 全球指数）。 */
+const ON_ASIA_SECIDS = [['100.N225', '日经225'], ['100.KS11', '韩国KOSPI'], ['100.HSI', '恒生指数']];
 
 const ON_FUT_SECIDS = [
   ['103.NQ00Y', 'hf_NQ', '纳指期货'],
@@ -746,8 +750,29 @@ async function fetchFutEm() {
   return out;
 }
 
-/** 期货备源：新浪 hf_（f0 现价、f7 昨结算，涨跌基准是昨结算——期货的规矩） */
-async function fetchFutSina() {
+/** 亚太指数：和期货同一个 ulist 批量接口，一组 secid 一次拿完 */
+async function fetchAsia() {
+  const qs = ON_ASIA_SECIDS.map((x) => x[0]).join(',');
+  const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2'
+    + '&secids=' + qs + '&fields=f2,f3,f12,f14', {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('ASIA HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.data && j.data.diff;
+  if (!rows) throw new Error('ASIA empty');
+  const out = [];
+  for (const row of (Array.isArray(rows) ? rows : Object.values(rows))) {
+    const hit = ON_ASIA_SECIDS.find((x) => x[0].split('.')[1] === row.f12);
+    if (hit && isFinite(+row.f3)) out.push({ sid: hit[0], n: row.f14 || hit[1], p: +row.f2, chg: +row.f3 });
+  }
+  // 按配置顺序输出，不给上游排序自由
+  out.sort((a, b) => ON_ASIA_SECIDS.findIndex((x) => x[0] === a.sid) - ON_ASIA_SECIDS.findIndex((x) => x[0] === b.sid));
+  return out;
+}
+
+/** 期货备源：新浪 hf_（f0 现价、f7 昨结算，涨跌基准是昨结算——期货的规矩） */async function fetchFutSina() {
   const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   const r = await fetch('https://hq.sinajs.cn/list=' + ON_FUT_SECIDS.map((x) => x[1]).join(','), {
@@ -796,9 +821,44 @@ async function serveOvernight() {
   const futP = fetchFutEm()
     .catch(() => fetchFutSina())
     .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
+  const asiaP = fetchAsia().catch(() => []);   // 亚太失败同样只缺一行
 
-  const [us, fut] = await Promise.all([usP, futP]);
-  return json({ ok: true, us, fut, ts: Date.now() }, 600);
+  const [us, fut, asia] = await Promise.all([usP, futP, asiaP]);
+  return json({ ok: true, us, fut, asia, ts: Date.now() }, 600);
+}
+
+/* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
+   完整交易时段——美股指数/期货拿到的是昨晚那场，亚太拿到的是今天（或最近
+   半场）。secid 白名单限定全球指数 + 外盘期货市场号，不给任意转发。 */
+const OV_SID_RE = /^(100|101|102|103|104)\.[A-Za-z0-9]{1,12}$/;
+
+async function serveOvMin(sid, env, ctx) {
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/ovmin/' + sid, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 降级直连 */ }
+  }
+  const r = await fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
+    + '&fields1=f1,f2&fields2=f51,f53&iscr=0&ndays=1', {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) return json({ ok: false, error: '分时上游 HTTP ' + r.status });
+  const j = await r.json();
+  const trends = j && j.data && j.data.trends;
+  if (!trends || !trends.length) return json({ ok: false, error: '没有分时数据' });
+  const pts = trends.map((s) => {
+    const a = s.split(',');
+    return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
+  });
+  const res = json({ ok: true, sid, pts, ts: Date.now() }, 120);
+  if (cache) {
+    try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
+  }
+  return res;
 }
 
 /**
@@ -2674,8 +2734,15 @@ export default {
     }
 
     if (p === '/api/overnight') {
-      // 盘前卡：美股收盘 + 外盘期货。赛道→ETF 映射在前端用 IDX_GROUPS 做
+      // 盘前卡：美股收盘 + 外盘期货 + 亚太指数。赛道→ETF 映射在前端用 IDX_GROUPS 做
       return serveOvernight();
+    }
+
+    if (p === '/api/ovmin') {
+      // 隔夜/亚太条目的日内分时（东财 trends2 代理，secid 白名单）
+      const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
+      if (!OV_SID_RE.test(sid)) return json({ ok: false, error: 'sid 非法' });
+      return serveOvMin(sid, env, ctx);
     }
 
     if (p === '/api/mkt') {
@@ -3369,6 +3436,15 @@ align-items:center;justify-content:center;padding:18px}
 .trigrule .tadd{cursor:pointer;color:var(--accent);font-size:11.5px;user-select:none}
 .trigrule .tname{font-size:11px;color:var(--txt3)}
 .trigcnt{font-size:11px;color:var(--txt3);line-height:1.65;margin-top:4px}
+/* 隔夜/亚太条目点击看分时：可点的条目加指针和悬停反馈 */
+.onfut span.ovclk{cursor:pointer}
+.onfut span.ovclk:hover,.ontrk:hover{border-color:var(--txt3)}
+#ovMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
+align-items:center;justify-content:center;padding:18px}
+#ovMask.on{display:flex}
+#ovBody svg{display:block;width:100%;height:auto}
+.ovmeta{display:flex;gap:8px 16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
+margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 18px 48px rgba(20,26,40,.16);overflow:hidden}
@@ -3857,6 +3933,14 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         <span class="iom" id="trigMsg"></span>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="ovMask">
+  <div class="iobox" style="max-width:760px">
+    <div class="iohd"><b id="ovTitle">分时</b><span class="n" id="ovSub" style="font-size:11px;color:var(--txt3)"></span>
+      <button class="hx" id="ovClose" title="关闭 (Esc)" style="margin-left:auto">×</button></div>
+    <div class="iobody" id="ovBody"><div class="iotip">读取中…</div></div>
   </div>
 </div>
 
@@ -8351,6 +8435,7 @@ document.addEventListener('keydown', function(e){
   if (e.key !== 'Escape') return;
   if (document.getElementById('ioMask').classList.contains('on')) { ioClose(); return; }
   if (document.getElementById('trigMask').classList.contains('on')) { trigClose(); return; }
+  if (document.getElementById('ovMask').classList.contains('on')) { ovClose(); return; }
   if (document.getElementById('rsMask').classList.contains('on')) { closeRs(); return; }
   if (document.getElementById('histMask').classList.contains('on')) closeHist();
 });
@@ -9109,9 +9194,86 @@ var ON_TRACKS = [
 ];
 var ON_HEAD = ['NDX', 'INX', 'DJI'];     // 美股三大指数，摆在前排不当赛道
 var ON_FUT_ORDER = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
+/* 点条目看分时：东财 trends2 的 secid。美股三大指数在腾讯叫 usNDX/usINX/usDJI，
+   到东财那边是另一套代码（纳指综合 100.NDX、标普 100.SPX、道指 100.DJIA），
+   形状一致、名字有差（综合 vs 100），图上以数据自身为准。 */
+var ON_SECID = { NDX:'100.NDX', INX:'100.SPX', DJI:'100.DJIA',
+  'hf_NQ':'103.NQ00Y', 'hf_CHA50CFD':'104.CN00Y', 'hf_GC':'101.GC00Y', 'hf_CL':'102.CL00Y' };
 
 function onCls(v){ return v > 0.05 ? 'up' : (v < -0.05 ? 'down' : ''); }
 function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
+
+/** 可点分时的条目：名字 + 涨跌 + data-ovsid */
+function ovChip(n, chg, sid){
+  return '<span class="ovclk" data-ovsid="' + sid + '" data-ovnm="' + esc(n) + '" title="点看分时">'
+    + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
+}
+
+/* 分时弹窗：东财 trends2 最近一个完整时段。美股/期货拿到的是昨晚那场，
+   亚太是今天。y 轴全自适应 + 首点虚线做基准——基准用开盘价而不是昨收，
+   因为这条线回答的是「这一场里怎么走」，不是「今天涨多少」（涨跌幅已在卡上）。 */
+function ovOpen(sid, nm){
+  var mask = document.getElementById('ovMask');
+  var body = document.getElementById('ovBody');
+  document.getElementById('ovTitle').textContent = nm + ' 分时';
+  document.getElementById('ovSub').textContent = sid;
+  body.innerHTML = '<div class="iotip">读取中…</div>';
+  mask.classList.add('on');
+  fetch('/api/ovmin?sid=' + encodeURIComponent(sid)).then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j.ok) throw new Error(j.error || '无数据');
+      body.innerHTML = ovChartSvg(j.pts);
+    })
+    .catch(function(e){
+      body.innerHTML = '<div class="iotip">分时读取失败：' + esc(e.message || e) + '</div>';
+    });
+}
+function ovClose(){ document.getElementById('ovMask').classList.remove('on'); }
+document.getElementById('ovClose').onclick = ovClose;
+document.getElementById('ovMask').onclick = function(e){ if (e.target === this) ovClose(); };
+
+function ovChartSvg(pts){
+  var W = 680, H = 230, ml = 10, mr = 64, mt = 12, mb = 20;
+  var step = Math.max(1, Math.ceil(pts.length / 240));
+  var s = [], i;
+  for (i = 0; i < pts.length; i += step) s.push(pts[i]);
+  if (s[s.length - 1] !== pts[pts.length - 1]) s.push(pts[pts.length - 1]);
+
+  var mn = s[0][1], mx = s[0][1];
+  for (i = 1; i < s.length; i++){ if (s[i][1] < mn) mn = s[i][1]; if (s[i][1] > mx) mx = s[i][1]; }
+  var pad = (mx - mn) * 0.1 || mx * 0.002;
+  var lo = mn - pad, hi = mx + pad;
+  var xOf = function(k){ return ml + k / (s.length - 1) * (W - ml - mr); };
+  var yOf = function(v){ return mt + (1 - (v - lo) / (hi - lo)) * (H - mt - mb); };
+
+  var up = s[s.length - 1][1] >= s[0][1];
+  var col = up ? 'var(--up)' : 'var(--down)';
+  var d = '';
+  for (i = 0; i < s.length; i++) d += (i ? 'L' : 'M') + xOf(i).toFixed(1) + ' ' + yOf(s[i][1]).toFixed(1);
+  var area = d + 'L' + xOf(s.length - 1).toFixed(1) + ' ' + (H - mb) + 'L' + ml + ' ' + (H - mb) + 'Z';
+  var baseY = yOf(s[0][1]).toFixed(1);
+  var fmt = function(v){ return v >= 1000 ? v.toFixed(0) : (v >= 10 ? v.toFixed(2) : v.toFixed(4)); };
+  var chg = (s[s.length-1][1] / s[0][1] - 1) * 100;
+
+  var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg">'
+    + '<line x1="' + ml + '" y1="' + baseY + '" x2="' + (W - mr) + '" y2="' + baseY
+    + '" stroke="var(--txt3)" stroke-dasharray="3 3" stroke-width="0.8"/>'
+    + '<path d="' + area + '" fill="' + col + '" opacity="0.08"/>'
+    + '<path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="1.6"/>'
+    + '<circle cx="' + xOf(s.length - 1).toFixed(1) + '" cy="' + yOf(s[s.length - 1][1]).toFixed(1)
+    + '" r="2.6" fill="' + col + '"/>'
+    + '<text x="' + ml + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)">' + esc(s[0][0]) + '</text>'
+    + '<text x="' + (W - mr) + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + esc(s[s.length - 1][0]) + '</text>'
+    + '<text x="' + (W - mr + 4) + '" y="' + (yOf(mx) + 4).toFixed(1) + '" font-size="10.5" fill="var(--txt2)">' + fmt(mx) + '</text>'
+    + '<text x="' + (W - mr + 4) + '" y="' + (yOf(lo) + 4).toFixed(1) + '" font-size="10.5" fill="var(--txt2)">' + fmt(lo) + '</text>'
+    + '<text x="' + (W - mr + 4) + '" y="' + (yOf(s[s.length - 1][1]) + 4).toFixed(1) + '" font-size="11" font-weight="bold" fill="' + col + '">'
+    + fmt(s[s.length - 1][1]) + '</text>'
+    + '</svg>'
+    + '<div class="ovmeta"><span>场内 <b class="' + (up ? 'up' : 'down') + '">' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</b></span>'
+    + '<span>基准＝本时段开盘 ' + fmt(s[0][1]) + '</span>'
+    + '<span>' + s.length + ' 个点 · ' + (s.length >= pts.length ? '' : '按 ' + step + ' 抽 1 显示') + '</span></div>';
+  return h;
+}
 
 function loadOvernight(){
   fetch('/api/overnight').then(function(r){ return r.json(); }).then(function(j){
@@ -9172,18 +9334,28 @@ function renderOvernight(){
     + '<span class="ofold" id="onFold">' + (ON_FOLD ? '展开' : '收起') + '</span></div>';
 
   var fut = '', i, q;
-  var headUs = [];
   for (i=0;i<ON_HEAD.length;i++){
     q = ON.us['us' + ON_HEAD[i].toLowerCase()];
-    if (q) headUs.push('<span>' + esc(q.n) + ' <b class="' + onCls(q.chg) + '">' + onTxt(q.chg) + '</b></span>');
+    if (q) fut += ovChip(q.n, q.chg, ON_SECID[ON_HEAD[i]]);
   }
   if (ON.fut){
     for (i=0;i<ON_FUT_ORDER.length;i++){
       q = ON.fut[ON_FUT_ORDER[i]];
-      if (q) fut += '<span>' + esc(q.n) + ' <b class="' + onCls(q.chg) + '">' + onTxt(q.chg) + '</b></span>';
+      if (q) fut += ovChip(q.n, q.chg, ON_SECID[ON_FUT_ORDER[i]]);
     }
   }
-  h += '<div class="onfut">' + headUs.join('') + fut + '</div>';
+  h += '<div class="onfut">' + fut + '</div>';
+
+  // 亚太行：今天已经在交易（或刚收盘）的市场，和上面「昨晚」的隔夜正好互补。
+  // 点任何一个条目都能看最近一个完整时段的分时。
+  if (ON.asia && ON.asia.length){
+    var ap = '';
+    for (i=0;i<ON.asia.length;i++){
+      q = ON.asia[i];
+      ap += ovChip(q.n, q.chg, q.sid);
+    }
+    h += '<div class="onfut" style="margin-top:4px">' + ap + '</div>';
+  }
 
   if (!ON_FOLD){
     h += '<div class="ontrks">';
@@ -9222,6 +9394,11 @@ function renderOvernight(){
 }
 
 document.addEventListener('click', function(e){
+  var ov = e.target && e.target.closest ? e.target.closest('[data-ovsid]') : null;
+  if (ov){
+    ovOpen(ov.getAttribute('data-ovsid'), ov.getAttribute('data-ovnm') || ov.getAttribute('data-ovsid'));
+    return;
+  }
   var trk = e.target && e.target.closest ? e.target.closest('.ontrk') : null;
   if (trk){
     var k = trk.getAttribute('data-onk');

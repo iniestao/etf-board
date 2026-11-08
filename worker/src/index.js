@@ -717,6 +717,10 @@ const ON_US_SYMS = ['usNVDA','usAMD','usAVGO','usTSM','usMRVL','usAMAT','usLRCX'
   'usVST','usCEG','usTLN','usNRG','usGEV','usAAPL','usDELL','usSMCI','usTSLA',
   'usUBER','usBABA','usJD','usPDD','usBIDU','usNTES','usLLY','usMRK','usAZN',
   'usNVO','usPFE','usNDX','usINX','usDJI'];
+/* 亚太行：和美股/期货同一批 ulist 拉回来。日经/KOSPI/恒生都是「今天已经在交易
+   或刚收盘」的市场，和隔夜（还没开盘的美股）正好互补——A股开盘前，亚太已经是
+   「今天」的了。代码来自东财搜索接口（MktNum 100 = 全球指数）。 */
+const ON_ASIA_SECIDS = [['100.N225', '日经225'], ['100.KS11', '韩国KOSPI'], ['100.HSI', '恒生指数']];
 
 const ON_FUT_SECIDS = [
   ['103.NQ00Y', 'hf_NQ', '纳指期货'],
@@ -747,8 +751,29 @@ async function fetchFutEm() {
   return out;
 }
 
-/** 期货备源：新浪 hf_（f0 现价、f7 昨结算，涨跌基准是昨结算——期货的规矩） */
-async function fetchFutSina() {
+/** 亚太指数：和期货同一个 ulist 批量接口，一组 secid 一次拿完 */
+async function fetchAsia() {
+  const qs = ON_ASIA_SECIDS.map((x) => x[0]).join(',');
+  const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2'
+    + '&secids=' + qs + '&fields=f2,f3,f12,f14', {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('ASIA HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.data && j.data.diff;
+  if (!rows) throw new Error('ASIA empty');
+  const out = [];
+  for (const row of (Array.isArray(rows) ? rows : Object.values(rows))) {
+    const hit = ON_ASIA_SECIDS.find((x) => x[0].split('.')[1] === row.f12);
+    if (hit && isFinite(+row.f3)) out.push({ sid: hit[0], n: row.f14 || hit[1], p: +row.f2, chg: +row.f3 });
+  }
+  // 按配置顺序输出，不给上游排序自由
+  out.sort((a, b) => ON_ASIA_SECIDS.findIndex((x) => x[0] === a.sid) - ON_ASIA_SECIDS.findIndex((x) => x[0] === b.sid));
+  return out;
+}
+
+/** 期货备源：新浪 hf_（f0 现价、f7 昨结算，涨跌基准是昨结算——期货的规矩） */async function fetchFutSina() {
   const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   const r = await fetch('https://hq.sinajs.cn/list=' + ON_FUT_SECIDS.map((x) => x[1]).join(','), {
@@ -797,9 +822,44 @@ async function serveOvernight() {
   const futP = fetchFutEm()
     .catch(() => fetchFutSina())
     .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
+  const asiaP = fetchAsia().catch(() => []);   // 亚太失败同样只缺一行
 
-  const [us, fut] = await Promise.all([usP, futP]);
-  return json({ ok: true, us, fut, ts: Date.now() }, 600);
+  const [us, fut, asia] = await Promise.all([usP, futP, asiaP]);
+  return json({ ok: true, us, fut, asia, ts: Date.now() }, 600);
+}
+
+/* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
+   完整交易时段——美股指数/期货拿到的是昨晚那场，亚太拿到的是今天（或最近
+   半场）。secid 白名单限定全球指数 + 外盘期货市场号，不给任意转发。 */
+const OV_SID_RE = /^(100|101|102|103|104)\.[A-Za-z0-9]{1,12}$/;
+
+async function serveOvMin(sid, env, ctx) {
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/ovmin/' + sid, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 降级直连 */ }
+  }
+  const r = await fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
+    + '&fields1=f1,f2&fields2=f51,f53&iscr=0&ndays=1', {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) return json({ ok: false, error: '分时上游 HTTP ' + r.status });
+  const j = await r.json();
+  const trends = j && j.data && j.data.trends;
+  if (!trends || !trends.length) return json({ ok: false, error: '没有分时数据' });
+  const pts = trends.map((s) => {
+    const a = s.split(',');
+    return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
+  });
+  const res = json({ ok: true, sid, pts, ts: Date.now() }, 120);
+  if (cache) {
+    try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
+  }
+  return res;
 }
 
 /**
@@ -2675,8 +2735,15 @@ export default {
     }
 
     if (p === '/api/overnight') {
-      // 盘前卡：美股收盘 + 外盘期货。赛道→ETF 映射在前端用 IDX_GROUPS 做
+      // 盘前卡：美股收盘 + 外盘期货 + 亚太指数。赛道→ETF 映射在前端用 IDX_GROUPS 做
       return serveOvernight();
+    }
+
+    if (p === '/api/ovmin') {
+      // 隔夜/亚太条目的日内分时（东财 trends2 代理，secid 白名单）
+      const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
+      if (!OV_SID_RE.test(sid)) return json({ ok: false, error: 'sid 非法' });
+      return serveOvMin(sid, env, ctx);
     }
 
     if (p === '/api/mkt') {
