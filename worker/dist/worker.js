@@ -716,10 +716,14 @@ const ON_US_SYMS = ['usNVDA','usAMD','usAVGO','usTSM','usMRVL','usAMAT','usLRCX'
   'usVST','usCEG','usTLN','usNRG','usGEV','usAAPL','usDELL','usSMCI','usTSLA',
   'usUBER','usBABA','usJD','usPDD','usBIDU','usNTES','usLLY','usMRK','usAZN',
   'usNVO','usPFE','usNDX','usINX','usDJI'];
-/* 亚太行：和美股/期货同一批 ulist 拉回来。日经/KOSPI/恒生都是「今天已经在交易
-   或刚收盘」的市场，和隔夜（还没开盘的美股）正好互补——A股开盘前，亚太已经是
-   「今天」的了。代码来自东财搜索接口（MktNum 100 = 全球指数）。 */
-const ON_ASIA_SECIDS = [['100.N225', '日经225'], ['100.KS11', '韩国KOSPI'], ['100.HSI', '恒生指数']];
+/* 亚太行：和美股/期货同一批 ulist 拉回来。A股三大指数 + 恒生科技是「今天正在
+   交易」的市场，日经/KOSPI 开盘更早——A股开盘前，它们已经是「今天」的了，
+   和隔夜（还没开盘的美股）正好互补。代码来自东财搜索接口：
+   MktNum 100 = 全球指数、124 = 港股指数、1/0 = 沪/深 A 股指数。 */
+const ON_ASIA_SECIDS = [
+  ['1.000001', '上证指数'], ['1.000688', '科创50'], ['0.399006', '创业板指'],
+  ['124.HSTECH', '恒生科技'], ['100.N225', '日经225'], ['100.KS11', '韩国KOSPI'],
+];
 
 const ON_FUT_SECIDS = [
   ['103.NQ00Y', 'hf_NQ', '纳指期货'],
@@ -829,8 +833,14 @@ async function serveOvernight() {
 
 /* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
    完整交易时段——美股指数/期货拿到的是昨晚那场，亚太拿到的是今天（或最近
-   半场）。secid 白名单限定全球指数 + 外盘期货市场号，不给任意转发。 */
-const OV_SID_RE = /^(100|101|102|103|104)\.[A-Za-z0-9]{1,12}$/;
+   半场）。secid 白名单限定全球/港股指数 + A 股指数 + 外盘期货市场号，
+   不给任意转发。 */
+/* A 股指数精确白名单：只放行亚太行用到的几个（直接对齐 ON_ASIA_SECIDS，
+   防止 6 位数字规则把个股也放进来——个股走 K 线面板，不给任意转发）。 */
+const OV_SID_RE = /^(100|101|102|103|104|124)\.[A-Za-z0-9]{1,12}$/;
+function isOvSid(sid) {
+  return OV_SID_RE.test(sid) || ON_ASIA_SECIDS.some((x) => x[0] === sid);
+}
 
 async function serveOvMin(sid, env, ctx) {
   const cache = await getCache();
@@ -2741,7 +2751,7 @@ export default {
     if (p === '/api/ovmin') {
       // 隔夜/亚太条目的日内分时（东财 trends2 代理，secid 白名单）
       const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
-      if (!OV_SID_RE.test(sid)) return json({ ok: false, error: 'sid 非法' });
+      if (!isOvSid(sid)) return json({ ok: false, error: 'sid 非法' });
       return serveOvMin(sid, env, ctx);
     }
 

@@ -407,7 +407,7 @@ async function runContracts(base, pass) {
     const nv = (on.us || {}).usnvda;
     if (!nv || !isFinite(nv.chg)) bad('/api/overnight 缺英伟达或涨跌幅非法');
     if (nFut === 0) bad('/api/overnight 期货全空（东财+新浪两条都挂了，只影响期货行不影响主数据）');
-    if (nAsia === 0) bad('/api/overnight 亚太全空（日经/KOSPI/恒生一行没数据）');
+    if (nAsia < 6) bad('/api/overnight 亚太不足 6 个（上证/科创50/创业板指/恒生科技/日经/KOSPI，现 ' + nAsia + '）');
   } else bad('/api/overnight 失败：' + r.text.slice(0, 160));
 
   // 分时代理：secid 白名单 + 最近一个完整时段
@@ -417,8 +417,9 @@ async function runContracts(base, pass) {
     ok('/api/ovmin 日经分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）');
     if (!ovm.pts || ovm.pts.length < 50) bad('/api/ovmin 日经分时点数过少');
   } else bad('/api/ovmin 失败：' + r.text.slice(0, 160));
-  r = await rawRequest(base, '/api/ovmin?sid=1.000001', { cookie });
-  if (r.status === 200 && r.json().ok) bad('/api/ovmin 白名单失效：A 股 secid 竟然放行了');
+  // 白名单负例：A 股「个股」仍必须拒绝（指数已放行给亚太行，个股走 K 线面板）
+  r = await rawRequest(base, '/api/ovmin?sid=1.600519', { cookie });
+  if (r.status === 200 && r.json().ok) bad('/api/ovmin 白名单失效：A 股个股 secid 竟然放行了');
 
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
