@@ -892,6 +892,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </header>
 
 <div class="oncard" id="onCard" style="display:none"></div>
+<div class="oncard" id="asiaCard" style="display:none"></div>
 
 <div class="cards">
   <div class="card"><div class="k">全市场 ETF</div><div class="v" id="cTotal">-</div><div class="s" id="cUni">-</div></div>
@@ -6524,17 +6525,6 @@ function renderOvernight(){
   }
   h += '<div class="onfut">' + fut + '</div>';
 
-  // 亚太行：今天已经在交易（或刚收盘）的市场，和上面「昨晚」的隔夜正好互补。
-  // 点任何一个条目都能看最近一个完整时段的分时。
-  if (ON.asia && ON.asia.length){
-    var ap = '';
-    for (i=0;i<ON.asia.length;i++){
-      q = ON.asia[i];
-      ap += ovChip(q.n, q.chg, q.sid);
-    }
-    h += '<div class="onfut" style="margin-top:4px">' + ap + '</div>';
-  }
-
   if (!ON_FOLD){
     h += '<div class="ontrks">';
     for (i=0;i<ON_TRACKS.length;i++){
@@ -6569,6 +6559,23 @@ function renderOvernight(){
   }
   el.innerHTML = h;
   el.style.display = '';
+
+  // 亚太卡：独立一块，排在隔夜下面。今天已经在交易（或刚收盘）的市场，
+  // 和隔夜（昨晚美股）正好互补；点条目看最近一个完整时段的分时。
+  var ac = document.getElementById('asiaCard');
+  if (!ac) return;
+  if (ON.asia && ON.asia.length){
+    var ap = '';
+    for (i=0;i<ON.asia.length;i++){
+      q = ON.asia[i];
+      ap += ovChip(q.n, q.chg, q.sid);
+    }
+    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n">今日实时 · 点看分时</span></div>'
+      + '<div class="onfut">' + ap + '</div>';
+    ac.style.display = '';
+  } else {
+    ac.style.display = 'none';
+  }
 }
 
 document.addEventListener('click', function(e){
