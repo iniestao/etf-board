@@ -2893,6 +2893,17 @@ background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--
 text-decoration:none;
 background:var(--bg3)}
 #btnRs:hover{color:var(--txt);border-color:var(--accent)}
+/* 吸顶锚点导航：页面 7000px+，没有跳转每次找自选都要滚半天。
+   top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
+   --navH 由 JS 量出来，区块 scroll-margin-top 和表头 sticky 都引用它。 */
+.secnav{position:sticky;top:0;z-index:6;display:flex;gap:2px;align-items:center;
+  margin:-2px 0 10px;padding:4px 0;background:rgba(245,246,248,.9);
+  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.secnav a{font-size:11.5px;color:var(--txt2);padding:3px 11px;border-radius:6px;cursor:pointer;
+  user-select:none;white-space:nowrap}
+.secnav a:hover{color:var(--txt)}
+.secnav a.on{background:var(--bg2);color:var(--txt);border:1px solid var(--line);padding:2px 10px;font-weight:600}
+.sec[id],.oncard[id]{scroll-margin-top:var(--navH,42px)}
 .cards{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}
 .cards .card{width:186px;flex:0 0 auto}
 @media(max-width:560px){.cards .card{width:calc(50% - 5px)}}
@@ -2901,10 +2912,10 @@ background:var(--bg3)}
    涨红跌绿是 A 股习惯，美股数据进来也按这个上色——
    页面要迁就读者的眼睛，不是迁就数据源的习惯。 */
 .oncard{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
-  padding:8px 12px;margin-bottom:12px;font-size:12px}
+  padding:8px 12px;margin-bottom:12px;font-size:12.5px}
 .onhd{display:flex;align-items:baseline;gap:8px;color:var(--txt2)}
 .onhd b{color:var(--txt1);font-size:12.5px}
-.onhd .n{font-size:11px;color:var(--txt3)}
+.onhd .n{font-size:11.5px;color:var(--txt3)}
 .onhd .ofold{margin-left:auto;cursor:pointer;color:var(--txt3);user-select:none}
 .onfut{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
 .onfut span{background:var(--bg1);border:1px solid var(--line);border-radius:4px;
@@ -2916,7 +2927,7 @@ background:var(--bg3)}
 .ontrk i{font-style:normal;font-size:11.5px}
 .ontrk.sel{border-color:var(--txt3)}
 .ondet{margin-top:7px;padding:7px 10px;border-top:1px dashed var(--line);line-height:1.8}
-.ondet .ot{color:var(--txt2);font-size:11px;letter-spacing:.3px}
+.ondet .ot{color:var(--txt2);font-size:11.5px;letter-spacing:.3px}
 .ondet .ous{display:flex;gap:5px 12px;flex-wrap:wrap;margin:3px 0 5px}
 .ondet .ous span{white-space:nowrap}
 .ondet .oetfs{display:flex;gap:5px 12px;flex-wrap:wrap}
@@ -2924,13 +2935,13 @@ background:var(--bg3)}
 .ondet .mine{outline:1px solid currentColor;border-radius:3px;padding:0 3px}
 /* 上游故障时的横幅：贴在卡片下面，一进页面就能看见。
    放在 footer 里等于没有——100 行的表格把 footer 顶到 4600px 之外。 */
-.stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12px;line-height:1.5;
+.stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;
   background:#fff8e8;border:1px solid #f0dcb0;color:#8a5a00}
 .stalebar.bad{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
-.card .k{font-size:11px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
+.card .k{font-size:11.5px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
 .card .v{font-size:19px;font-weight:600;font-family:var(--mono);line-height:1.25}
-.card .v small{font-size:11px;font-weight:400;color:var(--txt3);margin-left:3px}
+.card .v small{font-size:11.5px;font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
 /* ---------- 全市场异动 ---------- */
 .mktwrap{display:block}
@@ -2942,11 +2953,11 @@ background:var(--bg3)}
   color:var(--txt3);font-family:var(--mono);flex-wrap:wrap}
 .wstat b{color:var(--txt);font-weight:600}
 .mtabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
-.mtab{font-size:11px;padding:2px 8px;border-radius:5px;border:1px solid var(--line);
+.mtab{font-size:11.5px;padding:2px 8px;border-radius:5px;border:1px solid var(--line);
   background:var(--bg3);color:var(--txt2);cursor:pointer;user-select:none;white-space:nowrap}
 .mtab:hover{border-color:#c9d6ef}
 .mtab.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8;font-weight:600}
-.mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10px;opacity:.7}
+.mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10.5px;opacity:.7}
 .mhead,.mrow{display:grid;grid-template-columns:minmax(0,1fr) 44px 48px 46px 58px;
   gap:8px;align-items:center}
 /* 宽屏两栏：13 行铺满 1376px 时，第一列会被 1fr 撑到 1148px，
@@ -2959,11 +2970,11 @@ background:var(--bg3)}
   .mn em{display:none}
   .mhead,.mrow{grid-template-columns:minmax(0,1fr) 38px 34px 32px 50px;gap:5px}
 }
-.mhead{padding:0 0 5px;font-size:10px;color:var(--txt3);border-bottom:1px solid var(--line);
+.mhead{padding:0 0 5px;font-size:10.5px;color:var(--txt3);border-bottom:1px solid var(--line);
   font-family:var(--mono);letter-spacing:.3px}
 .mhead span:not(:first-child){text-align:right}
-.mrow{padding:5px 0;border-bottom:1px dashed var(--line);cursor:pointer;font-size:12px}
-.mtag{font-size:10px;padding:1px 0;border-radius:4px;text-align:center;white-space:nowrap;
+.mrow{padding:5px 0;border-bottom:1px dashed var(--line);cursor:pointer;font-size:12.5px}
+.mtag{font-size:10.5px;padding:1px 0;border-radius:4px;text-align:center;white-space:nowrap;
   font-weight:600;letter-spacing:.2px}
 .mtag.t-up{background:#fdecee;color:#b02a2a;border:1px solid #f3c7c7}
 .mtag.t-warn{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
@@ -2973,9 +2984,9 @@ background:var(--bg3)}
 .mrow:last-child{border-bottom:none}
 .mrow:hover .mn{color:#1d4ed8}
 .mn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.mn em{font-style:normal;font-size:10px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
+.mn em{font-style:normal;font-size:10.5px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
 .mnum{font-family:var(--mono);font-size:11.5px;text-align:right}
-.mnum small{font-size:9.5px;color:var(--txt3);margin-right:2px}
+.mnum small{font-size:10.5px;color:var(--txt3);margin-right:2px}
 /* ---- 急涨急跌 ---- */
 .spdgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .spdcol{min-width:0}
@@ -2984,13 +2995,13 @@ background:var(--bg3)}
 .spdnone{padding:9px 0;color:var(--txt3);font-size:11.5px}
 .spdch{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--txt3);
   padding-bottom:5px;border-bottom:1px solid var(--line);margin-bottom:2px;letter-spacing:.3px}
-.spdch b{font-weight:600;font-size:11px}
+.spdch b{font-weight:600;font-size:11.5px}
 .spdch b.up{color:var(--up)}.spdch b.dn{color:var(--down)}
 /* 用 flex 而不是 grid：名称 + 走势线是「左边一块信息」，涨速和量比是
    「右边两个数」。网格会把走势线顶到栏宽的中段，两边各留一片空白，
    看着像中间缺了内容。 */
 .spdrow{display:flex;gap:8px;align-items:center;padding:5px 0;
-  border-bottom:1px dashed var(--line);cursor:pointer;font-size:12px}
+  border-bottom:1px dashed var(--line);cursor:pointer;font-size:12.5px}
 .spdrow:last-child{border-bottom:none}
 .spdrow:hover{background:#f7f9fc}
 .spdrow:hover .spdnm{color:#1d4ed8}
@@ -3001,13 +3012,13 @@ background:var(--bg3)}
    死宽度 + 名字省略号，代码不缩——代码是拿来复制搜索的，比名字后半截有用。 */
 .spdnm{flex:0 0 168px;display:flex;align-items:baseline;gap:4px;min-width:0;font-weight:500}
 .spdnm .nmx{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.spdnm em{flex:0 0 auto;font-style:normal;font-size:9.5px;color:var(--txt3);font-family:var(--mono)}
+.spdnm em{flex:0 0 auto;font-style:normal;font-size:10.5px;color:var(--txt3);font-family:var(--mono)}
 /* 走势线往右靠、紧贴两个数值：名字短的行中间留白，比「线飘在名字后面、
    数值孤零零在最右」稳。涨速/量比两个数成一组，才是「右块」。 */
 .spk{display:block;flex:0 0 auto;margin-left:auto;overflow:visible}
-.spdv{flex:0 0 56px;font-family:var(--mono);font-size:12px;
+.spdv{flex:0 0 56px;font-family:var(--mono);font-size:12.5px;
   text-align:right;font-weight:600}
-.spdq{flex:0 0 40px;font-family:var(--mono);font-size:11px;text-align:right;color:var(--txt2)}
+.spdq{flex:0 0 40px;font-family:var(--mono);font-size:11.5px;text-align:right;color:var(--txt2)}
 .spdq.hot{color:#a9660a;font-weight:600}
 .spdnote{font-size:10.5px;color:var(--txt3);margin-top:7px;padding-top:6px;
   border-top:1px solid var(--line);line-height:1.5}
@@ -3041,14 +3052,14 @@ background:var(--bg3)}
   border:1px solid var(--line);border-radius:4px;padding:0 5px;white-space:nowrap}
 .evt.lv3 .ek{color:#b02a2a;background:#fdecee;border-color:#f3c7c7}
 .evt.lv2 .ek{color:#a9660a;background:#fff6e5;border-color:#f0dcb4}
-.es{font-size:11px;color:var(--txt2);margin-top:3px;line-height:1.55}
+.es{font-size:11.5px;color:var(--txt2);margin-top:3px;line-height:1.55}
 .eempty{padding:14px 2px 10px;font-size:12.5px;color:var(--txt2);line-height:1.7}
-.eempty span{color:var(--txt3);font-size:11px}
+.eempty span{color:var(--txt3);font-size:11.5px}
 .prow{display:flex;gap:16px;margin-bottom:2px}
 .pk{font-size:10.5px;color:var(--txt3);margin-bottom:2px}
 .pv{font-size:21px;font-weight:600;font-family:var(--mono);line-height:1.25}
 .pv small{font-size:10.5px;color:var(--txt3);font-weight:400;margin-left:2px}
-.pnote{font-size:11px;color:var(--txt2);line-height:1.65;border-top:1px dashed var(--line);
+.pnote{font-size:11.5px;color:var(--txt2);line-height:1.65;border-top:1px dashed var(--line);
   padding-top:8px;margin-top:9px}
 .pnote b{color:var(--txt)}
 
@@ -3060,12 +3071,12 @@ background:var(--bg3)}
 @media(max-width:560px){.dgrid{grid-template-columns:1fr}}
 .dcard{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 12px 11px;
   cursor:pointer;transition:border-color .15s,box-shadow .15s;display:flex;flex-direction:column}
-.dcard:hover{border-color:#c9d6ef;box-shadow:0 3px 12px rgba(23,32,54,.07)}
+.dcard:hover{border-color:#c9d6ef;box-shadow:0 3px 12px rgba(23,32,54,.1)}
 .dcard.pend{opacity:.55}
 .dtop{display:flex;align-items:baseline;gap:7px;margin-bottom:9px;min-width:0}
-.dtop .dn{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dtop .dc{font-family:var(--mono);font-size:11px;color:var(--txt3);flex:0 0 auto}
-.dtag{margin-left:auto;font-size:11px;font-weight:600;padding:2px 7px;border-radius:5px;
+.dtop .dn{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dtop .dc{font-family:var(--mono);font-size:11.5px;color:var(--txt3);flex:0 0 auto}
+.dtag{margin-left:auto;font-size:11.5px;font-weight:600;padding:2px 7px;border-radius:5px;
   white-space:nowrap;flex:0 0 auto}
 .dtag.d0{background:#f0f2f5;color:#5b6472;border:1px solid #e3e6eb}
 .dtag.d1{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
@@ -3077,10 +3088,10 @@ background:var(--bg3)}
   background:linear-gradient(90deg,#c9dbff,#5c92ec)}
 .posbar i{position:absolute;top:-2.5px;width:4px;height:12px;border-radius:2px;background:#1d4ed8;
   box-shadow:0 0 0 2px #fff,0 1px 3px rgba(20,26,40,.25);transform:translateX(-2px)}
-.poslb{display:flex;align-items:baseline;justify-content:space-between;font-size:9.5px;
+.poslb{display:flex;align-items:baseline;justify-content:space-between;font-size:10.5px;
   color:var(--txt3);font-family:var(--mono);margin-top:6px;letter-spacing:.2px}
 .poslb .pz{font-size:15px;font-weight:600;color:var(--txt);font-family:var(--mono);line-height:1}
-.poslb .pz em{font-style:normal;font-size:9.5px;color:var(--txt3);font-weight:400;margin-left:5px;
+.poslb .pz em{font-style:normal;font-size:10.5px;color:var(--txt3);font-weight:400;margin-left:5px;
   letter-spacing:.2px}
 .dchips{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px}
 .dchip{font-size:10.5px;color:var(--txt3);background:var(--bg3);border:1px solid var(--line);
@@ -3088,7 +3099,7 @@ background:var(--bg3)}
   overflow:hidden;text-overflow:ellipsis}
 .dchip b{color:var(--txt);font-weight:600;margin-left:2px}
 .dchip b.up{color:var(--up)}.dchip b.down{color:var(--down)}
-.dwhy{margin-top:auto;padding-top:7px;font-size:11px;color:var(--txt2);line-height:1.55}
+.dwhy{margin-top:auto;padding-top:7px;font-size:11.5px;color:var(--txt2);line-height:1.55}
 
 .bar{display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
 input,select,button{background:var(--bg2);color:var(--txt);border:1px solid var(--line);
@@ -3098,7 +3109,7 @@ input#q{width:180px}
 button{cursor:pointer;transition:.15s}
 button:hover{background:var(--bg3)}
 button.pri{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
-.tag{display:inline-block;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12px;
+.tag{display:inline-block;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12.5px;
 border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:.15s;user-select:none}
 .tag:hover{color:var(--txt)}
 .tag.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
@@ -3107,11 +3118,16 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
 .sechd{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;color:var(--txt2)}
 .sechd b{color:var(--txt);font-size:13.5px;font-weight:600;white-space:nowrap;flex:0 0 auto}
 .sechd .n{color:var(--txt3);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+/* overflow 用 clip 不用 hidden：hidden 会把 .tbl 变成滚动容器，theadd 的
+   sticky 就地失效（表头吸顶不出来）；clip 同样裁掉圆角外的内容但不建立滚动盒。 */
+.tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:clip}
 table{width:100%;border-collapse:collapse}
 thead th{background:var(--bg3);font-size:10.5px;font-weight:500;color:var(--txt2);
 letter-spacing:.3px;padding:9px;text-align:right;white-space:nowrap;
 border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+/* 表头吸顶：榜单 100 行、自选表滚过去之后列名还在。top 对齐锚点导航下缘，
+   背景色要实（不能透），否则行文字会从表头底下透出来。 */
+.tbl thead th{position:sticky;top:var(--navH,42px);z-index:3}
 thead th:hover{color:var(--txt)}
 thead th.l{text-align:left}
 thead th.ctr{text-align:center}
@@ -3122,7 +3138,7 @@ tbody tr:hover{background:#f7f9fd}
 tbody tr:last-child td{border-bottom:none}
 td.l{text-align:left;font-family:inherit}
 td.ctr{text-align:center}
-.code{color:var(--txt3);font-size:11px}
+.code{color:var(--txt3);font-size:11.5px}
 .nm{font-weight:500}
 .up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--txt3)}
 .pm{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11.5px;font-weight:600;min-width:56px}
@@ -3133,21 +3149,24 @@ td.ctr{text-align:center}
 .act{color:var(--txt3);cursor:pointer;font-size:15px;padding:1px 6px;border-radius:4px}
 .act:hover{color:var(--accent);background:#eaf1ff}
 .act.del:hover{color:var(--up);background:#fdeeee}
-.ixb{display:inline-block;margin-left:5px;padding:0 5px;border-radius:3px;font-size:10px;
+.ixb{display:inline-block;margin-left:5px;padding:0 5px;border-radius:3px;font-size:10.5px;
 font-weight:500;color:var(--txt3);background:#f0f2f5;border:1px solid var(--line);
 vertical-align:1px;cursor:default}
 .ixb.mx{color:#2563eb;background:#eaf1ff;border-color:#c9dbff}
-.syn{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:9.5px;
+.syn{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:10.5px;
 color:#2563eb;background:#eaf1ff;border:1px solid #c9dbff;vertical-align:1px;font-weight:500}
 tr.hr{cursor:pointer}
 tr.hr:hover td{background:#f7f9fd}
 @keyframes fu{0%{background:#ffe3e3}100%{background:transparent}}
 @keyframes fd{0%{background:#d9f5ea}100%{background:transparent}}
 .fu{animation:fu .7s ease-out}.fd{animation:fd .7s ease-out}
-footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--txt3)}
+footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
 .err{color:var(--up)}
 .empty{padding:20px;text-align:center;color:var(--txt3);font-size:12.5px}
-#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#fff;box-shadow:0 8px 26px rgba(20,26,40,.16);
+/* 「今日变化」两格的空态不是错误也不是加载，只是一句话——按正文排版收紧行高，
+   不再占一大块空白。 */
+.evtbox .empty,.portbox .empty{padding:6px 2px;text-align:left;line-height:1.7}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#fff;box-shadow:0 8px 28px rgba(23,32,54,.16);
 border:1px solid var(--line);padding:8px 16px;border-radius:6px;font-size:12.5px;opacity:0;
 transition:.25s;pointer-events:none;z-index:9}
 #toast.show{opacity:1}
@@ -3164,7 +3183,7 @@ transition:.25s;pointer-events:none;z-index:9}
 .t3 em{font-style:normal;font-family:var(--mono);margin-left:3px;font-weight:600}
 .t3.up em{color:var(--up)}
 .t3.dn em{color:var(--down)}
-.t3ph{color:var(--txt3);font-size:11px;font-family:var(--mono)}
+.t3ph{color:var(--txt3);font-size:11.5px;font-family:var(--mono)}
 
 /* ---------- 历史 K 线面板 ---------- */
 #histMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:60;display:none;
@@ -3172,10 +3191,10 @@ align-items:center;justify-content:center;padding:18px}
 #histMask.on{display:flex}
 .hpanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;min-width:0;
 max-width:1060px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;
-box-shadow:0 18px 48px rgba(20,26,40,.16)}
+box-shadow:0 8px 28px rgba(23,32,54,.16)}
 .hhd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .hhd .nm{font-size:14.5px;font-weight:600}
-.hhd .cd{font-family:var(--mono);font-size:12px;color:var(--txt3)}
+.hhd .cd{font-family:var(--mono);font-size:12.5px;color:var(--txt3)}
 .hhd .px{font-family:var(--mono);font-size:16px;font-weight:600;margin-left:4px}
 .hhd .ch{font-family:var(--mono);font-size:12.5px}
 .htabs{display:flex;gap:3px;margin-left:6px}
@@ -3186,7 +3205,7 @@ border-radius:6px;padding:2px;margin-left:auto}
 .hmodes b{padding:2px 10px;border-radius:4px;font-size:11.5px;font-weight:400;
 color:var(--txt2);cursor:pointer;user-select:none}
 .hmodes b:hover{color:var(--txt)}
-.hmodes b.on{background:#fff;color:var(--txt);font-weight:600;box-shadow:0 1px 2px rgba(20,26,40,.09)}
+.hmodes b.on{background:#fff;color:var(--txt);font-weight:600;box-shadow:0 3px 12px rgba(23,32,54,.1)}
 .hmodes b[data-m="min"].on{color:var(--accent)}
 .htabs span{padding:3px 9px;border-radius:5px;font-size:11.5px;color:var(--txt2);
 cursor:pointer;border:1px solid transparent;user-select:none}
@@ -3201,7 +3220,7 @@ color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
 .hsbar .lb{font-size:10.5px;color:var(--txt3);margin-right:2px}
 .hsbar .lb+.sg+.lb{margin-left:8px}
 .hsbar .sg{display:flex;gap:3px;flex-wrap:wrap;min-width:0}
-.hsbar b{padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:11px;
+.hsbar b{padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:11.5px;
 font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-select:none}
 .hsbar b:hover{color:var(--txt)}
 .hsbar b.on{background:var(--bg3);color:var(--txt);border-color:#c9d6ef}
@@ -3221,11 +3240,11 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .hholdhd b{color:var(--txt);font-weight:600}
 .hcollapse{font-style:normal;cursor:pointer;color:#2f6fd0;border-bottom:1px dashed #9dbbeb}
 .hhrow{display:grid;grid-template-columns:minmax(0,220px) 62px 66px minmax(70px,1fr) 62px;
-  gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12px}
+  gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12.5px}
 .hhrow:hover{background:#f7f9fc}
 .hhrk{display:none}
 .hhnm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.hhnm em{font-style:normal;font-size:9.5px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
+.hhnm em{font-style:normal;font-size:10.5px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
 .hhw,.hhc,.hhctr{font-family:var(--mono);text-align:right;font-size:11.5px}
 .hhc.up{color:var(--up)}.hhc.dn{color:var(--down)}
 /* 贡献列也要红涨绿跌：不写这条时负贡献会掉回默认的深灰，跟「-0.16 是坏事」
@@ -3237,22 +3256,22 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .hhbar u{position:absolute;top:0;height:7px;border-radius:3px}
 /* 合计行吸在底部：它是这一栏的结论（前 N 大解释了多少、剩下多少），
    被 30 行挤到屏幕外就等于没给。 */
-.hhfoot{display:flex;flex-wrap:wrap;gap:14px;padding:9px 0 8px;font-size:11px;color:var(--txt2);
+.hhfoot{display:flex;flex-wrap:wrap;gap:14px;padding:9px 0 8px;font-size:11.5px;color:var(--txt2);
   position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--line);z-index:1}
 .hhfoot b{font-family:var(--mono);font-weight:600}
 .hhfoot .k{color:var(--txt3)}
 .hhnote{padding:8px 0 2px;font-size:10.5px;color:var(--txt3);line-height:1.75}
 /* 展开按钮：整行居中，视觉上明显是「表格到此为止」的分界，不是又一条成分 */
 .hhmore{display:flex;justify-content:center;padding:9px 0 4px}
-.hhmore b{font-size:11px;font-weight:500;color:var(--acc,#2f6fd0);cursor:pointer;
+.hhmore b{font-size:11.5px;font-weight:500;color:var(--acc,#2f6fd0);cursor:pointer;
   padding:5px 14px;border:1px solid #cfdcf0;border-radius:14px;background:var(--bg2)}
 .hhmore b:hover{background:#eef4fe;border-color:#9dbbeb}
 .hhmore b:active{transform:translateY(1px)}
-.hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:12px;line-height:1.9}
+.hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:12.5px;line-height:1.9}
 @media(max-width:760px){
   .hhrow{grid-template-columns:minmax(0,1fr) 48px 54px 52px;gap:6px;font-size:11.5px}
   .hhbar{display:none}
-  .hhw,.hhc,.hhctr{font-size:11px}
+  .hhw,.hhc,.hhctr{font-size:11.5px}
   .hhold{padding:0 12px 8px}
 }
 .hind .i.on{border-color:#c9d6ef;background:var(--bg3)}
@@ -3263,10 +3282,10 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 /* 指标明细：K 线下方一排小卡，把 17 个字段里最能看的那几个摊开 */
 .hind{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:6px;padding:6px 14px 2px;min-width:0}
 .hind .i{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
-.hind .i .k{font-size:10px;color:var(--txt3);letter-spacing:.2px;white-space:nowrap}
+.hind .i .k{font-size:10.5px;color:var(--txt3);letter-spacing:.2px;white-space:nowrap}
 .hind .i .v{font-size:12.5px;font-family:var(--mono);font-weight:600;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hind .i .s{font-size:10px;color:var(--txt2);margin-top:1px;white-space:nowrap;
+.hind .i .s{font-size:10.5px;color:var(--txt2);margin-top:1px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .hload{padding:70px 0;text-align:center;color:var(--txt2);font-size:12.5px;line-height:2}
 @media(max-width:700px){
@@ -3278,16 +3297,16 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
   .hhd .cd{display:none}
   /* 名称不截断时，长名字（沪深300ETF华泰柏瑞）会把关闭按钮挤到第二行，
      面板顶部凭空多出一行，看着像渲染坏了 */
-  .hhd .nm{font-size:13px;max-width:28vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hhd .nm{font-size:13.5px;max-width:28vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .htabs{margin-left:0;order:9}
   .htabs span{padding:2px 7px}
   .hmodes{margin-left:auto;order:8;padding:2px}
-  .hmodes b{padding:2px 5px;font-size:10px}
+  .hmodes b{padding:2px 5px;font-size:10.5px}
   .hx{position:absolute;right:8px;top:10px;margin:0}
   .hsbar{padding:7px 10px 2px;gap:3px;overflow:hidden}
-  .hsbar .lb{font-size:10px}
+  .hsbar .lb{font-size:10.5px}
   .hsbar .lb+.sg+.lb{margin-left:5px}
-  .hsbar b{padding:2px 5px;font-size:10px}
+  .hsbar b{padding:2px 5px;font-size:10.5px}
   #histCv{height:300px}
   /* 小屏固定 3 列：auto-fit 在 400px 里会算出 4 列 96px，
      但 canvas 的固有宽度参与 flex 计算会把面板撑宽，导致第 4 列被裁掉 */
@@ -3295,7 +3314,7 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 }
 /* 自选标题行右侧的小按钮：上一版这里是「同步」，复制一条带编号的链接，
    谁打开谁能写。换成纯文本导入导出后，只需要一个入口。 */
-.sechd .io{margin-left:auto;font-size:11px;color:var(--txt);background:var(--bg3);
+.sechd .io{margin-left:auto;font-size:11.5px;color:var(--txt);background:var(--bg3);
 border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer;
 user-select:none;white-space:nowrap}
 .sechd .io:hover{border-color:#c3cad8}
@@ -3330,14 +3349,14 @@ padding:3px 0 0;border-top:1px dashed var(--line);margin-top:2px;font-size:10.5p
    看不出这个数是刚起步还是已经走了一半。 */
 .strend{margin:2px 0 10px;padding:9px 12px 7px;background:var(--bg2);
 border:1px solid var(--line);border-radius:8px}
-.sthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:11px;color:var(--txt3)}
+.sthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
 .sthd b{font-size:15px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
-.sthd .sttag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg3);
+.sthd .sttag{font-size:10.5px;padding:1px 6px;border-radius:4px;background:var(--bg3);
 color:var(--txt2);border:1px solid var(--line)}
 .sthd .sttag.hi{color:#a8541c;border-color:#f0dcc8;background:#fdf6ef}
 .sthd .sttag.lo{color:#1c6b8a;border-color:#cfe3ee;background:#f2f9fc}
 .strend svg{display:block;width:100%;height:86px;margin-top:5px}
-.stax{display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);
+.stax{display:flex;justify-content:space-between;font-size:10.5px;color:var(--txt3);
 margin-top:1px;font-variant-numeric:tabular-nums}
 
 /* 集中度 × 宽度四象限。格子回答「钱在哪条线」，这张图回答
@@ -3346,30 +3365,30 @@ margin-top:1px;font-variant-numeric:tabular-nums}
 border:1px solid var(--line);border-radius:8px;position:relative}
 .scqhd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:10.5px;color:var(--txt3)}
 .scqhd>span:first-child{color:var(--txt2);font-weight:600}
-.scqhd .scqb{font-style:normal;font-weight:700;font-size:11px;padding:1px 7px;border-radius:4px;
+.scqhd .scqb{font-style:normal;font-weight:700;font-size:11.5px;padding:1px 7px;border-radius:4px;
 background:var(--bg3);border:1px solid var(--line)}
-.scqhd .scqtag{margin-left:auto;font-size:9.5px;color:var(--txt3);letter-spacing:.2px;cursor:help}
+.scqhd .scqtag{margin-left:auto;font-size:10.5px;color:var(--txt3);letter-spacing:.2px;cursor:help}
 /* 四象限说明浮窗。四个角标签只有名字，不知道「抱团」和「涣散」差在哪，
    而且差的那一步正好决定该不该动手。浮窗用 2×2 小矩阵复刻图上的方位。 */
 .scqhelp{flex:none;width:14px;height:14px;line-height:12px;text-align:center;border-radius:50%;
-border:1px solid var(--line);background:var(--bg);color:var(--txt3);font-size:9px;cursor:pointer;
+border:1px solid var(--line);background:var(--bg);color:var(--txt3);font-size:10.5px;cursor:pointer;
 user-select:none;font-style:normal}
 .scqhelp:hover{color:var(--txt2);border-color:var(--txt3)}
 .scqpop{display:none;position:absolute;right:8px;top:26px;z-index:40;
 width:min(424px,calc(100% - 16px));padding:10px 12px 9px;background:var(--bg);
-border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 26px rgba(20,26,38,.14)}
+border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 28px rgba(23,32,54,.16)}
 .scq.open .scqpop{display:block}
-.scqaxs{font-size:9.5px;color:var(--txt3);margin:0 0 8px;letter-spacing:.2px}
+.scqaxs{font-size:10.5px;color:var(--txt3);margin:0 0 8px;letter-spacing:.2px}
 .scqgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
 .scqcell{border-left:3px solid var(--line);padding:1px 0 1px 8px;min-width:0}
-.scqcell b{display:block;font-size:11px;color:var(--txt2);margin-bottom:2px}
-.scqcell b i{font-style:normal;font-size:8.5px;color:#fff;background:var(--txt3);
+.scqcell b{display:block;font-size:11.5px;color:var(--txt2);margin-bottom:2px}
+.scqcell b i{font-style:normal;font-size:10.5px;color:#fff;background:var(--txt3);
 border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:1px}
-.scqcell span{display:block;font-size:10px;color:var(--txt3);line-height:1.55}
+.scqcell span{display:block;font-size:10.5px;color:var(--txt3);line-height:1.55}
 .scqcell span.act{color:var(--txt2)}
 .scqfoot{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--line);
-font-size:9.5px;color:var(--txt3);line-height:1.55}
-.scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
+font-size:10.5px;color:var(--txt3);line-height:1.55}
+.scqstk{margin:0;font-size:10.5px;color:var(--txt3);font-variant-numeric:tabular-nums}
 /* 点中某一天的浮窗。锚在被点的点上（left/top 是点的百分比坐标），
    默认出现在点的右下方；靠右（px>60%）翻到左侧、靠下（py>52%）翻到上方。
    不跟随鼠标——移动端没有 hover，跟随毫无意义，固定锚点反而稳。 */
@@ -3377,7 +3396,7 @@ font-size:9.5px;color:var(--txt3);line-height:1.55}
 .scqtip{display:none;position:absolute;z-index:6;box-sizing:border-box;
 min-width:230px;max-width:min(320px,calc(100% - 14px));
 padding:7px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
-box-shadow:0 3px 16px rgba(30,40,60,.16);font-size:11px;color:var(--txt2);
+box-shadow:0 8px 28px rgba(23,32,54,.16);font-size:11.5px;color:var(--txt2);
 line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
 .scqtip.on{display:block}
 .scqtip{transform:translate(10px,12px)}
@@ -3387,7 +3406,7 @@ line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
 .scqtip b{color:var(--txt);font-weight:600}
 .scqtip i{font-style:normal;color:var(--txt);font-weight:700}
 .scqtip em{font-style:normal;color:var(--txt3)}
-.scqtip .esc{font-size:10px}
+.scqtip .esc{font-size:10.5px}
 .scqplot svg{cursor:crosshair}
 /* 电脑为主：图独占一行、放到 1000px，统计和描述缩到图下方一行。
    原来的三栏（360 图 + 190 统计 + 1fr 说明）在 1440 屏上图只有 360px，
@@ -3400,7 +3419,7 @@ line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
 .scqplot svg{display:block;width:100%;height:auto}
 .scqplot svg.m{display:none}
 .scqax{display:flex;justify-content:flex-start;gap:16px;flex-wrap:wrap;
-font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
+font-size:10.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
 /* 底部三块按图宽三等分：图 1000px，三项挤在左边 500px 会留下半屏空白，
    而且和上面的图对不齐。等分后每块一个竖排单元，读起来像一行表头。 */
 .scqfoot{margin-top:0}
@@ -3409,10 +3428,10 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
 .scqe{display:flex;align-items:baseline;gap:6px;cursor:help}
 .scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
 .scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
-.scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
+.scqe em{font-style:normal;font-size:10.5px;color:var(--txt3);line-height:1.45}
 .scqdesc{display:flex;flex-direction:column;gap:5px;padding-top:0;min-width:260px;flex:1;max-width:680px}
-.scqd{margin:0;font-size:12px;color:var(--txt2);line-height:1.7}
-.scqnote{margin:0;font-size:10px;color:var(--txt3);line-height:1.75}
+.scqd{margin:0;font-size:12.5px;color:var(--txt2);line-height:1.7}
+.scqnote{margin:0;font-size:10.5px;color:var(--txt3);line-height:1.75}
 @media(max-width:820px){
   .scqbody{grid-template-columns:1fr;gap:4px}
   .scqplot{max-width:100%}
@@ -3426,7 +3445,7 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
   .scqe{flex-direction:column;align-items:flex-start;gap:0}
   .scqdesc{padding-top:6px;min-width:0}
 }
-@media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:9.5px}}
+@media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:10.5px}}
 
 /* ---- 自选导入导出 ---- */
 #ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
@@ -3438,14 +3457,14 @@ align-items:center;justify-content:center;padding:18px}
 .trigrule.off{opacity:.55}
 .trigrule .trow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
 .trigrule select,.trigrule input[type=text]{border:1px solid var(--line);border-radius:5px;
-  background:var(--bg2);color:var(--txt);padding:4px 6px;font-size:12px;outline:none}
+  background:var(--bg2);color:var(--txt);padding:4px 6px;font-size:12.5px;outline:none}
 .trigrule input[type=text]{width:78px;font-family:var(--mono)}
-.trigrule .tand{font-size:11px;color:var(--txt3);margin-left:2px}
-.trigrule .tdel,.trigrule .tcdel{cursor:pointer;color:var(--txt3);font-size:13px;padding:0 4px;user-select:none}
+.trigrule .tand{font-size:11.5px;color:var(--txt3);margin-left:2px}
+.trigrule .tdel,.trigrule .tcdel{cursor:pointer;color:var(--txt3);font-size:13.5px;padding:0 4px;user-select:none}
 .trigrule .tdel:hover,.trigrule .tcdel:hover{color:var(--down)}
 .trigrule .tadd{cursor:pointer;color:var(--accent);font-size:11.5px;user-select:none}
-.trigrule .tname{font-size:11px;color:var(--txt3)}
-.trigcnt{font-size:11px;color:var(--txt3);line-height:1.65;margin-top:4px}
+.trigrule .tname{font-size:11.5px;color:var(--txt3)}
+.trigcnt{font-size:11.5px;color:var(--txt3);line-height:1.65;margin-top:4px}
 /* 隔夜/亚太条目点击看分时：可点的条目加指针和悬停反馈 */
 .onfut span.ovclk{cursor:pointer}
 .onfut span.ovclk:hover,.ontrk:hover{border-color:var(--txt3)}
@@ -3457,17 +3476,17 @@ align-items:center;justify-content:center;padding:18px}
 margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
-max-width:470px;box-shadow:0 18px 48px rgba(20,26,40,.16);overflow:hidden}
+max-width:470px;box-shadow:0 8px 28px rgba(23,32,54,.16);overflow:hidden}
 .iohd{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
 font-size:13.5px}
 .iobody{padding:13px 14px}
-.iotip{font-size:11px;color:var(--txt3);line-height:1.65;margin-bottom:9px}
-#ioTxt{width:100%;height:104px;resize:vertical;font-family:var(--mono);font-size:12px;
+.iotip{font-size:11.5px;color:var(--txt3);line-height:1.65;margin-bottom:9px}
+#ioTxt{width:100%;height:104px;resize:vertical;font-family:var(--mono);font-size:12.5px;
 line-height:1.7;padding:9px 10px;border:1px solid var(--line);border-radius:7px;
 background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
 #ioTxt:focus{border-color:var(--accent)}
 .iobar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
-.iobar .iom{font-size:11px;color:var(--txt3);margin-left:auto}
+.iobar .iom{font-size:11.5px;color:var(--txt3);margin-left:auto}
 
 /* ---- 因子研究面板 ---- */
 #rsMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:70;display:none;
@@ -3475,23 +3494,23 @@ align-items:center;justify-content:center;padding:18px}
 #rsMask.on{display:flex}
 .rspanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:900px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;
-box-shadow:0 18px 48px rgba(20,26,40,.16)}
+box-shadow:0 8px 28px rgba(23,32,54,.16)}
 .rshd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
 /* 标题不许被压缩换行：以前「因子研究」在 390px 屏上会折成「因子/研究」两行，
    还把日期挤到旁边，看着像排版坏了。标题固定宽度，元信息自己换行。 */
 .rshd b{font-size:14.5px;white-space:nowrap;flex:0 0 auto}
-.rshd .sub{font-size:11px;color:var(--txt3);font-family:var(--mono);
+.rshd .sub{font-size:11.5px;color:var(--txt3);font-family:var(--mono);
 min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rsbody{overflow-y:auto;padding:14px}
 .rssec{margin-bottom:18px}
-.rssec h4{font-size:12px;color:var(--txt2);font-weight:600;margin-bottom:8px;
+.rssec h4{font-size:12.5px;color:var(--txt2);font-weight:600;margin-bottom:8px;
 letter-spacing:.3px;display:flex;align-items:center;gap:7px}
 .rssec h4::after{content:'';flex:1;height:1px;background:var(--line)}
 .rsk{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
 .rsk .i{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
 .rsk .i .k{font-size:10.5px;color:var(--txt3);margin-bottom:3px}
 .rsk .i .v{font-size:17px;font-family:var(--mono);font-weight:600}
-.rsk .i .s{font-size:10px;color:var(--txt3);margin-top:2px}
+.rsk .i .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
 .rstbl{width:100%;border-collapse:collapse;font-size:11.5px}
 /* 这几张表列多，手机上宽度不够时**宁可横向滚动**也不能把数字裁掉。
    之前直接裁在容器里，"最大回撤"和后面几列在 390px 宽的屏上完全看不见，
@@ -3508,7 +3527,7 @@ border-bottom:1px solid var(--line);font-size:10.5px;white-space:nowrap}
 .rstbl td{padding:4px 7px;border-bottom:1px solid rgba(38,44,55,.5);
 font-family:var(--mono);text-align:right;white-space:nowrap}
 .rstbl tr:hover td{background:var(--bg3)}
-.rsnote{font-size:11px;color:var(--txt2);line-height:1.85;background:var(--bg3);
+.rsnote{font-size:11.5px;color:var(--txt2);line-height:1.85;background:var(--bg3);
 border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 .rsnote b{color:var(--txt)}
 .rsnote .warn{border-left-color:var(--up)}
@@ -3523,17 +3542,17 @@ padding:10px 12px 6px;margin-top:10px}
 .labgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
 .labgrid .box{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
 .labgrid .box h5{font-size:10.5px;color:var(--txt3);font-weight:500;margin-bottom:6px}
-.labgrid table{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
-.labgrid th{font-size:10px;color:var(--txt3);font-weight:400;text-align:center;padding:3px 2px}
+.labgrid table{width:100%;border-collapse:collapse;font-size:11.5px;font-family:var(--mono)}
+.labgrid th{font-size:10.5px;color:var(--txt3);font-weight:400;text-align:center;padding:3px 2px}
 .labgrid td{text-align:center;padding:4px 2px;border-radius:3px}
 .labgrid td.n{color:var(--txt3)}
 .labtabs{display:flex;gap:6px;margin:0 0 9px;flex-wrap:wrap}
-.labtabs button{padding:4px 11px;font-size:11px;border-radius:14px;background:var(--bg3);
+.labtabs button{padding:4px 11px;font-size:11.5px;border-radius:14px;background:var(--bg3);
 border:1px solid var(--line);color:var(--txt2);cursor:pointer;font-family:inherit}
 .labtabs button.on{background:rgba(76,141,255,.15);border-color:var(--accent);color:var(--txt)}
 .labtbl td.nm{text-align:left;font-family:inherit;color:var(--txt3);white-space:normal;
 font-size:10.5px;line-height:1.5;max-width:270px}
-.labtbl td.fam{text-align:left;font-family:inherit;color:var(--txt3);font-size:10px;white-space:nowrap}
+.labtbl td.fam{text-align:left;font-family:inherit;color:var(--txt3);font-size:10.5px;white-space:nowrap}
 /* ---- 因子明细：点一行展开构造方式 ---- */
 .fxtbl tr.fxr{cursor:pointer}
 .fxtbl tr.fxr.on td{background:rgba(59,130,246,.10)}
@@ -3545,12 +3564,12 @@ text-align:left!important;white-space:normal!important;font-family:inherit!impor
 .fxdn{font-size:11.5px;color:var(--txt2);margin-bottom:5px}
 .fxdn b{color:#0e7490;font-family:var(--mono);font-weight:600;margin-right:7px}
 .fxds{font-size:11.5px;color:var(--txt2);line-height:1.7;margin-bottom:8px}
-.fxf{font-family:var(--mono);font-size:10.8px;color:#2a2f38;background:var(--bg3);
+.fxf{font-family:var(--mono);font-size:10.5px;color:#2a2f38;background:var(--bg3);
 border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:0;
 white-space:pre-wrap;word-break:break-word;line-height:1.75}
 .rsmore{margin-top:9px;text-align:center}
 .rsmore button{font-size:11.5px;padding:5px 14px;border-radius:6px}
-.rssrc{font-size:10px;color:var(--txt3);margin-top:10px;text-align:right}
+.rssrc{font-size:10.5px;color:var(--txt3);margin-top:10px;text-align:right}
 /* /research 是独立页面：复用同一份 DOM，把遮罩层改成文档流里的整页布局。
    好处是因子面板只有一套 HTML 和一套渲染代码，不会出现「弹窗里对、页面上错」。 */
 .rback{display:none;font-size:11.5px;color:var(--txt2);text-decoration:none;padding:2px 8px;
@@ -3586,7 +3605,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   /* 表格右侧被裁一半的样子容易被当成本站坏了，标一句「能滑」。
      只对会横向滚动的那几张表显示，指标说明表换了行不需要。 */
   .rssec:has(.rstwrap>table:not(.indtbl)) > h4::after{
-    content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:10px}
+    content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:10.5px}
 }
 
 /* ---------- 板块地图 ---------- */
@@ -3599,19 +3618,19 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sgrp:first-child{margin-top:0}
 .sghd{display:flex;align-items:center;gap:3px 10px;flex-wrap:wrap;cursor:pointer;
   padding:5px 9px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;
-  background:var(--bg3);font-size:11px;color:var(--txt2);user-select:none}
+  background:var(--bg3);font-size:11.5px;color:var(--txt2);user-select:none}
 .sghd:hover{border-color:#c3cad8}
 .sghd .sgc{width:0;height:0;flex:none;margin-right:2px;
   border-left:4.5px solid var(--txt3);border-top:3.5px solid transparent;
   border-bottom:3.5px solid transparent;transform:rotate(90deg);transition:transform .12s}
 .sgrp.fold .sghd .sgc{transform:rotate(0)}
-.sghd .sgk{font-size:12px;font-weight:700;color:var(--txt);letter-spacing:.2px}
+.sghd .sgk{font-size:12.5px;font-weight:700;color:var(--txt);letter-spacing:.2px}
 .sghd .sgt{color:var(--txt3)}
 .sghd .sgm{white-space:nowrap}
 .sghd .sgm b{font-variant-numeric:tabular-nums}
 /* 集中度后面那个小数字是「近一年分位」，不是百分比，所以做得比正文轻一档，
    避免被读成「集中 53.0% 的 89%」。 */
-.sghd .sgm em{font-style:normal;color:var(--txt3);font-size:10px;margin-left:2px}
+.sghd .sgm em{font-style:normal;color:var(--txt3);font-size:10.5px;margin-left:2px}
 
 @media(max-width:880px){.sghd .sgm.opt{display:none}}
 .sgrp.fold .smgrid,.sgrp.fold .sdet,.sgrp.fold .scq{display:none}
@@ -3622,7 +3641,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   .scell{padding:6px 7px 5px}
   .scell .sn{font-size:10.5px}
   .scell .sv{font-size:14px}
-  .scell .ss{font-size:9.5px;gap:2px}
+  .scell .ss{font-size:10.5px;gap:2px}
   .scell .sbar{display:none}
 }
 .scell{border:1px solid var(--line);border-radius:7px;padding:7px 9px 6px;background:var(--bg2);
@@ -3639,23 +3658,23 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 /* 箭头紧跟板块名，不推到格子右边：右对齐时它正好落在「-3.25%」上方，
    读起来像涨跌幅的一部分。 */
 .scell .sn .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.scell .sn .sd{flex:none;font-size:10px;font-weight:700;
+.scell .sn .sd{flex:none;font-size:10.5px;font-weight:700;
   font-variant-numeric:tabular-nums;letter-spacing:-.2px}
 .scell .sv{font-size:16px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;
   letter-spacing:-.2px}
-.scell .ss{font-size:10px;color:var(--txt3);margin-top:1px;
+.scell .ss{font-size:10.5px;color:var(--txt3);margin-top:1px;
   font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:3px}
 .scell .ss .si{white-space:nowrap}
 .scell .ss .sa{color:var(--txt3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scell .sn .sd.up{color:var(--up)}
 .scell .sn .sd.down{color:var(--down)}
 .scell .sn .sd.na{color:var(--txt3);font-weight:400;opacity:.55}
-.scell .sbar{height:2px;border-radius:2px;background:var(--bg3);margin-top:6px;overflow:hidden}
-.scell .sbar i{display:block;height:2px;border-radius:2px;background:var(--txt3);opacity:.45}
+.scell .sbar{height:3px;border-radius:2px;background:var(--bg3);margin-top:7px;overflow:hidden}
+.scell .sbar i{display:block;height:3px;border-radius:2px;background:var(--txt3);opacity:.55}
 .scell .sz{position:absolute;left:0;top:0;bottom:0;width:2.5px}
 .sdet{margin-top:9px;border-top:1px dashed var(--line);padding-top:7px;display:none}
 .sdet.show{display:block}
-.sdet .sdhd{font-size:11px;color:var(--txt3);margin-bottom:4px}
+.sdet .sdhd{font-size:11.5px;color:var(--txt3);margin-bottom:4px}
 /* 明细两列：指数多的时候（新能源 6 条、计算机 19 条）单列会把面板拉得很长，
    两列在 1500px 下正好，窄屏退回单列。 */
 /* 用多列而不是 grid：这一列是按涨幅排序的，要竖着读。grid 是行优先，
@@ -3678,28 +3697,28 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .abtn.on{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
 .abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#d93a3a;
   margin-right:4px;vertical-align:1px}
-.aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:11px}
+.aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:11.5px}
 .aset.show{display:inline-flex}
-.aset input{width:40px;padding:1px 3px;font-size:11px;border:1px solid var(--line);
+.aset input{width:40px;padding:1px 3px;font-size:11.5px;border:1px solid var(--line);
   border-radius:4px;background:var(--bg2);color:var(--txt);text-align:center;
   font-variant-numeric:tabular-nums}
 .aset input:focus{outline:none;border-color:var(--accent)}
 #alertBox{position:fixed;right:14px;top:14px;z-index:999;display:flex;flex-direction:column;
   gap:6px;pointer-events:none}
 .aitem{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--txt3);
-  border-radius:6px;padding:7px 11px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:12px;
+  border-radius:6px;padding:7px 11px;box-shadow:0 3px 12px rgba(23,32,54,.1);font-size:12.5px;
   min-width:220px;max-width:300px;animation:ain .18s ease-out}
 @keyframes ain{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
 .aitem.up{border-left-color:var(--up)}
 .aitem.dn{border-left-color:var(--down)}
 .aitem b{font-size:12.5px;font-variant-numeric:tabular-nums}
-.aitem small{display:block;color:var(--txt2);font-size:11px;margin-top:2px;line-height:1.4}
+.aitem small{display:block;color:var(--txt2);font-size:11.5px;margin-top:2px;line-height:1.4}
 /* 提醒记录：浮层只停 9 秒，全市场模式下这个列表才是主要出口 */
 #alertLog{position:fixed;right:14px;top:52px;z-index:998;width:min(340px,calc(100vw - 24px));
   max-height:64vh;background:var(--bg2);border:1px solid var(--line);border-radius:8px;
-  box-shadow:0 8px 28px rgba(0,0,0,.16);display:none;flex-direction:column;overflow:hidden}
+  box-shadow:0 8px 28px rgba(23,32,54,.16);display:none;flex-direction:column;overflow:hidden}
 #alertLog.show{display:flex}
-#alertLog .lh{padding:8px 11px;border-bottom:1px solid var(--line);font-size:12px;
+#alertLog .lh{padding:8px 11px;border-bottom:1px solid var(--line);font-size:12.5px;
   color:var(--txt3);display:flex;align-items:center;gap:8px;flex:none}
 #alertLog .lh b{color:var(--txt);font-size:12.5px}
 #alertLog .lh u{margin-left:auto;cursor:pointer;text-decoration:none;color:var(--txt3)}
@@ -3711,7 +3730,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 #alertLog .li.dn{border-left-color:var(--down)}
 #alertLog .li em{font-style:normal;color:var(--txt3);font-variant-numeric:tabular-nums;flex:none}
 #alertLog .li i{font-style:normal;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#alertLog .le{padding:18px 11px;text-align:center;color:var(--txt3);font-size:12px;line-height:1.6}
+#alertLog .le{padding:18px 11px;text-align:center;color:var(--txt3);font-size:12.5px;line-height:1.6}
 </style>
 </head>
 <body>
@@ -3733,12 +3752,63 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
 </div>
 
-<div class="sec" id="secSec">
-  <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
-    <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
-  <div class="smhead" id="secHead"><span>读取中…</span></div>
-  <div class="secmeta" id="secMeta"></div>
-  <div id="secBody"><div class="empty">正在读取行情…</div></div>
+<nav class="secnav" id="secNav" aria-label="区块导航">
+  <a data-t="onCard">隔夜</a>
+  <a data-t="spdSec">急涨急跌</a>
+  <a data-t="watchSec">自选</a>
+  <a data-t="secSec">板块地图</a>
+  <a data-t="rankSec">榜单</a>
+</nav>
+
+<div class="sec" id="spdSec">
+  <div class="sechd"><b>急涨急跌</b><span class="n" id="spdN">-</span>
+    <span class="sync" id="btnSpd" title="立刻重算一次">刷新</span></div>
+  <div class="dnote">上面那栏看「今天」，这一栏看「刚才」：过去几分钟谁在急拉、谁在急砸，量跟不跟得上。</div>
+  <div class="mkbox">
+    <div class="mtabs" id="spdTabs">
+      <span class="mtab on" data-w="3">3 分钟</span>
+      <span class="mtab" data-w="5">5 分钟</span>
+      <span class="mtab" id="spdVol" title="量比低于 1.5 倍的不显示">只看放量</span>
+    </div>
+    <div class="spdgrid" id="spdGrid"><div class="empty">读取中…</div></div>
+    <div class="spdnote" id="spdNote"></div>
+  </div>
+</div>
+
+<div class="sec" id="watchSec">
+  <div id="staleBar" class="stalebar" style="display:none"></div>
+  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
+    <span class="io" id="btnIO" title="导出一行代码清单，或粘贴清单导入（只追加，不覆盖）">导入/导出</span></div>
+  <div class="bar">
+    <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
+    <button class="pri" id="btnAdd">添加</button>
+    <button id="btnClear">清空</button>
+    <span class="alertbar">
+      <span class="abtn" id="btnAlert" title="在页面开着的时候，出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
+      <span class="abtn" id="btnScope" title="自选：逐只提醒，5 秒一刷。全市场：扫同指数去重后的代表标的（500 只上下，一只一个指数），只弹汇总和极端个股，60 秒一刷——一只不漏地逐只弹，一天几百条，弹到第二次就没人看了">范围 自选</span>
+      <span class="aset" id="alertSet">
+        涨跌≥<input id="aChg" value="2.0">%
+        急变≥<input id="aSpd" value="0.8">%/3分
+        溢价≥<input id="aPm" value="2.0">%
+        <span class="abtn" id="btnPerm" title="允许后，页面在后台也能弹系统通知">桌面通知</span>
+      </span>
+      <span class="abtn" id="btnLog" style="display:none" title="今天触发过的全部提醒，浮层只停留 9 秒，点这里回看">0 条</span>
+      <span class="abtn" id="btnTrig" title="自定义组合触发器：自己拼条件（距新高、量能、位置、溢价……），全部满足才提醒">触发器 0</span>
+    </span>
+    <span class="n" id="quoteTip" style="font-size:11.5px;color:var(--txt3)"></span>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr>
+      <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th>
+      <th class="hide-md" title="贡献最大的三只成分股。贡献 = 权重 × 今日涨跌（百分点），
+按绝对值排——涨的时候看谁在拉，跌的时候看谁在砸">主要贡献</th>
+      <th>涨跌</th>
+      <th class="ctr">溢价率</th><th>IOPV</th><th>成交额</th><th>换手</th>
+      <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
+      <th class="ctr" style="width:36px"></th>
+    </tr></thead>
+    <tbody id="watchBody"><tr><td colspan="14" class="empty">加载中…</td></tr></tbody>
+  </table></div>
 </div>
 
 <div class="sec">
@@ -3775,58 +3845,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </div>
 </div>
 
-<div class="sec" id="spdSec">
-  <div class="sechd"><b>急涨急跌</b><span class="n" id="spdN">-</span>
-    <span class="sync" id="btnSpd" title="立刻重算一次">刷新</span></div>
-  <div class="dnote">上面那栏看「今天」，这一栏看「刚才」：过去几分钟谁在急拉、谁在急砸，量跟不跟得上。</div>
-  <div class="mkbox">
-    <div class="mtabs" id="spdTabs">
-      <span class="mtab on" data-w="3">3 分钟</span>
-      <span class="mtab" data-w="5">5 分钟</span>
-      <span class="mtab" id="spdVol" title="量比低于 1.5 倍的不显示">只看放量</span>
-    </div>
-    <div class="spdgrid" id="spdGrid"><div class="empty">读取中…</div></div>
-    <div class="spdnote" id="spdNote"></div>
-  </div>
+<div class="sec" id="secSec">
+  <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
+    <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
+  <div class="smhead" id="secHead"><span>读取中…</span></div>
+  <div class="secmeta" id="secMeta"></div>
+  <div id="secBody"><div class="empty">正在读取行情…</div></div>
 </div>
 
-<div class="sec">
-  <div id="staleBar" class="stalebar" style="display:none"></div>
-  <div class="sechd"><b>自选盯盘</b><span class="n" id="watchN"></span>
-    <span class="io" id="btnIO" title="导出一行代码清单，或粘贴清单导入（只追加，不覆盖）">导入/导出</span></div>
-  <div class="bar">
-    <input id="addIn" placeholder="添加代码，支持逗号批量：510300,513180" style="width:290px">
-    <button class="pri" id="btnAdd">添加</button>
-    <button id="btnClear">清空</button>
-    <span class="alertbar">
-      <span class="abtn" id="btnAlert" title="在页面开着的时候，出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
-      <span class="abtn" id="btnScope" title="自选：逐只提醒，5 秒一刷。全市场：扫同指数去重后的代表标的（500 只上下，一只一个指数），只弹汇总和极端个股，60 秒一刷——一只不漏地逐只弹，一天几百条，弹到第二次就没人看了">范围 自选</span>
-      <span class="aset" id="alertSet">
-        涨跌≥<input id="aChg" value="2.0">%
-        急变≥<input id="aSpd" value="0.8">%/3分
-        溢价≥<input id="aPm" value="2.0">%
-        <span class="abtn" id="btnPerm" title="允许后，页面在后台也能弹系统通知">桌面通知</span>
-      </span>
-      <span class="abtn" id="btnLog" style="display:none" title="今天触发过的全部提醒，浮层只停留 9 秒，点这里回看">0 条</span>
-      <span class="abtn" id="btnTrig" title="自定义组合触发器：自己拼条件（距新高、量能、位置、溢价……），全部满足才提醒">触发器 0</span>
-    </span>
-    <span class="n" id="quoteTip" style="font-size:11px;color:var(--txt3)"></span>
-  </div>
-  <div class="tbl"><table>
-    <thead><tr>
-      <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th>
-      <th class="hide-md" title="贡献最大的三只成分股。贡献 = 权重 × 今日涨跌（百分点），
-按绝对值排——涨的时候看谁在拉，跌的时候看谁在砸">主要贡献</th>
-      <th>涨跌</th>
-      <th class="ctr">溢价率</th><th>IOPV</th><th>成交额</th><th>换手</th>
-      <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
-      <th class="ctr" style="width:36px"></th>
-    </tr></thead>
-    <tbody id="watchBody"><tr><td colspan="14" class="empty">加载中…</td></tr></tbody>
-  </table></div>
-</div>
-
-<div class="sec">
+<div class="sec" id="rankSec">
   <div class="sechd"><b>全市场榜单</b><span class="n" id="listN"></span></div>
   <div class="bar">
     <span class="tag on" data-g="all">全部<b id="n-all"></b></span>
@@ -3949,7 +3976,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
 <div id="ovMask">
   <div class="iobox" style="max-width:760px">
-    <div class="iohd"><b id="ovTitle">分时</b><span class="n" id="ovSub" style="font-size:11px;color:var(--txt3)"></span>
+    <div class="iohd"><b id="ovTitle">分时</b><span class="n" id="ovSub" style="font-size:11.5px;color:var(--txt3)"></span>
       <button class="hx" id="ovClose" title="关闭 (Esc)" style="margin-left:auto">×</button></div>
     <div class="iobody" id="ovBody"><div class="iotip">读取中…</div></div>
   </div>
@@ -8592,7 +8619,7 @@ function loadFull(){
     document.getElementById('fErr').textContent = '';
     if (!DATA.length) document.getElementById('listBody').innerHTML =
       '<tr><td colspan="11" class="empty">行情源暂时不可用，正在自动重试…<br>'
-      + '<span style="opacity:.55;font-size:12px">' + e.message + '</span></td></tr>';
+      + '<span style="opacity:.55;font-size:12.5px">' + e.message + '</span></td></tr>';
     // 15 秒后自己再试一次，别干等下一个 60 秒周期
     if (!retryTimer) retryTimer = setTimeout(function(){ retryTimer = null; loadFull(); }, 15000);
   });
@@ -9771,6 +9798,47 @@ document.getElementById('btnProbe').onclick = function(){
 };
 
 function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
+
+/* 锚点导航：点击平滑滚动；滚动时把视口上缘以下 120px 处的区块点亮。
+   量出来的 --navH 同时供区块 scroll-margin-top 和表格表头 sticky 用，
+   窗口尺寸变化（转屏、缩放）时重算。 */
+var NAV_SECS = ['onCard', 'spdSec', 'watchSec', 'secSec', 'rankSec'];
+function navMeasure(){
+  var nav = document.getElementById('secNav');
+  if (nav) document.documentElement.style.setProperty('--navH', (nav.offsetHeight + 8) + 'px');
+}
+function navScrollTo(id){
+  var el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function navActive(){
+  var nav = document.getElementById('secNav');
+  if (!nav) return;
+  var cur = '';
+  for (var i = 0; i < NAV_SECS.length; i++){
+    var el = document.getElementById(NAV_SECS[i]);
+    if (!el || !el.offsetHeight) continue;      // 隐藏的（如隔夜卡还没数据）跳过
+    if (el.getBoundingClientRect().top <= 120) cur = NAV_SECS[i];
+  }
+  var as = nav.querySelectorAll('a');
+  for (i = 0; i < as.length; i++) as[i].classList.toggle('on', as[i].getAttribute('data-t') === cur);
+}
+(function initNav(){
+  var nav = document.getElementById('secNav');
+  if (!nav) return;
+  nav.addEventListener('click', function(e){
+    var a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (a) navScrollTo(a.getAttribute('data-t'));
+  });
+  var tm;
+  window.addEventListener('scroll', function(){
+    if (tm) return;
+    tm = setTimeout(function(){ tm = null; navActive(); }, 120);
+  }, { passive: true });
+  window.addEventListener('resize', navMeasure);
+  navMeasure();
+  setTimeout(navMeasure, 800);                  // 字体/卡片就位后再量一次
+})();
 clock(); setInterval(clock, 1000);
 
 renderTrigCount();
