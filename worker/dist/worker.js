@@ -691,6 +691,78 @@ async function serveWatch(request, env) {
  *
  * 26KB，边缘缓存 30 分钟。它一天只变一次，缓存成本可以忽略。
  */
+/* ---------------------------------------------------------------- 隔夜行情
+   盘前 8:30 打开页面，第一个问题是「隔夜发生了什么、对哪些 A 股 ETF 有影响」。
+   这条接口只管行情本身：美股收盘 + 外盘期货，赛道到 ETF 的映射在前端做——
+   页面上本来就有 1717 只的名单和 IDX_GROUPS 映射，服务端再解析一份 600KB
+   快照纯浪费 CPU，而且映射表跟界面同源，永远不会两边漂移。
+
+   数据源分工（都实测过）：
+   - 美股/美股指数：腾讯 qt.gtimg.cn，v_usXXX 一批全量返回。a[3] 现价、
+     a[4] 昨收、a[30] 时间、a[32] 涨跌幅%——和 A 股同一套下标，解析函数共用。
+     美股此时已收盘，a[1] 就是最近一个完整交易日的收盘价。
+   - 外盘期货：新浪 hq.sinajs.cn 的 hf_ 系列。f0 现价、f7 昨结算、f12 日期、
+     f13 名称。涨跌基准用昨结算价而不是昨收盘（期货的规矩）。腾讯那条对
+     hf_/nf_ 不响应（实测 200 空体），所以期货只走新浪，失败就整个 fut 置空，
+     前端隐藏那一行，不挡美股主数据。
+   - 汇率/夜期恒指这类字段不稳定（fx_ 偶发 403），v1 不接，宁缺毋滥。
+
+   美股收盘时间：美东 16:00 = 北京 04:00（冬令时 05:00）。盘前看这个数，
+   看到的就是「昨晚美股收盘」。edge 缓存 10 分钟：期货整夜在动，美股不动。 */
+const ON_US_SYMS = ['usNVDA','usAMD','usAVGO','usTSM','usMRVL','usAMAT','usLRCX',
+  'usKLAC','usASML','usANET','usCOHR','usCIEN','usLITE','usFN','usMSFT','usGOOG',
+  'usAMZN','usMETA','usORCL','usSNOW','usADBE','usCRM','usNOW','usPLTR','usAPP',
+  'usVST','usCEG','usTLN','usNRG','usGEV','usAAPL','usDELL','usSMCI','usTSLA',
+  'usUBER','usBABA','usJD','usPDD','usBIDU','usNTES','usLLY','usMRK','usAZN',
+  'usNVO','usPFE','usNDX','usINX','usDJI'];
+const ON_FUT_SYMS = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
+
+async function serveOvernight() {
+  const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  const usP = fetch('https://qt.gtimg.cn/q=' + ON_US_SYMS.join(','), {
+    headers: { 'User-Agent': UA2, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(9000),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error('US HTTP ' + r.status);
+    const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const out = {};
+    const re = /v_([A-Za-z0-9_]+)="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const a = m[2].split('~');
+      if (a.length < 35 || m[1].slice(0, 2).toLowerCase() !== 'us') continue;
+      const p = +a[3], prev = +a[4], chg = +a[32];
+      if (!(p > 0) || !isFinite(chg)) continue;    // 上游对不认识的代码返回 200 空壳
+      out[m[1].toLowerCase()] = { s: m[1].slice(2).toUpperCase(), n: a[1], p, chg, d: a[30] || '' };
+    }
+    if (!Object.keys(out).length) throw new Error('US empty');
+    return out;
+  });
+
+  const futP = fetch('https://hq.sinajs.cn/list=' + ON_FUT_SYMS.join(','), {
+    headers: { 'User-Agent': UA2, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(9000),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error('FUT HTTP ' + r.status);
+    const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const out = {};
+    const re = /var hq_str_(\S+?)="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const f = m[2].split(',');
+      const p = +f[0], base = +f[7];
+      if (!(p > 0) || !(base > 0)) continue;
+      out[m[1]] = { n: f[13] || m[1], p, chg: (p / base - 1) * 100, d: f[12] || '' };
+    }
+    return out;   // 期货整体失败允许：返回空对象，前端隐藏该行
+  }).catch(() => ({}));
+
+  const [us, fut] = await Promise.all([usP, futP]);
+  return json({ ok: true, us, fut, ts: Date.now() }, 600);
+}
+
 /**
  * 全 A 行业口径的市场结构快照（集中度 × 宽度）。
  *
@@ -2563,6 +2635,11 @@ export default {
       return serveAll(env, ctx);
     }
 
+    if (p === '/api/overnight') {
+      // 盘前卡：美股收盘 + 外盘期货。赛道→ETF 映射在前端用 IDX_GROUPS 做
+      return serveOvernight();
+    }
+
     if (p === '/api/mkt') {
       // 全 A 行业口径的集中度 / 宽度（四象限卡片的当天点）
       return serveMkt(env, ctx);
@@ -2704,6 +2781,32 @@ background:var(--bg3)}
 .cards{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}
 .cards .card{width:186px;flex:0 0 auto}
 @media(max-width:560px){.cards .card{width:calc(50% - 5px)}}
+/* 隔夜映射卡：美股收盘 + 外盘期货按「赛道」折算到 A 股 ETF。
+   盘前打开页面第一眼要看的东西，所以放在统计卡上面。
+   涨红跌绿是 A 股习惯，美股数据进来也按这个上色——
+   页面要迁就读者的眼睛，不是迁就数据源的习惯。 */
+.oncard{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
+  padding:8px 12px;margin-bottom:12px;font-size:12px}
+.onhd{display:flex;align-items:baseline;gap:8px;color:var(--txt2)}
+.onhd b{color:var(--txt1);font-size:12.5px}
+.onhd .n{font-size:11px;color:var(--txt3)}
+.onhd .ofold{margin-left:auto;cursor:pointer;color:var(--txt3);user-select:none}
+.onfut{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.onfut span{background:var(--bg1);border:1px solid var(--line);border-radius:4px;
+  padding:2px 7px;font-size:11.5px;color:var(--txt2)}
+.ontrks{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.ontrk{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:3px 9px;
+  background:var(--bg1);user-select:none;display:flex;gap:6px;align-items:baseline}
+.ontrk b{font-weight:500;color:var(--txt1)}
+.ontrk i{font-style:normal;font-size:11.5px}
+.ontrk.sel{border-color:var(--txt3)}
+.ondet{margin-top:7px;padding:7px 10px;border-top:1px dashed var(--line);line-height:1.8}
+.ondet .ot{color:var(--txt2);font-size:11px;letter-spacing:.3px}
+.ondet .ous{display:flex;gap:5px 12px;flex-wrap:wrap;margin:3px 0 5px}
+.ondet .ous span{white-space:nowrap}
+.ondet .oetfs{display:flex;gap:5px 12px;flex-wrap:wrap}
+.ondet .oetfs span{white-space:nowrap}
+.ondet .mine{outline:1px solid currentColor;border-radius:3px;padding:0 3px}
 /* 上游故障时的横幅：贴在卡片下面，一进页面就能看见。
    放在 footer 里等于没有——100 行的表格把 footer 顶到 4600px 之外。 */
 .stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12px;line-height:1.5;
@@ -3188,7 +3291,7 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
 .scqfoot{margin-top:0}
 .scqstats{display:flex;flex-direction:column;gap:10px;
   padding:0 0 9px;border-bottom:1px solid var(--line)}
-.scqe{display:flex;align-items:baseline;gap:6px}
+.scqe{display:flex;align-items:baseline;gap:6px;cursor:help}
 .scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
 .scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
 .scqe em{font-style:normal;font-size:9.5px;color:var(--txt3);line-height:1.45}
@@ -3213,6 +3316,21 @@ font-size:9.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
 /* ---- 自选导入导出 ---- */
 #ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
+#trigMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
+align-items:center;justify-content:center;padding:18px}
+#trigMask.on,#ioMask.on{display:flex}
+.trigrule{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-bottom:9px;background:var(--bg)}
+.trigrule.off{opacity:.55}
+.trigrule .trow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
+.trigrule select,.trigrule input[type=text]{border:1px solid var(--line);border-radius:5px;
+  background:var(--bg2);color:var(--txt);padding:4px 6px;font-size:12px;outline:none}
+.trigrule input[type=text]{width:78px;font-family:var(--mono)}
+.trigrule .tand{font-size:11px;color:var(--txt3);margin-left:2px}
+.trigrule .tdel,.trigrule .tcdel{cursor:pointer;color:var(--txt3);font-size:13px;padding:0 4px;user-select:none}
+.trigrule .tdel:hover,.trigrule .tcdel:hover{color:var(--down)}
+.trigrule .tadd{cursor:pointer;color:var(--accent);font-size:11.5px;user-select:none}
+.trigrule .tname{font-size:11px;color:var(--txt3)}
+.trigcnt{font-size:11px;color:var(--txt3);line-height:1.65;margin-top:4px}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 18px 48px rgba(20,26,40,.16);overflow:hidden}
@@ -3481,6 +3599,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
 </header>
 
+<div class="oncard" id="onCard" style="display:none"></div>
+
 <div class="cards">
   <div class="card"><div class="k">全市场 ETF</div><div class="v" id="cTotal">-</div><div class="s" id="cUni">-</div></div>
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
@@ -3563,6 +3683,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         <span class="abtn" id="btnPerm" title="允许后，页面在后台也能弹系统通知">桌面通知</span>
       </span>
       <span class="abtn" id="btnLog" style="display:none" title="今天触发过的全部提醒，浮层只停留 9 秒，点这里回看">0 条</span>
+      <span class="abtn" id="btnTrig" title="自定义组合触发器：自己拼条件（距新高、量能、位置、溢价……），全部满足才提醒">触发器 0</span>
     </span>
     <span class="n" id="quoteTip" style="font-size:11px;color:var(--txt3)"></span>
   </div>
@@ -3678,6 +3799,24 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         <button id="ioCopy">复制清单</button>
         <button class="pri" id="ioImport">导入清单</button>
         <span class="iom" id="ioMsg"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="trigMask">
+  <div class="iobox" style="max-width:680px">
+    <div class="iohd"><b>自定义触发器</b>
+      <button class="hx" id="trigClose" title="关闭 (Esc)" style="margin-left:auto">×</button></div>
+    <div class="iobody">
+      <div class="iotip">一条规则里的多个条件是<b>且</b>的关系，全部满足才算命中；从「不满足」
+        变成「满足」的那一刻触发一次，同一条规则同一只 30 分钟内不重复响。
+        触发器随顶部「提醒」开关一起工作，通知走同一条通道。
+        带 ⏳ 的条件要等页面把该自选的历史拉完才生效（位置/量能类都从日线算）。</div>
+      <div id="trigList"></div>
+      <div class="iobar">
+        <button class="pri" id="trigAdd">+ 新建规则</button>
+        <span class="iom" id="trigMsg"></span>
       </div>
     </div>
   </div>
@@ -4462,14 +4601,23 @@ function secQuadCard(){
     + '<div class="scqfoot"><div class="scqstats">'
     // 个股块紧挨着集中块：两个都是集中度，行业口径 24% vs 个股口径 43.5%，
     // 放一起才读得出「行业抱团」和「个股抱团」是两件事。放最后会被当成凑数的。
-    + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
+    + '<div class="scqe" title="成交额最大的 3 个行业（东财 128 个行业口径）合计占全市场'
+    + '成交额的比重——抓「钱压在几个行业里」。高于近一年中位算高集中，虚线就是那条中位线。'
+    + '分位数＝今天这个数排在近一年第几：90 分位＝比一年里 90% 的日子都更集中。'
+    + '单看会误判：40% 可以是主线就在这儿，也可以是别的全塌了只剩它在成交，'
+    + '所以要配合右边「宽度」一起读。">'
+    + '<span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 行业 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe" title="成交额最大的 5% 个股占全市场成交额的比重——上一行的「集中」'
     + '按行业加总，抓的是行业抱团；这个数抓个股抱团：一只票单日吃下全市场百分之几的成交，'
     + '行业口径看不见它。两个口径一起看，才分得清钱压在一个行业还是压在几只票。">'
     + '<span>个股</span><b>' + (p5 != null ? p5.toFixed(1) + '%' : '—') + '</b>'
     + '<em>前 5% 成交 · ' + (p53 != null ? p53.toFixed(0) + ' 分位' : '—') + '</em></div>'
-    + '<div class="scqe"><span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
+    + '<div class="scqe" title="全 A 个股口径：上涨家数 ÷（上涨＋下跌），50% 线以上算「宽」。'
+    + '衡量涨的是不是普涨——15 个行业在涨也可能是每个都涨 0.1% 的假扩散，这个数能分辨。'
+    + '分位数＝今天排在近一年第几。和「集中」配着读：高集中＋窄＝抱团，高集中＋宽＝主线上攻，'
+    + '低集中＋宽＝轮动扩散，低集中＋窄＝涣散（点右上角 ? 看四格详解）。">'
+    + '<span>宽度</span><b>' + brd.toFixed(0) + '%</b>'
     + '<em>' + upTxt + ' · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>同象限</span><b>' + samePct.toFixed(0) + '%</b>'
     + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
@@ -8164,6 +8312,7 @@ document.getElementById('hClose').onclick = closeHist;document.getElementById('h
 document.addEventListener('keydown', function(e){
   if (e.key !== 'Escape') return;
   if (document.getElementById('ioMask').classList.contains('on')) { ioClose(); return; }
+  if (document.getElementById('trigMask').classList.contains('on')) { trigClose(); return; }
   if (document.getElementById('rsMask').classList.contains('on')) { closeRs(); return; }
   if (document.getElementById('histMask').classList.contains('on')) closeHist();
 });
@@ -8261,6 +8410,7 @@ function loadFull(){
     // 价格变动闪烁依赖前后对比，保留 lastP
     DATA = items;
     STATS = computeStats(items);
+    renderOvernight();               // 隔夜卡里映射的 ETF 涨跌跟着快照走
     // 时间以服务端为准：这是「数据本身」的时刻，不是「浏览器收到」的时刻。
     // 上游挂了的时候后端会把旧快照原样发回来并打上 stale，这里必须照实标出来，
     // 而不是盖一个「更新 17:52」让人以为是最新的。
@@ -8808,6 +8958,7 @@ function loadTXQuotes(){
       LIVE = out;
       renderWatch();
       alertScan(out);
+      trigScan(out);
       hRefresh();                    // 自选 5 秒一刷，弹窗里那只也一起动
       var tip = document.getElementById('quoteTip');
       if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒')
@@ -8877,6 +9028,347 @@ document.getElementById('btnClear').onclick = function(){
    问题在于那条链接本身就是写权限——本来发给自己的链接，顺手转给别人、贴到群里，
    对方加一只删一只都会写进你的桶。为了搬一次家留一个永久后门，不划算。
    换成纯文本：谁拿到这串代码都只能自己粘，改不动你的。 */
+/* ================= 隔夜映射卡 =================
+   盘前 8:30 打开页面，第一个问题是「隔夜发生了什么」。这条链路把美股收盘和
+   外盘期货按「赛道」折算到 A 股 ETF：
+
+   - 美股/期货行情来自 /api/overnight（Worker 代理，边缘缓存 10 分钟）；
+   - 赛道 → ETF 的映射用的是 IDX_GROUPS（跟踪指数名 → 全部跟踪该指数的 ETF），
+     和「同指数去重」同一份数据。每个赛道列几个候选指数，从每个指数里挑出
+     展示标的：自选优先 → 代表标的 → 成交额最大。映射写死具体代码会漂
+     （ETF 会换名、发新的），写指数名永远是有效引用。
+   - A 股 ETF 的当日涨跌直接取 DATA：开盘前显示的是昨收涨跌（页面会标
+     「非交易时段」），盘中就是实时值。它回答「映射的这只现在什么价」，
+     不回答「开盘会怎么开」——后者没有人知道。
+
+   颜色统一用 A 股习惯：涨红跌绿，美股数据进来也一样，页面迁就读者的眼睛。 */
+var ON = null;               // /api/overnight 的响应 {us, fut, ts}
+var ON_SEL = null;           // 展开详情的赛道 key
+var ON_FOLD = false;
+try { ON_FOLD = localStorage.getItem('etf_onfold') === '1'; } catch(e){}
+
+var ON_TRACKS = [
+  { k:'chip',  n:'算力芯片',    us:['NVDA','AMD','AVGO','TSM','MRVL'],
+    ix:['中证全指半导体产品与设备','国证半导体芯片','中证芯片产业','中华交易服务半导体芯片行业'] },
+  { k:'equip', n:'芯片设备',    us:['AMAT','LRCX','KLAC','ASML'],
+    ix:['中证半导体材料设备主题','上证科创板半导体材料设备主题','中证半导体产业'] },
+  { k:'opt',   n:'光通信',      us:['ANET','COHR','CIEN','LITE','FN'],
+    ix:['中证全指通信设备','中证5G通信主题','国证通信','中证通信设备主题'] },
+  { k:'cloud', n:'云平台',      us:['MSFT','GOOG','AMZN','META','ORCL','SNOW'],
+    ix:['中证计算机主题','中证云计算与大数据主题','中证全指软件','中证大数据产业'] },
+  { k:'app',   n:'AI 应用',     us:['ADBE','CRM','NOW','PLTR','APP'],
+    ix:['中证人工智能主题','中证人工智能产业','创业板人工智能','上证科创板人工智能'] },
+  { k:'pow',   n:'电力能源',    us:['VST','CEG','TLN','NRG','GEV'],
+    ix:['中证全指电力公用事业','国证绿色电力','中证绿色电力'] },
+  { k:'hw',    n:'消费电子',    us:['AAPL','DELL','SMCI'],
+    ix:['国证消费电子主题','中证消费电子主题','中证电子','中证电子50'] },
+  { k:'bot',   n:'机器人/智驾', us:['TSLA','UBER'],
+    ix:['中证机器人','国证机器人产业','中证智能汽车主题','中证智能电动汽车'] },
+  { k:'hk',    n:'中概/港股科技', us:['BABA','JD','PDD','BIDU','NTES'],
+    ix:['恒生科技','中证海外中国互联网50','中证海外中国互联网30','恒生互联网科技业'] },
+  { k:'ph',    n:'全球创新药',  us:['LLY','MRK','AZN','NVO','PFE'],
+    ix:['中证香港创新药','国证港股通创新药','中证港股通创新药','中证创新药产业','恒生创新药'] }
+];
+var ON_HEAD = ['NDX', 'INX', 'DJI'];     // 美股三大指数，摆在前排不当赛道
+var ON_FUT_ORDER = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
+
+function onCls(v){ return v > 0.05 ? 'up' : (v < -0.05 ? 'down' : ''); }
+function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
+
+function loadOvernight(){
+  fetch('/api/overnight').then(function(r){ return r.json(); }).then(function(j){
+    if (!j.ok) throw new Error(j.error || '无数据');
+    ON = j;
+    renderOvernight();
+  }).catch(function(){ /* 隔夜卡拿不到就保持隐藏，不占位 */ });
+}
+
+/** 从一个跟踪指数里挑展示标的：自选优先，其次代表标的，最后成交额最大 */
+function onPickIx(ixName){
+  var codes = (typeof IDX_GROUPS !== 'undefined' && IDX_GROUPS[ixName]) || [];
+  var best = null;
+  for (var i=0;i<codes.length;i++){
+    var it = findItem(codes[i]);
+    if (!it || !isFinite(it.chg) || !(it.amt > 0)) continue;
+    if (it.g === 'bond' || it.g === 'money') continue;
+    var mine = watch.indexOf(codes[i]) >= 0;
+    if (!best) best = { it:it, mine:mine, r:mine ? 3 : (isRep(it) ? 2 : 1) };
+    else {
+      var r = mine ? 3 : (isRep(it) ? 2 : 1);
+      if (r > best.r || (r === best.r && it.amt > best.it.amt)) best = { it:it, mine:mine, r:r };
+    }
+  }
+  return best;
+}
+
+/** 赛道 → 展示 ETF（跨指数去重，最多 3 只） */
+function onEtfs(trk){
+  var out = [], seen = {};
+  for (var i=0;i<trk.ix.length && out.length<3;i++){
+    var p = onPickIx(trk.ix[i]);
+    if (p && !seen[p.it.c]){ seen[p.it.c] = 1; out.push({ c:p.it.c, n:p.it.n, chg:p.it.chg, mine:p.mine }); }
+  }
+  return out;
+}
+
+function onChgOf(trk){
+  if (!ON || !ON.us) return null;
+  var s = 0, n = 0;
+  for (var i=0;i<trk.us.length;i++){
+    var q = ON.us['us' + trk.us[i].toLowerCase()];
+    if (q && isFinite(q.chg)){ s += q.chg; n++; }
+  }
+  return n ? s / n : null;
+}
+
+function renderOvernight(){
+  var el = document.getElementById('onCard');
+  if (!el) return;
+  if (!ON || !ON.us){ el.style.display = 'none'; return; }
+
+  // 美东日期取任意一条美股记录的（同一次响应里它们一致）
+  var d = '';
+  for (var k in ON.us){ d = (ON.us[k].d || '').slice(5, 10); break; }
+  var h = '<div class="onhd"><b>隔夜</b>'
+    + (d ? '<span class="n">美东 ' + esc(d) + ' 收盘 · 点赛道看映射</span>' : '<span class="n">点赛道看映射</span>')
+    + '<span class="ofold" id="onFold">' + (ON_FOLD ? '展开' : '收起') + '</span></div>';
+
+  var fut = '', i, q;
+  var headUs = [];
+  for (i=0;i<ON_HEAD.length;i++){
+    q = ON.us['us' + ON_HEAD[i].toLowerCase()];
+    if (q) headUs.push('<span>' + esc(q.n) + ' <b class="' + onCls(q.chg) + '">' + onTxt(q.chg) + '</b></span>');
+  }
+  if (ON.fut){
+    for (i=0;i<ON_FUT_ORDER.length;i++){
+      q = ON.fut[ON_FUT_ORDER[i]];
+      if (q) fut += '<span>' + esc(q.n) + ' <b class="' + onCls(q.chg) + '">' + onTxt(q.chg) + '</b></span>';
+    }
+  }
+  h += '<div class="onfut">' + headUs.join('') + fut + '</div>';
+
+  if (!ON_FOLD){
+    h += '<div class="ontrks">';
+    for (i=0;i<ON_TRACKS.length;i++){
+      var t = ON_TRACKS[i], v = onChgOf(t);
+      if (v == null) continue;
+      h += '<span class="ontrk' + (ON_SEL === t.k ? ' sel' : '') + '" data-onk="' + t.k
+        + '" title="' + esc(t.us.join(' · ')) + '（隔夜均涨跌）"><b>' + esc(t.n) + '</b>'
+        + '<i class="' + onCls(v) + '">' + onTxt(v) + '</i></span>';
+    }
+    h += '</div>';
+    var det = '';
+    for (i=0;i<ON_TRACKS.length;i++){
+      if (ON_SEL !== ON_TRACKS[i].k) continue;
+      var t2 = ON_TRACKS[i];
+      det += '<div class="ondet"><div class="ot">隔夜成分</div><div class="ous">';
+      for (var j=0;j<t2.us.length;j++){
+        var qq = ON.us['us' + t2.us[j].toLowerCase()];
+        if (qq) det += '<span>' + esc(qq.n) + ' <b class="' + onCls(qq.chg) + '">' + onTxt(qq.chg) + '</b></span>';
+      }
+      det += '</div><div class="ot">映射到 A 股（自选优先' + (isOpen() ? '' : ' · 非交易时段显示昨收') + '）</div><div class="oetfs">';
+      var ets = onEtfs(t2);
+      if (!ets.length) det += '<span class="n" style="color:var(--txt3)">行情还没就绪，稍后自动补上</span>';
+      for (j=0;j<ets.length;j++){
+        var e2 = ets[j];
+        det += '<span' + (e2.mine ? ' class="mine" title="在你的自选里"' : '')
+          + '>' + esc(e2.n) + ' ' + e2.c
+          + ' <b class="' + onCls(e2.chg) + '">' + onTxt(e2.chg) + '</b></span>';
+      }
+      det += '</div></div>';
+    }
+    h += det;
+  }
+  el.innerHTML = h;
+  el.style.display = '';
+}
+
+document.addEventListener('click', function(e){
+  var trk = e.target && e.target.closest ? e.target.closest('.ontrk') : null;
+  if (trk){
+    var k = trk.getAttribute('data-onk');
+    ON_SEL = (ON_SEL === k) ? null : k;
+    renderOvernight();
+    return;
+  }
+  if (e.target && e.target.id === 'onFold'){
+    ON_FOLD = !ON_FOLD;
+    try { localStorage.setItem('etf_onfold', ON_FOLD ? '1' : '0'); } catch(err){}
+    renderOvernight();
+  }
+});
+
+/* ================= 自定义组合触发器 =================
+   固定阈值提醒回答「它动得够不够大」，触发器回答「我等的那个组合条件到了没」。
+   条件之间是且的关系，全部满足才算命中；边沿触发——从「不满足」翻成「满足」
+   那一刻响一次，持续满足不重复（否则距新高 <1% 这种条件会一直挂着一直响），
+   加 30 分钟冷却兜底条件的抖动。规则存 localStorage：它和自选清单不同，
+   是「本机盯盘习惯」，不值得进云端。
+
+   数据面零新增：涨跌/溢价/成交额来自 5 秒一刷的实时快照，位置/量能/距高距低
+   复用位置诊断的 DIAG（历史已在手上，重算是纯浮点运算）。带 ⏳ 的字段在
+   DIAG 就绪前一律判 false，不猜。 */
+var TRIG = [];
+var TRIG_ST = {};            // '规则序号|code' -> 上次是否满足
+try {
+  var _tj = JSON.parse(localStorage.getItem('etf_trig') || '[]');
+  if (Array.isArray(_tj)) TRIG = _tj;
+} catch(e){}
+
+var TRIG_FIELDS = {
+  chg: { n:'当日涨跌幅', u:'%', g:1, hint:'当天涨跌 %，正=涨' },
+  pm:  { n:'溢价率',     u:'%', g:1, hint:'现价对 IOPV 的溢价 %，跨境 ETF 出事故的都是这个字段' },
+  amt: { n:'成交额',     u:'亿', g:1, hint:'当日成交额（亿元）' },
+  evr: { n:'量能倍数',   u:'×', g:0, hint:'今日量 ÷ 前 20 日均量（按交易进度折算），2 = 放了一倍量' },
+  pos: { n:'一年位置',   u:'分位', g:0, hint:'现价在近一年高低区间的百分位，0=一年新低 100=一年新高' },
+  dhi: { n:'距一年新高', u:'%', g:0, hint:'现价距一年最高价的 %，永远 ≤0；≥-1 就是「贴新高 1% 以内」' },
+  dlo: { n:'距一年新低', u:'%', g:0, hint:'现价距一年最低价的 %，永远 ≥0；≥10 就是「离开低点至少 10%」' },
+  pe:  { n:'路径效率',   u:'',  g:0, hint:'20 日净涨幅 ÷ 20 日路径长度，-1~1；>0.6 是单边拉，<0.2 是震荡堆' },
+  r20: { n:'20日涨幅',   u:'%', g:0, hint:'相对 20 个交易日前的累计涨跌 %' }
+};
+var TRIG_F_ORDER = ['chg','pm','amt','dhi','dlo','pos','evr','pe','r20'];
+
+function trigSave(){
+  try { localStorage.setItem('etf_trig', JSON.stringify(TRIG)); } catch(e){}
+}
+function trigCount(){ var n=0; for (var i=0;i<TRIG.length;i++) if (TRIG[i].on && TRIG[i].cs && TRIG[i].cs.length) n++; return n; }
+function renderTrigCount(){
+  var b = document.getElementById('btnTrig');
+  if (b) b.textContent = '触发器 ' + trigCount();
+}
+function trigCondTxt(cd){
+  var f = TRIG_FIELDS[cd[0]] || { n:'?', u:'' };
+  return f.n + (cd[1] === '>=' ? ' ≥ ' : ' ≤ ') + cd[2] + f.u;
+}
+
+function trigScan(items){
+  if (!ALERT.on || !TRIG.length || !isOpen()) return;
+  for (var i=0;i<TRIG.length;i++){
+    var r = TRIG[i];
+    if (!r.on || !r.cs || !r.cs.length) continue;
+    for (var c in items){
+      var x = items[c];
+      if (!x || !isFinite(x.chg)) continue;
+      var d = DIAG[c], ok = true, parts = [];
+      for (var j=0;j<r.cs.length;j++){
+        var cd = r.cs[j], f = TRIG_FIELDS[cd[0]];
+        if (!f){ ok = false; break; }
+        var v = null;
+        if (f.g === 1){
+          if (cd[0] === 'chg') v = x.chg;
+          else if (cd[0] === 'pm') v = x.pm;
+          else if (cd[0] === 'amt') v = x.amt != null ? x.amt / 1e8 : null;
+        } else if (d && d.ok){
+          if (cd[0] === 'evr') v = d.evr;
+          else if (cd[0] === 'pos') v = d.pos;
+          else if (cd[0] === 'dhi') v = d.dHi != null ? d.dHi * 100 : null;
+          else if (cd[0] === 'dlo') v = d.dLo != null ? d.dLo * 100 : null;
+          else if (cd[0] === 'pe') v = d.pe;
+          else if (cd[0] === 'r20') v = d.r20 != null ? d.r20 * 100 : null;
+        }
+        if (v == null || !isFinite(v)){ ok = false; break; }   // 数据没到位不猜
+        if (cd[1] === '>=' ? !(v >= cd[2]) : !(v <= cd[2])){ ok = false; break; }
+        parts.push(f.n + ' ' + (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2)) + f.u);
+      }
+      var key = i + '|' + c;
+      if (!ok){ TRIG_ST[key] = 0; continue; }
+      if (TRIG_ST[key]) continue;                 // 持续满足只算一次
+      TRIG_ST[key] = 1;
+      if (!alertCool('trig|' + key, 30)) continue;
+      alertPush(x.n + ' 命中触发器', '条件全满足：' + parts.join(' · '), 'up', 'trig|' + key);
+    }
+  }
+}
+
+function trigRender(){
+  var box = document.getElementById('trigList');
+  if (!box) return;
+  if (!TRIG.length){
+    box.innerHTML = '<div class="iotip">还没有规则。点「+ 新建规则」拼一组条件，'
+      + '比如：距一年新高 ≥ -1 且 量能倍数 ≥ 2 —— 一贴新高就放量，典型的高位换手信号。</div>';
+    renderTrigCount();
+    return;
+  }
+  var h = '';
+  for (var i=0;i<TRIG.length;i++){
+    var r = TRIG[i];
+    h += '<div class="trigrule' + (r.on ? '' : ' off') + '" data-ti="' + i + '">'
+      + '<div class="trow"><span class="tname">规则 ' + (i+1) + '</span>'
+      + '<label style="font-size:11.5px;cursor:pointer"><input type="checkbox" data-ton="' + i + '"'
+      + (r.on ? ' checked' : '') + '> 启用</label>'
+      + '<span class="tdel" data-tdel="' + i + '" title="删除这条规则">删除</span></div>';
+    if (!r.cs || !r.cs.length) r.cs = [];
+    for (var j=0;j<r.cs.length;j++){
+      h += '<div class="trow">'
+        + (j ? '<span class="tand">且</span>' : '<span class="tand" style="visibility:hidden">且</span>')
+        + '<select data-tf="' + i + ',' + j + '">';
+      for (var q=0;q<TRIG_F_ORDER.length;q++){
+        var fk = TRIG_F_ORDER[q], f = TRIG_FIELDS[fk];
+        h += '<option value="' + fk + '"' + (r.cs[j][0] === fk ? ' selected' : '') + '>'
+          + f.n + (f.g ? '' : ' ⏳') + '</option>';
+      }
+      h += '</select><select data-top="' + i + ',' + j + '">'
+        + '<option value=">="' + (r.cs[j][1] === '>=' ? ' selected' : '') + '>≥</option>'
+        + '<option value="<="' + (r.cs[j][1] === '<=' ? ' selected' : '') + '>≤</option>'
+        + '</select><input type="text" data-tv="' + i + ',' + j + '" value="' + esc(String(r.cs[j][2])) + '">'
+        + '<span class="tcdel" data-tcdel="' + i + ',' + j + '" title="删掉这个条件">×</span></div>';
+    }
+    h += '<div class="trow"><span class="tadd" data-tadd="' + i + '">+ 加条件</span></div>'
+      + '<div class="trigcnt">' + (r.cs.length ? r.cs.map(trigCondTxt).join(' 且 ') : '（空规则，不会触发）')
+      + '</div></div>';
+  }
+  box.innerHTML = h;
+  renderTrigCount();
+}
+
+function trigOpen(){
+  trigRender();
+  document.getElementById('trigMsg').textContent = '';
+  document.getElementById('trigMask').classList.add('on');
+}
+function trigClose(){ document.getElementById('trigMask').classList.remove('on'); }
+
+document.getElementById('btnTrig').onclick = trigOpen;
+document.getElementById('trigClose').onclick = trigClose;
+document.getElementById('trigMask').onclick = function(e){ if (e.target === this) trigClose(); };
+document.getElementById('trigAdd').onclick = function(){
+  TRIG.push({ on:true, cs:[['chg','>=',2]] });
+  trigSave(); trigRender();
+  document.getElementById('trigMsg').textContent = '已新建，记得把条件改成你要的';
+};
+document.getElementById('trigList').addEventListener('click', function(e){
+  var t = e.target;
+  if (!t.getAttribute) return;
+  var ti, cj;
+  if (t.getAttribute('data-tadd') != null){
+    ti = +t.getAttribute('data-tadd');
+    TRIG[ti].cs.push(['chg','>=',2]); trigSave(); trigRender();
+  } else if (t.getAttribute('data-tcdel') != null){
+    cj = t.getAttribute('data-tcdel').split(',');
+    TRIG[+cj[0]].cs.splice(+cj[1], 1); trigSave(); trigRender();
+  } else if (t.getAttribute('data-tdel') != null){
+    ti = +t.getAttribute('data-tdel');
+    TRIG.splice(ti, 1); TRIG_ST = {}; trigSave(); trigRender();
+  }
+});
+document.getElementById('trigList').addEventListener('change', function(e){
+  var t = e.target, v;
+  if (t.getAttribute('data-ton') != null){
+    TRIG[+t.getAttribute('data-ton')].on = t.checked; trigSave(); trigRender();
+  } else if (t.getAttribute('data-tf') != null){
+    v = t.getAttribute('data-tf').split(',');
+    TRIG[+v[0]].cs[+v[1]][0] = t.value; trigSave(); trigRender();
+  } else if (t.getAttribute('data-top') != null){
+    v = t.getAttribute('data-top').split(',');
+    TRIG[+v[0]].cs[+v[1]][1] = t.value; trigSave(); trigRender();
+  } else if (t.getAttribute('data-tv') != null){
+    v = t.getAttribute('data-tv').split(',');
+    var nv = parseFloat(t.value);
+    if (!isFinite(nv)){ document.getElementById('trigMsg').textContent = '数值要写数字'; trigRender(); return; }
+    TRIG[+v[0]].cs[+v[1]][2] = nv; trigSave(); trigRender();
+  }
+});
+
 function ioOpen(){
   var t = document.getElementById('ioTxt');
   t.value = watch.join(',');
@@ -9048,6 +9540,10 @@ document.getElementById('btnProbe').onclick = function(){
 
 function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
 clock(); setInterval(clock, 1000);
+
+renderTrigCount();
+loadOvernight();
+setInterval(loadOvernight, 600000);   // 期货整夜在动，10 分钟跟一次够了
 
 /* /research 走独立页面：同一个 HTML，只是把因子面板提到文档流里。
    URL 直接可分享，也不占一个弹窗的注意力。 */

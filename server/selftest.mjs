@@ -395,6 +395,19 @@ async function runContracts(base, pass) {
     bad('/api/pcfwarm 失败：' + r.text.slice(0, 160));
   }
 
+  // 隔夜行情：美股批量 + 外盘期货，赛道映射在前端做，这里只验行情本身
+  r = await rawRequest(base, '/api/overnight', { cookie });
+  const on = r.json();
+  if (on && on.ok) {
+    const nUs = Object.keys(on.us || {}).length;
+    const nFut = Object.keys(on.fut || {}).length;
+    ok('/api/overnight 美股 ' + nUs + ' 只 · 期货 ' + nFut + ' 个');
+    if (nUs < 40) bad('/api/overnight 美股少于 40 只，赛道均涨跌会失真');
+    const nv = (on.us || {}).usnvda;
+    if (!nv || !isFinite(nv.chg)) bad('/api/overnight 缺英伟达或涨跌幅非法');
+    if (nFut === 0) bad('/api/overnight 期货全空（新浪 hf_ 链路挂了，只影响期货行不影响主数据）');
+  } else bad('/api/overnight 失败：' + r.text.slice(0, 160));
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();

@@ -692,6 +692,78 @@ async function serveWatch(request, env) {
  *
  * 26KB，边缘缓存 30 分钟。它一天只变一次，缓存成本可以忽略。
  */
+/* ---------------------------------------------------------------- 隔夜行情
+   盘前 8:30 打开页面，第一个问题是「隔夜发生了什么、对哪些 A 股 ETF 有影响」。
+   这条接口只管行情本身：美股收盘 + 外盘期货，赛道到 ETF 的映射在前端做——
+   页面上本来就有 1717 只的名单和 IDX_GROUPS 映射，服务端再解析一份 600KB
+   快照纯浪费 CPU，而且映射表跟界面同源，永远不会两边漂移。
+
+   数据源分工（都实测过）：
+   - 美股/美股指数：腾讯 qt.gtimg.cn，v_usXXX 一批全量返回。a[3] 现价、
+     a[4] 昨收、a[30] 时间、a[32] 涨跌幅%——和 A 股同一套下标，解析函数共用。
+     美股此时已收盘，a[1] 就是最近一个完整交易日的收盘价。
+   - 外盘期货：新浪 hq.sinajs.cn 的 hf_ 系列。f0 现价、f7 昨结算、f12 日期、
+     f13 名称。涨跌基准用昨结算价而不是昨收盘（期货的规矩）。腾讯那条对
+     hf_/nf_ 不响应（实测 200 空体），所以期货只走新浪，失败就整个 fut 置空，
+     前端隐藏那一行，不挡美股主数据。
+   - 汇率/夜期恒指这类字段不稳定（fx_ 偶发 403），v1 不接，宁缺毋滥。
+
+   美股收盘时间：美东 16:00 = 北京 04:00（冬令时 05:00）。盘前看这个数，
+   看到的就是「昨晚美股收盘」。edge 缓存 10 分钟：期货整夜在动，美股不动。 */
+const ON_US_SYMS = ['usNVDA','usAMD','usAVGO','usTSM','usMRVL','usAMAT','usLRCX',
+  'usKLAC','usASML','usANET','usCOHR','usCIEN','usLITE','usFN','usMSFT','usGOOG',
+  'usAMZN','usMETA','usORCL','usSNOW','usADBE','usCRM','usNOW','usPLTR','usAPP',
+  'usVST','usCEG','usTLN','usNRG','usGEV','usAAPL','usDELL','usSMCI','usTSLA',
+  'usUBER','usBABA','usJD','usPDD','usBIDU','usNTES','usLLY','usMRK','usAZN',
+  'usNVO','usPFE','usNDX','usINX','usDJI'];
+const ON_FUT_SYMS = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
+
+async function serveOvernight() {
+  const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  const usP = fetch('https://qt.gtimg.cn/q=' + ON_US_SYMS.join(','), {
+    headers: { 'User-Agent': UA2, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(9000),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error('US HTTP ' + r.status);
+    const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const out = {};
+    const re = /v_([A-Za-z0-9_]+)="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const a = m[2].split('~');
+      if (a.length < 35 || m[1].slice(0, 2).toLowerCase() !== 'us') continue;
+      const p = +a[3], prev = +a[4], chg = +a[32];
+      if (!(p > 0) || !isFinite(chg)) continue;    // 上游对不认识的代码返回 200 空壳
+      out[m[1].toLowerCase()] = { s: m[1].slice(2).toUpperCase(), n: a[1], p, chg, d: a[30] || '' };
+    }
+    if (!Object.keys(out).length) throw new Error('US empty');
+    return out;
+  });
+
+  const futP = fetch('https://hq.sinajs.cn/list=' + ON_FUT_SYMS.join(','), {
+    headers: { 'User-Agent': UA2, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(9000),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error('FUT HTTP ' + r.status);
+    const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const out = {};
+    const re = /var hq_str_(\S+?)="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const f = m[2].split(',');
+      const p = +f[0], base = +f[7];
+      if (!(p > 0) || !(base > 0)) continue;
+      out[m[1]] = { n: f[13] || m[1], p, chg: (p / base - 1) * 100, d: f[12] || '' };
+    }
+    return out;   // 期货整体失败允许：返回空对象，前端隐藏该行
+  }).catch(() => ({}));
+
+  const [us, fut] = await Promise.all([usP, futP]);
+  return json({ ok: true, us, fut, ts: Date.now() }, 600);
+}
+
 /**
  * 全 A 行业口径的市场结构快照（集中度 × 宽度）。
  *
@@ -2562,6 +2634,11 @@ export default {
     if (p === '/api/all') {
       // 三层：边缘缓存 → KV 最近一次成功 → 现场拉（只在前两者都没有时才等上游）
       return serveAll(env, ctx);
+    }
+
+    if (p === '/api/overnight') {
+      // 盘前卡：美股收盘 + 外盘期货。赛道→ETF 映射在前端用 IDX_GROUPS 做
+      return serveOvernight();
     }
 
     if (p === '/api/mkt') {
