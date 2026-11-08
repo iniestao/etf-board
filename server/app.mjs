@@ -18,10 +18,13 @@
  */
 import http from 'node:http';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import worker, { warmRound } from '../worker/src/index.js';
 import { makeEnv } from './env.mjs';
 
+const gzip = promisify(zlib.gzip);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 2 * 1024 * 1024; // 自选列表最多几十 KB，2MB 足够，防止被灌大包
 
@@ -98,7 +101,29 @@ export function createApp(env, ctxBucket) {
       const sc = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : null;
       if (sc && sc.length) out['set-cookie'] = sc;
 
-      const buf = Buffer.from(await r.arrayBuffer());
+      let buf = Buffer.from(await r.arrayBuffer());
+
+      /* 压缩。
+         为什么要有：/api/all 是 600KB 明文 JSON，而清单是首屏最后一块、也是体积最大
+         的一块。沙箱版走发布平台网关、手机上还是 4G，600KB 光传输就要好几秒——这段
+         时间表体是空的，看起来就像「清单没了」。Cloudflare 那边边缘会自动压，Node
+         这边没有，只能自己压。实测 632KB → 78KB（-88%）。
+         只压文本类，且客户端明确接受 gzip 才压；已经带 content-encoding 的（网关压过）
+         一律跳过，避免二次压缩。 */
+      const ae = String(req.headers['accept-encoding'] || '');
+      const ctype = String(out['content-type'] || '');
+      const already = out['content-encoding'];
+      if (!already && buf.length > 1024 && /\bgzip\b/.test(ae)
+          && /json|text|javascript|svg/.test(ctype)) {
+        try {
+          buf = await gzip(buf, { level: 6 });
+          out['content-encoding'] = 'gzip';
+          delete out['content-length'];
+          out['content-length'] = String(buf.length);
+          out['vary'] = out['vary'] ? out['vary'] + ', Accept-Encoding' : 'Accept-Encoding';
+        } catch (e) { /* 压不了就发明文，不影响正确性 */ }
+      }
+
       res.writeHead(r.status, out);
       res.end(req.method === 'HEAD' ? undefined : buf);
 
