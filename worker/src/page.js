@@ -352,6 +352,23 @@ tr.hr:hover td{background:#f7f9fd}
 footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
 .err{color:var(--up)}
 .empty{padding:20px;text-align:center;color:var(--txt3);font-size:12.5px}
+/* 清单的加载态与失败态。
+   为什么单独做：清单是整页最后一块、也是最高的一块，首屏拉全市场要等上游
+   （冷启动现场拉两个源要十几二十秒）。原来这里只有一行 12.5px 灰字「加载中…」，
+   失败时也只有一行小字，视觉上跟「表格空了」没区别——看着像数据没了。
+   现在给足占位：加载三个跳动的点，失败写明原因并给一个能点的重试。 */
+.lskel,.lerr{padding:34px 20px;text-align:center;font-size:12.5px;color:var(--txt3);line-height:1.8}
+.lskel i{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);
+  margin:0 3px;vertical-align:middle;animation:ldot 1.2s infinite}
+.lskel i:nth-child(2){animation-delay:.15s}
+.lskel i:nth-child(3){animation-delay:.3s}
+.lskel span{display:block;margin-top:6px}
+@keyframes ldot{0%,80%,100%{opacity:.18}40%{opacity:1}}
+.lerr b{display:block;font-size:13.5px;font-weight:600;color:var(--txt);margin-bottom:4px}
+.lerr span{display:block;font-size:12px;opacity:.72;margin-bottom:11px;word-break:break-all}
+.lerr button{font:inherit;font-size:12.5px;padding:5px 15px;border-radius:7px;border:1px solid var(--line);
+  background:var(--bg2);color:var(--txt);cursor:pointer}
+.lerr button:hover{background:var(--bg3)}
 /* 「今日变化」两格的空态不是错误也不是加载，只是一句话——按正文排版收紧行高，
    不再占一大块空白。 */
 .evtbox .empty,.portbox .empty{padding:6px 2px;text-align:left;line-height:1.7}
@@ -1078,7 +1095,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
       <th class="ctr" style="width:36px"></th>
     </tr></thead>
-    <tbody id="listBody"><tr><td colspan="11" class="empty">加载中…</td></tr></tbody>
+    <tbody id="listBody"><tr><td colspan="11" class="lskel"><i></i><i></i><i></i><span>正在取全市场行情…</span></td></tr></tbody>
   </table></div>
 </div>
 
@@ -5807,9 +5824,21 @@ function loadFull(){
   }).catch(function(e){
     setStale('行情源暂时不可用（' + e.message + '），15 秒后自动重试；自选行情走腾讯直连，不受影响', true);
     document.getElementById('fErr').textContent = '';
-    if (!DATA.length) document.getElementById('listBody').innerHTML =
-      '<tr><td colspan="11" class="empty">行情源暂时不可用，正在自动重试…<br>'
-      + '<span style="opacity:.55;font-size:12.5px">' + e.message + '</span></td></tr>';
+    if (!DATA.length){
+      var lbody = document.getElementById('listBody');
+      lbody.innerHTML =
+        '<tr><td colspan="11" class="lerr">'
+        + '<b>行情源暂时不可用</b>'
+        + '<span>' + esc(String(e.message || e)) + '</span>'
+        + '<button type="button" id="btnListRetry">立即重试</button></td></tr>';
+      // 自动重试是 15 秒后，但人不会盯着时钟等——给一个能点的
+      var rb = document.getElementById('btnListRetry');
+      if (rb) rb.addEventListener('click', function(){
+        rb.disabled = true; rb.textContent = '重试中…';
+        if (retryTimer){ clearTimeout(retryTimer); retryTimer = null; }
+        loadFull();
+      });
+    }
     // 15 秒后自己再试一次，别干等下一个 60 秒周期
     if (!retryTimer) retryTimer = setTimeout(function(){ retryTimer = null; loadFull(); }, 15000);
   });
