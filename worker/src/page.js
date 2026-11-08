@@ -6978,7 +6978,19 @@ function navMeasure(){
 }
 function navScrollTo(id){
   var el = document.getElementById(id);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (!el) return;
+  var nav = document.getElementById('secNav');
+  var navH = nav ? nav.offsetHeight + 8 : 42;
+  var y = el.getBoundingClientRect().top + window.pageYOffset - navH;
+  window.scrollTo({ top: y, behavior: 'smooth' });
+  // 平滑滚动要半秒，途中「急涨急跌」几秒一刷、行数在变，目标位置会被推移——
+  // 落点就偏了。滚完 900ms 内连续校正，把布局漂移吃掉。
+  var n = 0;
+  var tm = setInterval(function(){
+    var dy = el.getBoundingClientRect().top - navH;
+    if (Math.abs(dy) > 2) window.scrollTo({ top: window.pageYOffset + dy, behavior: 'auto' });
+    if (++n >= 6) clearInterval(tm);
+  }, 150);
 }
 function navActive(){
   var nav = document.getElementById('secNav');
