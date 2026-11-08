@@ -3099,12 +3099,32 @@ margin-top:1px;font-variant-numeric:tabular-nums}
 /* 集中度 × 宽度四象限。格子回答「钱在哪条线」，这张图回答
    「这种分布是常态还是异常」——只给一个 58.7% 没人知道算高算低。 */
 .scq{margin:7px 0 8px;padding:8px 11px 6px;background:var(--bg2);
-border:1px solid var(--line);border-radius:8px}
+border:1px solid var(--line);border-radius:8px;position:relative}
 .scqhd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:10.5px;color:var(--txt3)}
 .scqhd>span:first-child{color:var(--txt2);font-weight:600}
 .scqhd .scqb{font-style:normal;font-weight:700;font-size:11px;padding:1px 7px;border-radius:4px;
 background:var(--bg3);border:1px solid var(--line)}
 .scqhd .scqtag{margin-left:auto;font-size:9.5px;color:var(--txt3);letter-spacing:.2px;cursor:help}
+/* 四象限说明浮窗。四个角标签只有名字，不知道「抱团」和「涣散」差在哪，
+   而且差的那一步正好决定该不该动手。浮窗用 2×2 小矩阵复刻图上的方位。 */
+.scqhelp{flex:none;width:14px;height:14px;line-height:12px;text-align:center;border-radius:50%;
+border:1px solid var(--line);background:var(--bg);color:var(--txt3);font-size:9px;cursor:pointer;
+user-select:none;font-style:normal}
+.scqhelp:hover{color:var(--txt2);border-color:var(--txt3)}
+.scqpop{display:none;position:absolute;right:8px;top:26px;z-index:40;
+width:min(400px,calc(100% - 16px));padding:9px 10px 8px;background:var(--bg);
+border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 26px rgba(20,26,38,.14)}
+.scq.open .scqpop{display:block}
+.scqaxs{font-size:9px;color:var(--txt3);margin:0 0 7px;letter-spacing:.2px}
+.scqgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+.scqcell{border-left:3px solid var(--line);padding:1px 0 1px 8px;min-width:0}
+.scqcell b{display:block;font-size:10.5px;color:var(--txt2);margin-bottom:1px}
+.scqcell b i{font-style:normal;font-size:8.5px;color:#fff;background:var(--txt3);
+border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:1px}
+.scqcell span{display:block;font-size:9.5px;color:var(--txt3);line-height:1.55}
+.scqcell span.act{color:var(--txt2)}
+.scqfoot{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--line);
+font-size:9px;color:var(--txt3);line-height:1.5}
 .scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
 .scqbody{display:grid;grid-template-columns:minmax(0,360px) 190px minmax(0,1fr);gap:18px;
 align-items:start;margin-top:3px}
@@ -4217,7 +4237,8 @@ function secQuadCard(){
   var sortedC = C.slice().sort(function(x,y){ return x - y; });
   var cMed = sortedC[Math.floor(sortedC.length / 2)];
   var hiC = conc >= cMed, wide = brd >= 50;
-  var q = QUAD_INFO[(hiC ? 'h' : 'l') + (wide ? 'w' : 'l')];
+  var qKey = (hiC ? 'h' : 'l') + (wide ? 'w' : 'l');
+  var q = QUAD_INFO[qKey];
   var cMax = Math.max.apply(null, C.concat([conc]));
   var cMin = Math.min.apply(null, C.concat([conc]));
   var pad = (cMax - cMin) * 0.13 || 2;
@@ -4285,8 +4306,7 @@ function secQuadCard(){
     + '</svg>';
 
   var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
-  var names = top3.length ? top3.join('、') : '前三大行业';
-  var upTxt = upN + '/' + (upN + dnN);
+  var names = top3.length ? top3.join('、') : '前三大行业';  var upTxt = upN + '/' + (upN + dnN);
   // 描述里用「767 涨 4793 跌」而不是「767/5560 只在涨」——后者要读两遍才懂，
   // 而且分母到底是「全部股票」还是「涨+跌」在句子里看不清。
   var tally = upN + ' 涨 ' + dnN + ' 跌';
@@ -4306,13 +4326,38 @@ function secQuadCard(){
     + '<p class="scqstk">全 A 有成交 ' + nStk + ' 只'
     + ((now && now.amt > 0) ? ' · 成交 ' + now.amt + ' 亿' : '') + '</p>';
 
+  // 四个象限各是什么、该不该动手。按图上的方位排（左上→右上→左下→右下），
+  // 浮窗里的小矩阵和散点图对得上，不用再看第二遍。
+  var QUAD_DOC = {
+    hl: ['抱团', '钱压在少数行业，其余在跌', '只做主线，别抄底边缘'],
+    hw: ['主线上攻', '主线领涨，而且在扩散', '跟随主线，可以加仓'],
+    ll: ['涣散', '没主线，也没普涨', '降仓，等信号'],
+    lw: ['轮动扩散', '钱在轮着走，谁都能涨一点', '别追高，等回落']
+  };
+  var cell = function (k) {
+    var doc = QUAD_DOC[k];
+    return '<div class="scqcell" style="border-left-color:' + QUAD_INFO[k].c + '">'
+      + '<b>' + doc[0] + (k === qKey ? '<i>现在</i>' : '') + '</b>'
+      + '<span>' + doc[1] + '</span>'
+      + '<span class="act">→ ' + doc[2] + '</span></div>';
+  };
+  var pop = '<div class="scqpop">'
+    + '<p class="scqaxs">纵轴 上高下低＝集中度 · 横轴 左低右高＝宽度</p>'
+    + '<div class="scqgrid">' + cell('hl') + cell('hw') + cell('ll') + cell('lw') + '</div>'
+    + '<p class="scqfoot">近一年有 ' + samePct.toFixed(0) + '% 的交易日站在你这一格（'
+    + sameN + '/' + C.length + '）。同格天数越多，说明眼下越像常态；'
+    + '越少，越可能是转折。</p></div>';
+
   return '<div class="scq">'
     + '<div class="scqhd"><span>全 A 集中度 × 宽度</span>'
     + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em>'
     + '<span class="scqtag" title="全 A 个股口径：5563 只 A 股逐只统计涨跌，当日有成交的 '
     + nStk + ' 只进样本。集中度按东财 128 个行业的个股成交额加总。'
     + '与下方 36 格（ETF 成交额，532 亿）不是同一套数据，差 30 倍是正常的。">'
-    + nStk + ' 只 · ' + dayTag + '</span></div>'
+    + nStk + ' 只 · ' + dayTag + '</span>'
+    + '<i class="scqhelp" role="button" tabindex="0" title="四个象限是什么意思"'
+    + ' onclick="var s=this.closest(&#39;.scq&#39;);s.classList.toggle(&#39;open&#39;);event.stopPropagation()"'
+    + '>?</i></div>'
     + '<div class="scqbody"><div class="scqplot">' + svg
     + '<div class="scqax"><span>灰点＝近一年每个交易日</span>'
     + '<span>横轴 上涨个股占比</span></div></div>'
@@ -4332,7 +4377,7 @@ function secQuadCard(){
     + '个股家数比行业平滑——行业只有涨跌两种状态，一天 0/128 和 120/128 都常见；'
     + '个股是几千个样本加总，点云铺得开，右侧（普涨）明显稀疏，这就是「跌多涨少」的形状。'
     + '一年里有多少天跟你同格，才知道这次是不是不一样。</p></div>'
-    + '</div></div>';
+    + '</div>' + pop + '</div>';
 }
 
 /** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
@@ -8428,6 +8473,13 @@ function alertScanAll(){
 
 document.addEventListener('visibilitychange', function(){
   if (!document.hidden) document.title = 'ETF 全市场盯盘';
+});
+
+// 四象限说明浮窗：点 ? 打开，点别处关掉。
+// 按钮自己的 onclick 里 stopPropagation 了，所以这里冒泡上来的一定是「点了空白」。
+document.addEventListener('click', function(){
+  var o = document.querySelector('.scq.open');
+  if (o) o.classList.remove('open');
 });
 
 function loadTXQuotes(){
