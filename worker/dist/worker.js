@@ -2899,10 +2899,10 @@ background:var(--bg3)}
 .secnav{position:sticky;top:0;z-index:6;display:flex;gap:2px;align-items:center;
   margin:-2px 0 10px;padding:4px 0;background:rgba(245,246,248,.9);
   -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-.secnav a{font-size:11.5px;color:var(--txt2);padding:3px 11px;border-radius:6px;cursor:pointer;
+.secnav a{font-size:13px;color:var(--txt2);padding:4px 14px;border-radius:6px;cursor:pointer;
   user-select:none;white-space:nowrap}
 .secnav a:hover{color:var(--txt)}
-.secnav a.on{background:var(--bg2);color:var(--txt);border:1px solid var(--line);padding:2px 10px;font-weight:600}
+.secnav a.on{background:var(--bg2);color:var(--txt);border:1px solid var(--line);padding:3px 13px;font-weight:600}
 .sec[id],.oncard[id]{scroll-margin-top:var(--navH,42px)}
 .cards{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}
 .cards .card{width:186px;flex:0 0 auto}
@@ -3742,8 +3742,24 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
 </header>
 
+<nav class="secnav" id="secNav" aria-label="区块导航">
+  <a data-t="onCard">隔夜</a>
+  <a data-t="secSec">板块地图</a>
+  <a data-t="spdSec">急涨急跌</a>
+  <a data-t="watchSec">自选</a>
+  <a data-t="rankSec">清单</a>
+</nav>
+
 <div class="oncard" id="onCard" style="display:none"></div>
 <div class="oncard" id="asiaCard" style="display:none"></div>
+
+<div class="sec" id="secSec">
+  <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
+    <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
+  <div class="smhead" id="secHead"><span>读取中…</span></div>
+  <div class="secmeta" id="secMeta"></div>
+  <div id="secBody"><div class="empty">正在读取行情…</div></div>
+</div>
 
 <div class="cards">
   <div class="card"><div class="k">全市场 ETF</div><div class="v" id="cTotal">-</div><div class="s" id="cUni">-</div></div>
@@ -3752,13 +3768,6 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
 </div>
 
-<nav class="secnav" id="secNav" aria-label="区块导航">
-  <a data-t="onCard">隔夜</a>
-  <a data-t="spdSec">急涨急跌</a>
-  <a data-t="watchSec">自选</a>
-  <a data-t="secSec">板块地图</a>
-  <a data-t="rankSec">榜单</a>
-</nav>
 
 <div class="sec" id="spdSec">
   <div class="sechd"><b>急涨急跌</b><span class="n" id="spdN">-</span>
@@ -3845,16 +3854,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </div>
 </div>
 
-<div class="sec" id="secSec">
-  <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
-    <span class="sync" id="btnSec" title="丢掉缓存，按最新快照重算">重算</span></div>
-  <div class="smhead" id="secHead"><span>读取中…</span></div>
-  <div class="secmeta" id="secMeta"></div>
-  <div id="secBody"><div class="empty">正在读取行情…</div></div>
-</div>
-
 <div class="sec" id="rankSec">
-  <div class="sechd"><b>全市场榜单</b><span class="n" id="listN"></span></div>
+  <div class="sechd"><b>全市场清单</b><span class="n" id="listN"></span></div>
   <div class="bar">
     <span class="tag on" data-g="all">全部<b id="n-all"></b></span>
     <span class="tag" data-g="broad">宽基<b id="n-broad"></b></span>
@@ -5457,7 +5458,7 @@ function ensureTop3(){
 function renderWatch(){
   var body = document.getElementById('watchBody');
   if (!watch.length){
-    body.innerHTML = '<tr><td colspan="14" class="empty">还没有自选，点下方榜单的 + 添加</td></tr>';
+    body.innerHTML = '<tr><td colspan="14" class="empty">还没有自选，点下方清单的 + 添加</td></tr>';
     document.getElementById('watchN').innerHTML = WATCH_CLOUD
       ? '<span class="syn">云端</span>' : '';
     return;
