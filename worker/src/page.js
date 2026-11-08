@@ -512,16 +512,24 @@ border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:1px}
 .scqfoot{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--line);
 font-size:9.5px;color:var(--txt3);line-height:1.55}
 .scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
-/* 点中某一天后的详情条。不做成跟随鼠标的气泡：气泡会盖住点云本身，
-   而这行要读的是「那天钱在哪、比今天差多少」，放底部与统计栏同一视线。 */
-.scqday{display:none;margin:7px 0 0;padding:6px 10px;background:var(--bg3);
-border-left:2px solid #9aa3b2;border-radius:4px;font-size:11px;color:var(--txt2);
-line-height:1.7;font-variant-numeric:tabular-nums}
-.scqday.on{display:block}
-.scqday b{color:var(--txt);font-weight:600}
-.scqday i{font-style:normal;color:var(--txt);font-weight:700}
-.scqday em{font-style:normal;color:var(--txt3)}
-.scqday .esc{font-size:10px}
+/* 点中某一天的浮窗。锚在被点的点上（left/top 是点的百分比坐标），
+   默认出现在点的右下方；靠右（px>60%）翻到左侧、靠下（py>52%）翻到上方。
+   不跟随鼠标——移动端没有 hover，跟随毫无意义，固定锚点反而稳。 */
+.scqplot{position:relative}
+.scqtip{display:none;position:absolute;z-index:6;box-sizing:border-box;
+min-width:230px;max-width:min(320px,calc(100% - 14px));
+padding:7px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+box-shadow:0 3px 16px rgba(30,40,60,.16);font-size:11px;color:var(--txt2);
+line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
+.scqtip.on{display:block}
+.scqtip{transform:translate(10px,12px)}
+.scqtip.rx{transform:translate(calc(-100% - 10px),12px)}
+.scqtip.ry{transform:translate(10px,calc(-100% - 12px))}
+.scqtip.rx.ry{transform:translate(calc(-100% - 10px),calc(-100% - 12px))}
+.scqtip b{color:var(--txt);font-weight:600}
+.scqtip i{font-style:normal;color:var(--txt);font-weight:700}
+.scqtip em{font-style:normal;color:var(--txt3)}
+.scqtip .esc{font-size:10px}
 .scqplot svg{cursor:crosshair}
 /* 电脑为主：图独占一行、放到 1000px，统计和描述缩到图下方一行。
    原来的三栏（360 图 + 190 统计 + 1fr 说明）在 1440 屏上图只有 360px，
@@ -1750,6 +1758,10 @@ function secQuadCard(){
               cur: C.length - 1, BRD: brd, CONC: conc };
 
   var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
+  // 个股口径集中度：成交额最大的 5% 个股 ÷ 全 A（margin-dashboard 借来的数）。
+  // 行业口径抓行业抱团，这个抓个股抱团——单票吃下大份额时行业口径看不见它。
+  var p5 = (now && now.p5 != null) ? now.p5 : (H.p5 ? H.p5[last] / 10 : null);
+  var p53 = (p5 != null && H.p5) ? mktPct(H.p5, p5) : null;
   var names = top3.length ? top3.join('、') : '前三大行业';
   var upTxt = upN + '/' + (upN + dnN);
   // 描述里用「767 涨 4793 跌」而不是「767/5560 只在涨」——后者要读两遍才懂，
@@ -1804,6 +1816,7 @@ function secQuadCard(){
     + ' onclick="var s=this.closest(&#39;.scq&#39;);s.classList.toggle(&#39;open&#39;);event.stopPropagation()"'
     + '>?</i></div>'
     + '<div class="scqbody"><div class="scqplot">' + svg
+    + '<div class="scqtip"></div>'
     + '<div class="scqax"><span>灰点＝近一年每个交易日，点任意一点看当天</span>'
     + '<span>横轴 上涨个股占比</span></div></div>'
     + '<div class="scqfoot"><div class="scqstats">'
@@ -1813,11 +1826,16 @@ function secQuadCard(){
     + '<em>' + upTxt + ' · ' + (b3 != null ? b3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe"><span>同象限</span><b>' + samePct.toFixed(0) + '%</b>'
     + '<em>' + sameN + ' / ' + C.length + ' 天</em></div>'
+    + '<div class="scqe" title="成交额最大的 5% 个股占全市场成交额的比重——行业口径的「集中」'
+    + '抓的是行业抱团，这个数抓的是个股抱团：一只票单日吃下全市场百分之几的成交，'
+    + '行业口径看不见它。来源：margin-dashboard 的拥挤度口径。">'
+    + '<span>个股</span><b>' + (p5 != null ? p5.toFixed(1) + '%' : '—') + '</b>'
+    + '<em>前 5% 成交 · ' + (p53 != null ? p53.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '</div>'
     + '<div class="scqdesc"><p class="scqd">' + desc + '</p>' + stockLine
     + '<p class="scqnote">虚线＝近一年中位（' + cMed.toFixed(1) + '% / 50%）。'
     + '轴向和四格含义点右上角 ? 看。</p></div>'
-    + '</div></div><div class="scqday"></div>' + pop + '</div>';
+    + '</div></div>' + pop + '</div>';
 }
 
 /** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
@@ -6058,10 +6076,10 @@ function scqShow(svg, sel){
   if (!P || !card) return;
   var list = card.querySelectorAll('.scqplot svg'), i;
   for (i = 0; i < list.length; i++) scqRing(list[i], sel);
-  var bar = card.querySelector('.scqday');
+  var bar = card.querySelector('.scqtip');
   if (!bar) return;
   if (sel < 0){
-    bar.className = 'scqday'; bar.innerHTML = ''; card.removeAttribute('data-sel'); return;
+    bar.className = 'scqtip'; bar.innerHTML = ''; card.removeAttribute('data-sel'); return;
   }
   var hi = P.I[sel], d = P.D[hi];
   var c = P.C[sel], b = P.B[sel], u = P.U[hi] || 0, w = P.W[hi] || 0;
@@ -6082,8 +6100,18 @@ function scqShow(svg, sel){
     + (bq != null ? '，' + bq.toFixed(0) + ' 分位' : '') + '）</em>'
     + (nm.length ? '<br>领涨 <b>' + nm.join('、') + '</b>' : '')
     + (dcs.length ? ' <em>较今天 ' + dcs.join('、') + '</em>' : '')
-    + ' <em class="esc">再点一次或点空白取消</em>';
-  bar.className = 'scqday on';
+    + ' <em class="esc">再点一次取消</em>';
+
+  // 浮窗锚在被点的点上：坐标用 viewBox 百分比（两套画布同一容器，百分比通用），
+  // 靠右翻到左边、靠下翻到上面，否则 390px 屏上会裁出去。
+  var G = scqGeo(svg);
+  if (G){
+    var p = scqXY(G, c, b);
+    var px = p[0] / G.vb.width * 100, py = p[1] / G.vb.height * 100;
+    bar.style.left = px.toFixed(1) + '%';
+    bar.style.top = py.toFixed(1) + '%';
+    bar.className = 'scqtip on' + (px > 60 ? ' rx' : '') + (py > 52 ? ' ry' : '');
+  } else bar.className = 'scqtip on';
   card.setAttribute('data-sel', sel);
 }
 document.addEventListener('click', function (e) {

@@ -430,6 +430,11 @@ async function runContracts(base, pass) {
         if (Math.abs(h.b[li] - hb) > 5) {
           bad('/api/mkt 历史宽度与家数对不上：b=' + h.b[li] + '‰，应为 ' + hb.toFixed(0) + '‰');
         }
+        if (h.p5 && h.p5.length === h.d.length) {
+          const v = h.p5[li] / 10;
+          if (!(v > 5 && v < 90)) bad('/api/mkt 个股前5%占比越界 ' + v + '%');
+          else ok('/api/mkt 个股前5%成交占比 ' + v.toFixed(1) + '%');
+        } else bad('/api/mkt 缺 p5 数组或长度不齐（个股口径集中度）');
       } else bad('/api/mkt 历史 u/w 与日期长度不一致，前端按索引取会错位');
     } else bad('/api/mkt 历史缺少 u/w 家数数组，横轴无法显示个股口径');
   } else bad('/api/mkt 失败：' + r.text.slice(0, 160));

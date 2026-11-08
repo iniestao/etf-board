@@ -105,6 +105,11 @@ console.log(`拉个股 K 线（${beg} 起，${CH} 并发）…`);
 
 const dayUp = new Map(), dayDn = new Map(), dayFlat = new Map(), dayN = new Map();
 const dayAllAmt = new Map();
+// 每天的个股成交额列表：算「前 5% 个股占全市场成交额比重」用。
+// 行业口径（TOP3 占比）抓的是行业抱团，个股口径抓的是个股抱团——
+// 寒武纪单票一天吃掉全市场 2% 成交时，行业口径只显示半导体 22%，个股口径会炸出来。
+// 250 天 × 5000 个数字 ≈ 10MB，聚合完就丢，不驻留。
+const dayAmts = new Map();
 const indAmtByDay = new Map();   // ind -> Map(day -> amt)
 const failed = [];               // 网络/解析错误，可重试
 const empty = [];                // K 线为空：新股未上市、已退市。正常，重试也没用
@@ -137,6 +142,9 @@ async function one(x) {
     if (amt > 0) {
       dayN.set(d, (dayN.get(d) || 0) + 1);
       dayAllAmt.set(d, (dayAllAmt.get(d) || 0) + amt);
+      let al = dayAmts.get(d);
+      if (!al) { al = []; dayAmts.set(d, al); }
+      al.push(amt);
       if (im) im.set(d, (im.get(d) || 0) + amt);
       if (Number.isFinite(chg)) {
         if (chg > 0) dayUp.set(d, (dayUp.get(d) || 0) + 1);
@@ -175,7 +183,7 @@ const allDays = [...dayN.keys()].sort();
 const dates = allDays.slice(-DAYS);
 if (dates.length < 200) throw new Error(`交易日不足 200 天（${dates.length}），上游可能限流`);
 
-const C = [], B = [], N = [], UP = [], DN = [];
+const C = [], B = [], N = [], UP = [], DN = [], P5 = [];
 // 每天的前三大行业（存索引，不存名字）。点散点时要回答「那天钱堆在哪条线上」，
 // 只有一个 24% 的集中度数字不够用。250 天 × 3 个索引 ≈ 2KB，比存中文名省一半。
 const T = [];
@@ -198,6 +206,11 @@ for (let i = 0; i < dates.length; i++) {
   if (i === dates.length - 1) lastTop3 = top.map(([k]) => k);
 
   C.push(tot > 0 ? Math.round(vals.slice(0, 3).reduce((s, x) => s + x[1], 0) / tot * 1000) : 0);
+  // 个股口径集中度：成交额最大的 5% 个股 ÷ 全 A 成交额
+  const amts = (dayAmts.get(d) || []).slice().sort((a, b) => b - a);
+  const k5 = Math.max(1, Math.round(amts.length * 0.05));
+  const top5 = amts.slice(0, k5).reduce((s, x) => s + x, 0);
+  P5.push(amts.length > 200 ? Math.round(top5 / amts.reduce((s, x) => s + x, 0) * 1000) : 0);
   // 分母只算有方向的家数：平盘不压低宽度，50% 才是真正的「涨跌各半」
   B.push(up + dn > 0 ? Math.round(up / (up + dn) * 1000) : 0);
   N.push(dayN.get(d) || 0);
@@ -210,7 +223,11 @@ console.log('自检：');
 console.log(`  最后交易日 ${dates[last]} · 全 A 成交 ${(dayAllAmt.get(dates[last]) / 1e8).toFixed(0)} 亿`
   + ` · ${N[last]} 只有成交（${UP[last]} 涨 ${DN[last]} 跌 ${(dayFlat.get(dates[last]) || 0)} 平）`);
 console.log(`  集中度 ${(C[last] / 10).toFixed(1)}% · TOP3 ${lastTop3.join('、')}`);
-console.log(`  宽度 ${(B[last] / 10).toFixed(1)}%`);
+console.log(`  宽度 ${(B[last] / 10).toFixed(1)}% · 个股前5%成交占比 ${((P5[last] || 0) / 10).toFixed(1)}%`);
+const p5Bad = P5.filter((v) => !(v > 50 && v < 900));
+if (p5Bad.length > dates.length * 0.05) {
+  throw new Error(`个股前5%占比量级异常 ${p5Bad.length}/${dates.length} 天，检查排序/分母`);
+}
 // 成交额量级：全 A 单日正常在 5000 亿 ~ 3 万亿，超出说明字段串了
 const amtBad = dates.filter((d) => { const v = dayAllAmt.get(d) / 1e8; return !(v > 3000 && v < 40000); });
 if (amtBad.length > dates.length * 0.1) {
@@ -224,7 +241,7 @@ console.log(`  250 天宽度极差 ${(bSpread / 10).toFixed(0)} 分位点，分�
 
 // ---- 5. 落盘 ----
 const payload = { d: dates, c: C, b: B, n: N, u: UP, w: DN, t3: lastTop3,
-  t: T, ind: indNames, inds: indNames.length };
+  t: T, ind: indNames, inds: indNames.length, p5: P5 };
 const head = '// 由 pipeline/gen_mkt_hist.mjs 回算生成，勿手改。\n'
   + '// 全 A 个股口径（5563 只，东财 f100 归行业）：\n'
   + '//   c = TOP3 行业成交额 ÷ 全 A 个股成交额（千分位，24.1% → 241）\n'

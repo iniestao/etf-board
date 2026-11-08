@@ -807,7 +807,7 @@ async function serveMkt(env, ctx) {
             // t/ind 是「每天的前三大行业」+ 行业名表：点散点时要用它回答
             // 「那天钱压在哪条线」，光两个数字不够。
             out.hist = { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w,
-              t3: h.t3 || [], t: h.t, ind: h.ind };
+              t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5 };
           }
         }
       }
