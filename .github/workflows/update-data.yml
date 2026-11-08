@@ -234,6 +234,7 @@ jobs:
       # 用 GITHUB_TOKEN 的 push 不会触发 deploy-worker.yml（GitHub 的防递归约定），
       # 所以这里自己调用一次 wrangler，而不能指望 push 去触发。
       - name: 重新部署 Worker（映射已变）
+        id: idxdeploy
         if: steps.idxmap.outputs.changed == 'true' && steps.idxcommit.outcome == 'success'
         continue-on-error: true
         uses: cloudflare/wrangler-action@v3
@@ -243,7 +244,23 @@ jobs:
           workingDirectory: worker
           command: deploy
 
-      # ---------- 4. 可选：同步到 R2 ----------
+      # 部署失败必须把提交撤回去。否则仓库里是新映射、线上还是旧的，而第二天流水线
+      # 看到 git diff 是干净的会直接跳过——永远卡在这个「仓库已更新、线上没更新」的状态，
+      # 谁也不会发现。回滚之后第二天它会当成新变更再试一次。
+      - name: 部署失败则回滚提交
+        if: steps.idxdeploy.outcome == 'failure'
+        run: |
+          git revert --no-edit HEAD
+          ok=0
+          for i in 1 2 3; do
+            if git push -q origin HEAD:main; then ok=1; break; fi
+            git fetch -q --depth=20 origin main && git rebase -q origin/main || true
+            sleep 5
+          done
+          [ "$ok" = "1" ] && echo "::warning::Worker 部署失败，已回滚映射提交，明天重试" \
+            || echo "::error::部署失败且回滚推送不成功，需要人工看一眼"
+
+      # ---------- 6. 可选：同步到 R2 ----------
       # 只有在仓库变量 USE_R2=true（且配了那 4 个 secret）时才跑。
       # R2 比 GitHub raw 快，但开通要绑卡——不绑卡就跳过，不影响任何功能。
       - name: 同步到 Cloudflare R2（可选）
@@ -265,7 +282,8 @@ jobs:
         env:
           IDX_OUTCOME: ${{ steps.idxmap.outcome }}
           IDX_CHANGED: ${{ steps.idxmap.outputs.changed }}
-          IDX_DEPLOY: ${{ steps.idxcommit.outcome }}
+          IDX_COMMIT: ${{ steps.idxcommit.outcome }}
+          IDX_DEPLOY: ${{ steps.idxdeploy.outcome }}
         run: |
           if [ "$IDX_OUTCOME" != "success" ]; then
             idx="抓取失败，沿用旧映射（不影响行情与因子）"
@@ -273,8 +291,10 @@ jobs:
             idx="无变化"
           elif [ "$IDX_DEPLOY" = "success" ]; then
             idx="新增 ETF 已补，Worker 已重部署"
+          elif [ "$IDX_DEPLOY" = "failure" ]; then
+            idx="已补但部署失败，提交已回滚，明天重试"
           else
-            idx="新增 ETF 已补，但提交/部署没走完，明天会再补"
+            idx="已补但提交没推上去（$IDX_COMMIT），明天重试"
           fi
           {
             echo "### ETF 数据更新"
