@@ -176,6 +176,10 @@ const dates = allDays.slice(-DAYS);
 if (dates.length < 200) throw new Error(`交易日不足 200 天（${dates.length}），上游可能限流`);
 
 const C = [], B = [], N = [], UP = [], DN = [];
+// 每天的前三大行业（存索引，不存名字）。点散点时要回答「那天钱堆在哪条线上」，
+// 只有一个 24% 的集中度数字不够用。250 天 × 3 个索引 ≈ 2KB，比存中文名省一半。
+const T = [];
+const indIdx = new Map(indNames.map((n, i) => [n, i]));
 let lastTop3 = [];
 for (let i = 0; i < dates.length; i++) {
   const d = dates[i];
@@ -189,7 +193,9 @@ for (let i = 0; i < dates.length; i++) {
     if (v > 0) vals.push([ind, v]);
   }
   vals.sort((a, b) => b[1] - a[1]);
-  if (i === dates.length - 1) lastTop3 = vals.slice(0, 3).map(([k]) => k);
+  const top = vals.slice(0, 3);
+  T.push(top.map(([k]) => indIdx.has(k) ? indIdx.get(k) : -1));
+  if (i === dates.length - 1) lastTop3 = top.map(([k]) => k);
 
   C.push(tot > 0 ? Math.round(vals.slice(0, 3).reduce((s, x) => s + x[1], 0) / tot * 1000) : 0);
   // 分母只算有方向的家数：平盘不压低宽度，50% 才是真正的「涨跌各半」
@@ -217,7 +223,8 @@ if (bSpread < 200) throw new Error(`宽度几乎不动（极差 ${bSpread / 10}p
 console.log(`  250 天宽度极差 ${(bSpread / 10).toFixed(0)} 分位点，分布正常`);
 
 // ---- 5. 落盘 ----
-const payload = { d: dates, c: C, b: B, n: N, u: UP, w: DN, t3: lastTop3, inds: indNames.length };
+const payload = { d: dates, c: C, b: B, n: N, u: UP, w: DN, t3: lastTop3,
+  t: T, ind: indNames, inds: indNames.length };
 const head = '// 由 pipeline/gen_mkt_hist.mjs 回算生成，勿手改。\n'
   + '// 全 A 个股口径（5563 只，东财 f100 归行业）：\n'
   + '//   c = TOP3 行业成交额 ÷ 全 A 个股成交额（千分位，24.1% → 241）\n'

@@ -448,6 +448,24 @@ user-select:none;white-space:nowrap}
 padding:0 2px 7px;line-height:1.5}
 .secmeta b{color:var(--txt2);font-weight:600}
 .secmeta span{white-space:nowrap}
+/* 体检灯：一行灰字没人看，出事时必须先扎眼。绿=三项都过，
+   黄/红=有异常且标签文字直接写出来，不用点开才知道。 */
+.secmeta .mt{display:inline-flex;align-items:center;gap:5px;font-weight:600;
+color:var(--txt2);cursor:pointer;user-select:none}
+.secmeta .mt:hover{color:var(--txt)}
+.secmeta .mt i{width:7px;height:7px;border-radius:50%;background:#2e9e5b;flex:none}
+.secmeta .mt.warn i{background:#d9a013}
+.secmeta .mt.bad i{background:#d64545}
+.secmeta .mt.warn{color:#8a6a10}
+.secmeta .mt.bad{color:#a03030}
+/* 展开明细：flex-basis:100% 换到第二行，虚线隔开 */
+.secmeta .mtdet{display:none;flex-basis:100%;align-items:center;flex-wrap:wrap;gap:3px 14px;
+padding:3px 0 0;border-top:1px dashed var(--line);margin-top:2px;font-size:10.5px}
+.secmeta.open .mtdet{display:flex}
+.secmeta .mtdet .ok{color:#2e7d4f}
+.secmeta .mtdet .warn{color:#a06a00}
+.secmeta .mtdet .note{color:var(--txt3)}
+.secmeta .mtdet .warnmsg{color:#a03030}
 @media(max-width:560px){.secmeta .opt{display:none}}
 
 /* 格子点开后的占比走势。存在的理由：页面只有「今天占比多少」，
@@ -494,6 +512,17 @@ border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:1px}
 .scqfoot{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--line);
 font-size:9.5px;color:var(--txt3);line-height:1.55}
 .scqstk{margin:0;font-size:10px;color:var(--txt3);font-variant-numeric:tabular-nums}
+/* 点中某一天后的详情条。不做成跟随鼠标的气泡：气泡会盖住点云本身，
+   而这行要读的是「那天钱在哪、比今天差多少」，放底部与统计栏同一视线。 */
+.scqday{display:none;margin:7px 0 0;padding:6px 10px;background:var(--bg3);
+border-left:2px solid #9aa3b2;border-radius:4px;font-size:11px;color:var(--txt2);
+line-height:1.7;font-variant-numeric:tabular-nums}
+.scqday.on{display:block}
+.scqday b{color:var(--txt);font-weight:600}
+.scqday i{font-style:normal;color:var(--txt);font-weight:700}
+.scqday em{font-style:normal;color:var(--txt3)}
+.scqday .esc{font-size:10px}
+.scqplot svg{cursor:crosshair}
 /* 电脑为主：图独占一行、放到 1000px，统计和描述缩到图下方一行。
    原来的三栏（360 图 + 190 统计 + 1fr 说明）在 1440 屏上图只有 360px，
    而右边 660px 全是小字——主次反了。 */
@@ -1454,6 +1483,7 @@ function loadSecBase(){
       SEC_EXTRA = null;                 // 日档换了，增量的缓存作废
       // 盘子已经画出来了（用户先看了页面、日档后到）：重画一次，让曲线尾巴接上
       if (SEC_OPEN) renderSectors();
+      else renderSecMeta();             // 体检里的「板块日档」要等这份才完整
     }
     return SEC_BASE;
   }).catch(function(){ return null; });
@@ -1574,6 +1604,10 @@ function mktPct(arr, v){
    并标注日期——宁可显示「截至 11-06」，也不要在页面上留一块空白。 */
 var MKT_NOW = null;
 
+/* 散点的点阵（secQuadCard 填充）。250 个点若各做一个 <circle>，DOM 多 500 个节点、
+   HTML 多 25KB；这里只在 <g> 上接事件，点击坐标反算回 viewBox 再找最近点。 */
+var SCQ_PTS = null;
+
 /* 集中度 × 宽度 四象限。
    单看集中度会误判：半导体占到 40%，可以是「主线就在这儿」，也可以是「别的全塌了
    只剩它在成交」。单看宽度也会误判：18 个行业 15 个在涨，可能是普涨，也可能是
@@ -1612,9 +1646,10 @@ function secQuadCard(){
   var curDay = now ? now.d : H.d[last];
   var dayTag = curDay === bjDay ? '今天' : curDay.slice(5) + ' 收盘';
 
-  var i, C = [], B = [];
+  var i, C = [], B = [], CI = [];
   for (i=0;i<H.c.length;i++){
-    if (H.c[i] > 0){ C.push(H.c[i] / 10); B.push((H.b[i] || 0) / 10); }
+    // CI 存回原始下标：点云跳过了 c=0 的天，不记映射就找不回那天是哪日。
+    if (H.c[i] > 0){ C.push(H.c[i] / 10); B.push((H.b[i] || 0) / 10); CI.push(i); }
   }
   if (C.length < 60) return '';
 
@@ -1676,7 +1711,10 @@ function secQuadCard(){
         + ' paint-order="stroke" stroke-linejoin="round">' + t + '</text>';
     };
 
+    // data-g 把绘图区几何带出去：点击时按同一组数反算每个点的位置，
+    // 就不用在页面里重新实现一遍映射，也不会两处漂移。
     return '<svg class="' + cls + '" viewBox="0 0 ' + W + ' ' + HT + '"'
+      + ' data-g="' + [x0, x1, y0, y1, ylo.toFixed(2), yhi.toFixed(2)].join(',') + '"'
       + ' role="img" aria-label="集中度与宽度四象限散点图">'
       + '<line x1="' + px(50).toFixed(1) + '" y1="' + y0 + '" x2="' + px(50).toFixed(1)
       + '" y2="' + y1 + '" stroke="#dde2ea" stroke-dasharray="3 3"/>'
@@ -1698,11 +1736,18 @@ function secQuadCard(){
       + lbl('涣散', x0 + 5, y1 - 5, 'start')
       + lbl('轮动扩散', x1 - 5, y1 - 5, 'end')
       + tk + xRow
+      + '<g class="scqs"></g>'
       + '</svg>';
   };
   var svgD = mkSvg(620, 210, 42, 16, 14, 24, 9, 3, 'd');
   var svgM = mkSvg(360, 190, 36, 10, 12, 20, 9.5, 2.6, 'm');
   var svg = svgD + svgM;
+
+  // 点阵挂到模块级，事件监听里直接查，不用把闭包层层传下去。
+  // T/IND 是「那天的前三大行业」：只有 24% 这个数字回答不了「钱堆在哪条线」。
+  SCQ_PTS = { C: C, B: B, I: CI, D: H.d, U: H.u || [], W: H.w || [],
+              T: H.t || [], IND: H.ind || [], RC: H.c, RB: H.b,
+              cur: C.length - 1, BRD: brd, CONC: conc };
 
   var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
   var names = top3.length ? top3.join('、') : '前三大行业';
@@ -1759,7 +1804,7 @@ function secQuadCard(){
     + ' onclick="var s=this.closest(&#39;.scq&#39;);s.classList.toggle(&#39;open&#39;);event.stopPropagation()"'
     + '>?</i></div>'
     + '<div class="scqbody"><div class="scqplot">' + svg
-    + '<div class="scqax"><span>灰点＝近一年每个交易日</span>'
+    + '<div class="scqax"><span>灰点＝近一年每个交易日，点任意一点看当天</span>'
     + '<span>横轴 上涨个股占比</span></div></div>'
     + '<div class="scqfoot"><div class="scqstats">'
     + '<div class="scqe"><span>集中</span><b>' + conc.toFixed(1) + '%</b>'
@@ -1772,7 +1817,7 @@ function secQuadCard(){
     + '<div class="scqdesc"><p class="scqd">' + desc + '</p>' + stockLine
     + '<p class="scqnote">虚线＝近一年中位（' + cMed.toFixed(1) + '% / 50%）。'
     + '轴向和四格含义点右上角 ? 看。</p></div>'
-    + '</div></div>' + pop + '</div>';
+    + '</div></div><div class="scqday"></div>' + pop + '</div>';
 }
 
 /** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
@@ -2069,6 +2114,86 @@ function fmtAmt(v){
   return Math.round(v/1e4) + '万';
 }
 
+/* ================= 数据体检 =================
+   这一行被「229 个单只指数整组丢掉、页面毫无异样」坑出来过：数字照样显示，
+   只是悄悄小了一截。既然是防复发的仪表，就必须让人一眼看出「今天出事没有」——
+   纯灰小字等于没有。灯取三项里最差的：无跟踪标的暴增（映射表又丢组）、
+   两份 Actions 回算的历史停更（管道挂了，页面数字停在原地不动）。 */
+var SEC_COV = null;
+
+function renderSecMeta(){
+  var sm = document.getElementById('secMeta');
+  if (!sm || !SEC_COV) return;
+  var c = SEC_COV;
+  var chk = secHealth();
+  sm.innerHTML =
+      '<span class="mt ' + chk.cls + '" role="button" tabindex="0"'
+    + ' onclick="secMetaToggle()" title="点开看数据管道体检：两份历史停更、映射覆盖率"> '
+    + '<i></i>数据体检' + (chk.cls !== 'ok' ? ' · 有异常' : '') + '</span>'
+    + '<span>' + SECS.length + ' 格 · <b>' + c.nIx + '</b> 个指数有成交</span>'
+    + '<span class="opt">每个指数只算成交额最大的一只</span>'
+    + '<span>报价 <b>' + c.nQ + '</b>' + (c.nSt ? ' · 停牌 ' + c.nSt : '') + '</span>'
+    + (c.nNoIx ? '<span title="这些 ETF 查不到跟踪标的（新发未收录、或数据源没给），进不了任何一格；'
+        + '括号里是它们今天的成交额合计">无跟踪标的 <b>' + c.nNoIx + '</b> 只'
+        + (c.noIxAmt > 0 ? '（' + fmtAmt(c.noIxAmt) + '）' : '') + '</span>' : '')
+    + '<span class="opt" title="宽基、债券、货币、商品、风格（红利/价值）都不进板块地图——'
+      + '它们不回答钱往哪条线走">宽基/债/货币/商品 不在表内</span>'
+    + '<span class="mtdet" id="secMetaDet"></span>';
+}
+function secHealth(){
+  var today = bjToday();
+  var cls = 'ok', msgs = [];
+  var worse = function (c) {
+    if (c === 'bad') cls = 'bad';
+    else if (c === 'warn' && cls === 'ok') cls = 'warn';
+  };
+  // 全 A 散点（250 天）：Actions 每天回算，停 3 个工作日以上就是挂了。
+  // 上次 etf.db 停在 11-03 三天没人发现，就是这种形状——页面全正常，只是不动。
+  var m = MKT_HIST && MKT_HIST.d && MKT_HIST.d.length ? MKT_HIST.d[MKT_HIST.d.length - 1] : null;
+  var gM = m ? dayGap(m, today) : 99;
+  if (!m || gM > 3 || MKT_HIST.d.length < 200){
+    worse(gM > 6 || !m ? 'bad' : 'warn');
+    msgs.push('全 A 散点历史停在 ' + (m ? m.slice(5) : '—') + (m ? '（' + gM + ' 天前）' : '')
+      + '，Actions 可能没跑');
+  }
+  var sd = SEC_BASE && SEC_BASE.length ? SEC_BASE[SEC_BASE.length - 1].d : null;
+  if (sd){
+    var gS = dayGap(sd, today);
+    if (gS > 3){
+      worse(gS > 6 ? 'bad' : 'warn');
+      msgs.push('板块日档停在 ' + sd.slice(5) + '（' + gS + ' 天前）');
+    }
+  }
+  if (SEC_COV && SEC_COV.nNoIx > 20){
+    worse('warn');
+    msgs.push('无跟踪标的 ' + SEC_COV.nNoIx + ' 只，映射表可能又丢组了');
+  }
+  return { cls: cls, msgs: msgs };
+}
+function secMetaToggle(){
+  var sm = document.getElementById('secMeta');
+  if (!sm) return;
+  var on = sm.classList.toggle('open');
+  var det = document.getElementById('secMetaDet');
+  if (!on || !det) return;
+  var today = bjToday();
+  var m = MKT_HIST && MKT_HIST.d && MKT_HIST.d.length ? MKT_HIST.d[MKT_HIST.d.length - 1] : null;
+  var sd = SEC_BASE && SEC_BASE.length ? SEC_BASE[SEC_BASE.length - 1].d : null;
+  var gM = m ? dayGap(m, today) : 99;
+  var gS = sd ? dayGap(sd, today) : 99;
+  var it = function (ok, label, val) {
+    return '<span class="' + (ok ? 'ok' : 'warn') + '">' + (ok ? '✓' : '⚠') + ' ' + label
+      + ' <b>' + val + '</b></span>';
+  };
+  det.innerHTML =
+      it(m && gM <= 3, '全 A 散点', (MKT_HIST && MKT_HIST.d ? MKT_HIST.d.length : 0)
+        + ' 天 · 最新 ' + (m ? m.slice(5) : '—'))
+    + it(sd && gS <= 3, '板块日档', (SEC_BASE ? SEC_BASE.length : 0)
+        + ' 天 · 最新 ' + (sd ? sd.slice(5) : '—'))
+    + '<span class="note">两份历史由 Actions 每天收盘后回算；停更＝管道挂了，页面数字不会自己动</span>'
+    + (secHealth().msgs.length ? '<span class="warnmsg">⚠ ' + secHealth().msgs.join('；') + '</span>' : '');
+}
+
 function renderSectors(){
   SEC_GROUPS_OUT = buildGroups();
   SECS = [];
@@ -2112,16 +2237,8 @@ function renderSectors(){
     }
   }
   for (i0=0;i0<SECS.length;i0++) nIx += SECS[i0].n;
-  var sm = document.getElementById('secMeta');
-  if (sm) sm.innerHTML =
-      '<span>' + SECS.length + ' 格 · <b>' + nIx + '</b> 个指数有成交</span>'
-    + '<span class="opt">每个指数只算成交额最大的一只</span>'
-    + '<span>报价 <b>' + nQ + '</b>' + (nSt ? ' · 停牌 ' + nSt : '') + '</span>'
-    + (nNoIx ? '<span title="这些 ETF 查不到跟踪标的（新发未收录、或数据源没给），进不了任何一格；'
-        + '括号里是它们今天的成交额合计">无跟踪标的 <b>' + nNoIx + '</b> 只'
-        + (noIxAmt > 0 ? '（' + fmtAmt(noIxAmt) + '）' : '') + '</span>' : '')
-    + '<span class="opt" title="宽基、债券、货币、商品、风格（红利/价值）都不进板块地图——'
-      + '它们不回答钱往哪条线走">宽基/债/货币/商品 不在表内</span>';
+  SEC_COV = { nIx: nIx, nQ: nQ, nSt: nSt, nNoIx: nNoIx, noIxAmt: noIxAmt };
+  renderSecMeta();
 
   var h = '';
   var cellHtml = function(G2, cs, mxAmt, sdel){
@@ -5885,6 +6002,111 @@ document.addEventListener('visibilitychange', function(){
 document.addEventListener('click', function(){
   var o = document.querySelector('.scq.open');
   if (o) o.classList.remove('open');
+});
+
+/* ================= 散点的点击：每一天都能翻出来看 =================
+   灰点不是装饰，250 个点各是一个交易日。原来只有「今天」那一个点有数字，
+   想找「上一次宽度这么低是什么时候、那天钱在哪」只能干瞪眼。
+
+   命中判定不用 250 个事件节点：把点击坐标按 data-g 反算回 viewBox，
+   在点阵里取最近的一个，屏幕上 16px 内才算点到——避免远处误点跳出一个日子。 */
+function scqGeo(svg){
+  var g = (svg.getAttribute('data-g') || '').split(',');
+  var vb = svg.viewBox && svg.viewBox.baseVal;
+  var r = svg.getBoundingClientRect();
+  if (g.length < 6 || !vb || !r.width) return null;
+  return { x0: +g[0], x1: +g[1], y0: +g[2], y1: +g[3], ylo: +g[4], yhi: +g[5],
+           vb: vb, r: r, kx: vb.width / r.width };
+}
+function scqXY(G, c, b){
+  return [G.x0 + Math.max(0, Math.min(100, b)) / 100 * (G.x1 - G.x0),
+          G.y1 - (c - G.ylo) / (G.yhi - G.ylo) * (G.y1 - G.y0)];
+}
+function scqHit(svg, cx, cy){
+  var P = SCQ_PTS, G = scqGeo(svg);
+  if (!P || !G) return -1;
+  var mx = (cx - G.r.left) * G.kx;
+  var my = (cy - G.r.top) * (G.vb.height / G.r.height);
+  var best = -1, bd = 1e9, i, x, y, p, dx, dy, d2;
+  for (i = 0; i < P.C.length; i++){
+    p = scqXY(G, P.C[i], P.B[i]); x = p[0]; y = p[1];
+    dx = x - mx; dy = y - my; d2 = dx * dx + dy * dy;
+    if (d2 < bd){ bd = d2; best = i; }
+  }
+  return Math.sqrt(bd) <= 16 * G.kx ? best : -1;
+}
+function scqRing(svg, sel){
+  var g = svg.querySelector('.scqs');
+  if (!g) return;
+  while (g.firstChild) g.removeChild(g.firstChild);
+  var P = SCQ_PTS, G = scqGeo(svg);
+  if (!P || !G || sel < 0) return;
+  var p = scqXY(G, P.C[sel], P.B[sel]);
+  var NS = 'http://www.w3.org/2000/svg';
+  // 白圈描边 + 外圈灰：点云密的时候单环会跟邻居粘成一片
+  [[10, 'none', '#fff', 3.2], [10, 'none', '#6b7280', 1.3]].forEach(function (a) {
+    var c = svg.ownerDocument.createElementNS(NS, 'circle');
+    c.setAttribute('cx', p[0].toFixed(1)); c.setAttribute('cy', p[1].toFixed(1));
+    c.setAttribute('r', a[0]); c.setAttribute('fill', a[1]);
+    c.setAttribute('stroke', a[2]); c.setAttribute('stroke-width', a[3]);
+    g.appendChild(c);
+  });
+}
+function scqShow(svg, sel){
+  var P = SCQ_PTS;
+  var card = svg.closest ? svg.closest('.scq') : null;
+  if (!P || !card) return;
+  var list = card.querySelectorAll('.scqplot svg'), i;
+  for (i = 0; i < list.length; i++) scqRing(list[i], sel);
+  var bar = card.querySelector('.scqday');
+  if (!bar) return;
+  if (sel < 0){
+    bar.className = 'scqday'; bar.innerHTML = ''; card.removeAttribute('data-sel'); return;
+  }
+  var hi = P.I[sel], d = P.D[hi];
+  var c = P.C[sel], b = P.B[sel], u = P.U[hi] || 0, w = P.W[hi] || 0;
+  var nm = (P.T[sel] || []).map(function (k) { return P.IND[k] || ''; })
+    .filter(function (x) { return !!x; });
+  var cq = mktPct(P.RC, c), bq = mktPct(P.RB, b);
+  var wd = '日一二三四五六'.charAt(new Date(d + 'T00:00:00+08:00').getUTCDay());
+  // 跟今天比：单看「那天 15.5%」没有参照，加减量才读得出这次是不是更极端
+  // 跟今天比用带符号的差值，不用「更集中／更分散」——两个词要配对读，
+  // 而「集中度 +5.5pt」一眼就知道方向。
+  var dc = P.CONC - c, db = P.BRD - b, dcs = [];
+  if (Math.abs(dc) >= 0.5) dcs.push('集中度 ' + (dc > 0 ? '+' : '−') + Math.abs(dc).toFixed(1) + 'pt');
+  if (Math.abs(db) >= 0.5) dcs.push('宽度 ' + (db > 0 ? '+' : '−') + Math.abs(db).toFixed(1) + 'pt');
+
+  bar.innerHTML = '<b>' + d.slice(5) + '</b> 周' + wd
+    + ' · 集中 <i>' + c.toFixed(1) + '%</i><em>（' + (cq != null ? cq.toFixed(0) + ' 分位' : '—') + '）</em>'
+    + ' · 宽度 <i>' + b.toFixed(0) + '%</i><em>（' + u + ' 涨 ' + w + ' 跌'
+    + (bq != null ? '，' + bq.toFixed(0) + ' 分位' : '') + '）</em>'
+    + (nm.length ? '<br>领涨 <b>' + nm.join('、') + '</b>' : '')
+    + (dcs.length ? ' <em>较今天 ' + dcs.join('、') + '</em>' : '')
+    + ' <em class="esc">再点一次或点空白取消</em>';
+  bar.className = 'scqday on';
+  card.setAttribute('data-sel', sel);
+}
+document.addEventListener('click', function (e) {
+  var t = e.target;
+  if (!t || !t.closest) return;
+  var svg = t.closest('.scqplot svg');
+  if (svg){
+    var hit = scqHit(svg, e.clientX, e.clientY);
+    var card = svg.closest('.scq');
+    var cur = card.getAttribute('data-sel');
+    scqShow(svg, (hit >= 0 && String(hit) === cur) ? -1 : hit);
+    return;
+  }
+  if (!t.closest('.scq')){
+    var o = document.querySelector('.scq[data-sel]');
+    if (o){ var s0 = o.querySelector('.scqplot svg'); if (s0) scqShow(s0, -1); }
+  }
+});
+document.addEventListener('mousemove', function (e) {
+  var t = e.target;
+  if (!t || !t.closest) return;
+  var svg = t.closest('.scqplot svg');
+  if (svg) svg.style.cursor = scqHit(svg, e.clientX, e.clientY) >= 0 ? 'pointer' : 'crosshair';
 });
 
 function loadTXQuotes(){
