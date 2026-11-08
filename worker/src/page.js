@@ -50,16 +50,25 @@ font-variant-numeric:tabular-nums;padding:14px 18px 40px}
 header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
 /* 标题：左边一个迷你柱线标识（三根递增柱），右边「ETF 盯盘」两段式——
    ETF 用等宽小字压成标识词，盯盘是主语。比原来「ETF 全市场盯盘」一大串
-   平铺好读：一眼分得清「是什么」和「干什么」。 */
+   平铺好读：一眼分得清「是什么」和「干什么」。
+   红：页面底色是跌绿/涨红双色系统，标题取涨色（--up）才对得上「盯盘」这件
+   事本身——蓝是通用 SaaS 味，跟行情没关系。 */
 h1{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:600;letter-spacing:.2px}
 h1 .mk{display:inline-flex;align-items:flex-end;gap:2px;width:24px;height:24px;padding:5px;
-  box-sizing:border-box;background:#eaf1ff;border-radius:7px}
-h1 .mk i{display:block;width:3px;border-radius:1px;background:var(--accent)}
+  box-sizing:border-box;background:#fbe4e4;border-radius:7px}
+h1 .mk i{display:block;width:3px;border-radius:1px;background:var(--up)}
 h1 .mk i:nth-child(1){height:5px;opacity:.4}
 h1 .mk i:nth-child(2){height:9px;opacity:.7}
 h1 .mk i:nth-child(3){height:14px}
-h1 .tag{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:1px;
-  color:var(--accent);background:#eaf1ff;border-radius:5px;padding:2px 6px}
+/* 「盯盘」并进 ETF 这一格里，不再单独当大字号主词：两个词本来就是一个意思，
+   拆成「小徽标 + 大字」会让人先读 ETF 再读盯盘，多一次停顿。 */
+h1 .tag{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);
+  font-size:10.5px;font-weight:600;letter-spacing:1px;
+  color:var(--up);background:#fbe6e6;border-radius:6px;padding:3px 8px 3px 7px}
+/* 中文小字在同样的红下会比拉丁字母"显得"淡一档（笔画细、抗锯齿占比高），
+   所以字号压到跟 ETF 一档、颜色深半格，两段看起来才是同一种红。 */
+h1 .tag b{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:11.5px;font-weight:700;letter-spacing:.5px;color:#cf2f2f}
 h1 em{color:var(--txt3);font-weight:400;font-size:12.5px;font-style:normal;margin-left:2px;
   font-family:var(--mono);letter-spacing:.2px}
 .sp{flex:1}
@@ -916,7 +925,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <body>
 <div class="wrap">
 <header>
-  <h1><span class="mk"><i></i><i></i><i></i></span><span class="tag">ETF</span>盯盘 <em id="clock">--:--:--</em></h1>
+  <h1><span class="mk"><i></i><i></i><i></i></span><span class="tag">ETF<b>盯盘</b></span><em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
   <span class="dot" id="d-src"><i></i><span id="srcName">连接中</span></span>
   <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
