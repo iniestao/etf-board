@@ -913,8 +913,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <nav class="secnav" id="secNav" aria-label="区块导航">
   <a data-t="onCard">隔夜</a>
   <a data-t="secSec">板块地图</a>
-  <a data-t="spdSec">急涨急跌</a>
   <a data-t="watchSec">自选</a>
+  <a data-t="spdSec">急涨急跌</a>
   <a data-t="rankSec">清单</a>
 </nav>
 
@@ -936,21 +936,6 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="card"><div class="k">今日诊断信号</div><div class="v" id="cSig">-</div><div class="s" id="cSigs">按位置 × 量能给标签</div></div>
 </div>
 
-
-<div class="sec" id="spdSec">
-  <div class="sechd"><b>急涨急跌</b><span class="n" id="spdN">-</span>
-    <span class="sync" id="btnSpd" title="立刻重算一次">刷新</span></div>
-  <div class="dnote">上面那栏看「今天」，这一栏看「刚才」：过去几分钟谁在急拉、谁在急砸，量跟不跟得上。</div>
-  <div class="mkbox">
-    <div class="mtabs" id="spdTabs">
-      <span class="mtab on" data-w="3">3 分钟</span>
-      <span class="mtab" data-w="5">5 分钟</span>
-      <span class="mtab" id="spdVol" title="量比低于 1.5 倍的不显示">只看放量</span>
-    </div>
-    <div class="spdgrid" id="spdGrid"><div class="empty">读取中…</div></div>
-    <div class="spdnote" id="spdNote"></div>
-  </div>
-</div>
 
 <div class="sec" id="watchSec">
   <div id="staleBar" class="stalebar" style="display:none"></div>
@@ -1002,6 +987,21 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <span class="sync" id="btnDiag" title="丢掉缓存，重新读一遍历史">重算</span></div>
   <div class="dnote">行情软件告诉你今天涨了多少；这一栏告诉你它站在近一年区间的什么位置、量能配不配合。</div>
   <div class="dgrid" id="diagGrid"><div class="empty">正在读取历史…</div></div>
+</div>
+
+<div class="sec" id="spdSec">
+  <div class="sechd"><b>急涨急跌</b><span class="n" id="spdN">-</span>
+    <span class="sync" id="btnSpd" title="立刻重算一次">刷新</span></div>
+  <div class="dnote">上面那栏看「今天」，这一栏看「刚才」：过去几分钟谁在急拉、谁在急砸，量跟不跟得上。</div>
+  <div class="mkbox">
+    <div class="mtabs" id="spdTabs">
+      <span class="mtab on" data-w="3">3 分钟</span>
+      <span class="mtab" data-w="5">5 分钟</span>
+      <span class="mtab" id="spdVol" title="量比低于 1.5 倍的不显示">只看放量</span>
+    </div>
+    <div class="spdgrid" id="spdGrid"><div class="empty">读取中…</div></div>
+    <div class="spdnote" id="spdNote"></div>
+  </div>
 </div>
 
 <div class="sec" id="mktSec">
@@ -6971,7 +6971,7 @@ function clock(){ document.getElementById('clock').textContent = new Date().toLo
 /* 锚点导航：点击平滑滚动；滚动时把视口上缘以下 120px 处的区块点亮。
    量出来的 --navH 同时供区块 scroll-margin-top 和表格表头 sticky 用，
    窗口尺寸变化（转屏、缩放）时重算。 */
-var NAV_SECS = ['onCard', 'spdSec', 'watchSec', 'secSec', 'rankSec'];
+var NAV_SECS = ['onCard', 'secSec', 'watchSec', 'spdSec', 'rankSec'];   // 按文档顺序
 function navMeasure(){
   var nav = document.getElementById('secNav');
   if (nav) document.documentElement.style.setProperty('--navH', (nav.offsetHeight + 8) + 'px');
@@ -6995,11 +6995,15 @@ function navScrollTo(id){
 function navActive(){
   var nav = document.getElementById('secNav');
   if (!nav) return;
-  var cur = '';
+  // 取「视口线以上、离它最近的区块」当前高亮——不能用数组顺序挑最后一个：
+  // 数组顺序一旦和文档顺序不一致（区块挪过位置），上面两个区块同时越线时
+  // 就会点亮错的那一个（实测：滚到急涨急跌，板块地图却亮着）。
+  var cur = '', best = -Infinity;
   for (var i = 0; i < NAV_SECS.length; i++){
     var el = document.getElementById(NAV_SECS[i]);
     if (!el || !el.offsetHeight) continue;      // 隐藏的（如隔夜卡还没数据）跳过
-    if (el.getBoundingClientRect().top <= 120) cur = NAV_SECS[i];
+    var t = el.getBoundingClientRect().top;
+    if (t <= 120 && t > best){ best = t; cur = NAV_SECS[i]; }
   }
   var as = nav.querySelectorAll('a');
   for (i = 0; i < as.length; i++) as[i].classList.toggle('on', as[i].getAttribute('data-t') === cur);
