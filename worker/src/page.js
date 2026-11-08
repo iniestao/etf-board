@@ -1419,21 +1419,28 @@ function loadSecBase(){
    60 秒边缘缓存，盘中不必秒级——这个数是「市场今天什么状态」，
    不是「这一秒发生了什么」，一分钟的滞后不影响判断。
    失败就保持 null：卡片退回基线最后一天，标日期，不留空白。 */
-var MKT_REQ = false;
+var MKT_REQ = false, MKT_RETRY = null;
 
 function loadMktSnap(){
   if (MKT_REQ) return;
   MKT_REQ = true;
   return fetch('/api/mkt').then(function(r){ return r.json(); }).then(function(j){
-    if (j && j.ok && j.c > 0 && j.n >= 100){
-      MKT_NOW = j;
-      // 接口顺带带回 250 天历史（Actions 每天重写）。内联那份是部署时固化的，
-      // 不覆盖的话，一个月不发布散点云就停在原地，而「今天」每天往里走。
-      if (j.hist && j.hist.d && j.hist.d.length >= 60) MKT_HIST = j.hist;
-      if (SECS.length) renderSectors();   // 盘子已经画出来了，补上今天这个点
-    }
+    if (!(j && j.ok && j.c > 0 && j.n >= 100)) throw new Error('empty');
+    MKT_NOW = j;
+    // 接口顺带带回 250 天历史（Actions 每天重写）。内联那份是部署时固化的，
+    // 不覆盖的话，一个月不发布散点云就停在原地，而「今天」每天往里走。
+    if (j.hist && j.hist.d && j.hist.d.length >= 60) MKT_HIST = j.hist;
+    if (SECS.length) renderSectors();   // 盘子已经画出来了，补上今天这个点
     return MKT_NOW;
-  }).catch(function(){ MKT_REQ = false; return null; });
+  }).catch(function(){
+    // 失败时卡片显示的是基线最后一天（日期标签会写明是哪天），不会有错数。
+    // 但用户多半是刚打开页面，20 秒后再试一次比让他手动刷新强。
+    MKT_REQ = false;
+    if (!MKT_RETRY){
+      MKT_RETRY = setTimeout(function(){ MKT_RETRY = null; loadMktSnap(); }, 20000);
+    }
+    return null;
+  });
 }
 
 /* ---------- 板块占比走势 ----------

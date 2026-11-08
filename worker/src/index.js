@@ -330,6 +330,7 @@ async function serveAll(env, ctx) {
    （A股和港股都有「医药」「消费」，只用板块名会互相覆盖）。 */
 
 const SEC_DAILY_KEY = 'sec-daily-v6';
+const MKT_LAST_KEY = 'mkt-last';   // /api/mkt 最近一次成功的结果，上游挂掉时兜底
 const SEC_DAILY_KEEP = 12;
 
 /**
@@ -807,8 +808,29 @@ async function serveMkt(env, ctx) {
     if (cache && ctx && typeof ctx.waitUntil === 'function') {
       ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
     }
+    // 留一份最近成功的快照。东财的板块接口限流比 ETF 行情狠，连续翻几页就可能被断，
+    // 失败时退回「几小时前的那份」，比让卡片掉回基线（可能是好几天前）强得多。
+    if (env && env.WATCH) {
+      const keep = { ...out };
+      delete keep.hist;
+      const put = env.WATCH.put(MKT_LAST_KEY, JSON.stringify(keep), { expirationTtl: 259200 });
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(Promise.resolve(put).catch(() => {}));
+      else await put.catch(() => {});
+    }
     return res;
   } catch (e) {
+    // 上游挂了：先看有没有最近成功的快照，没有才报错
+    try {
+      if (env && env.WATCH) {
+        const raw = await env.WATCH.get(MKT_LAST_KEY);
+        if (raw) {
+          const saved = JSON.parse(raw);
+          if (saved && saved.c > 0) {
+            return json({ ...saved, ok: true, stale: true, src: 'kv' }, 60);
+          }
+        }
+      }
+    } catch (e2) { /* KV 也读不到，往下报错 */ }
     return json({ ok: false, error: String((e && e.message) || e) });
   }
 }
