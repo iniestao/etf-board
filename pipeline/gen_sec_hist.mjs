@@ -17,11 +17,14 @@
  * 用法：node pipeline/gen_sec_hist.mjs [data/etf.db]
  */
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { IDX_GROUPS } from '../worker/src/idx_data.js';
 
 const DAYS = 250;
-const DB = process.argv[2] || 'data/etf.db';
+const ARG = process.argv[2];
+const DB = ARG || 'data/etf.db';
+const HIST_DIR = 'dist/hist';
 const OUT = 'worker/src/sec_hist.js';
 
 // ---- 1. 从 page.js 取分类逻辑（只取这三段，取不到就停）----
@@ -42,21 +45,80 @@ const code =
 const secClass = new Function(code + '\nreturn secClass;')();
 
 // ---- 2. 读日线，按「指数→日期→成交额」压实 ----
-const db = new DatabaseSync(DB);
-const dates = db.prepare(
-  'SELECT DISTINCT date FROM etf_daily ORDER BY date DESC LIMIT ?'
-).all(DAYS).map((r) => r.date).reverse();
-if (dates.length < 60) throw new Error('日线不足 60 天，先跑 data/import_etf.mjs');
-
-const rows = db.prepare(
-  'SELECT code, date, amount, close, adj_factor FROM etf_daily WHERE date >= ?'
-).all(dates[0]);
-const byCode = new Map();
-for (const r of rows) {
-  let m = byCode.get(r.code);
-  if (!m) byCode.set(r.code, (m = new Map()));
-  m.set(r.date, { a: r.amount || 0, c: (r.close || 0) * (r.adj_factor || 1) });
+// 数据源优先用 dist/hist 的 ETH1 二进制：那是 Actions 每天收盘后现生成的、
+// 页面 K 线用的同一份文件，永远是最新交易日。本地 data/etf.db 是 gitignored 的，
+// 只有手动跑 import_etf.mjs 才会往前走一步——拿它当唯一来源，基线就会卡在
+// 「上次手动跑的那天」，而页面上今天的点是实时的，两者越差越远。
+// 显式传 .db 参数仍走老路（离线回溯、对账时用）。
+function parseEth1(buf) {
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  const dv = new DataView(ab);
+  if (dv.getUint32(0, false) !== 0x45544831) throw new Error('不是 ETH1 格式');
+  const hl = dv.getUint32(4, true);
+  const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(ab, 8, hl)));
+  const n = hdr.n, base = 8 + hl, cols = hdr.cols;
+  const view = (i, T) => {
+    const o = base + i * 4 * n;
+    return o % 4 === 0 ? new T(ab, o, n) : new T(ab.slice(o, o + 4 * n), 0, n);
+  };
+  const at = (name) => {
+    const i = cols.indexOf(name);
+    if (i < 0) throw new Error(`hist 缺列 ${name}（${hdr.code}）`);
+    return view(i + 1, Float32Array);
+  };
+  return { n, dates: view(0, Int32Array), close: at('close'), amount: at('amount'), adj: at('adj_ratio') };
 }
+
+const fmtD = (d) => {
+  const s = String(d);
+  return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+};
+
+function loadHist(dir) {
+  const parsed = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.bin')) continue;
+    parsed.push([f.slice(0, -4), parseEth1(readFileSync(join(dir, f)))]);
+  }
+  const dset = new Set();
+  for (const [, p] of parsed) for (let i = 0; i < p.n; i++) dset.add(p.dates[i]);
+  const dates = [...dset].sort((a, b) => a - b).slice(-DAYS).map(fmtD);
+  const keep = new Set(dates);
+  const byCode = new Map();
+  for (const [code, p] of parsed) {
+    const m = new Map();
+    for (let i = 0; i < p.n; i++) {
+      const ds = fmtD(p.dates[i]);
+      if (!keep.has(ds)) continue;
+      m.set(ds, { a: p.amount[i] || 0, c: (p.close[i] || 0) * (p.adj[i] || 1) });
+    }
+    byCode.set(code, m);
+  }
+  return { dates, byCode, src: `${dir}（${parsed.length} 只，${dates[0]} → ${dates[dates.length - 1]}）` };
+}
+
+function loadDb(file) {
+  const db = new DatabaseSync(file);
+  const dates = db.prepare(
+    'SELECT DISTINCT date FROM etf_daily ORDER BY date DESC LIMIT ?'
+  ).all(DAYS).map((r) => r.date).reverse();
+  const rows = db.prepare(
+    'SELECT code, date, amount, close, adj_factor FROM etf_daily WHERE date >= ?'
+  ).all(dates[0]);
+  const byCode = new Map();
+  for (const r of rows) {
+    let m = byCode.get(r.code);
+    if (!m) byCode.set(r.code, (m = new Map()));
+    m.set(r.date, { a: r.amount || 0, c: (r.close || 0) * (r.adj_factor || 1) });
+  }
+  db.close();
+  return { dates, byCode, src: `${file}（${dates[0]} → ${dates[dates.length - 1]}）` };
+}
+
+const useHist = !ARG && existsSync(HIST_DIR);
+const SRC = useHist ? loadHist(HIST_DIR) : loadDb(DB);
+const { dates, byCode } = SRC;
+if (dates.length < 60) throw new Error('日线不足 60 天，先跑 data/import_etf.mjs');
 const amtOf = (code, d) => byCode.get(code)?.get(d)?.a || 0;
 
 // 每个指数每天取组内成交额最大的那只。ETF 停牌（amount=0）自然被跳过。

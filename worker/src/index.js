@@ -373,7 +373,13 @@ async function saveSecDaily(request, env) {
     if (!Array.isArray(days)) days = [];
     // 同一天多次 POST 取最后一次：收盘后成交额只会增不会减，后到的更完整
     days = days.filter((x) => x && x.d !== d);
-    days.push({ d, t: String((body && body.t) || '').slice(0, 5), s: clean });
+    const rec = { d, t: String((body && body.t) || '').slice(0, 5), s: clean };
+    // 集中度/宽度（千分位）是可选的：老客户端不传，也就没有这两个字段，
+    // 前端读到缺字段的日档会跳过——四象限的散点云少一个点，不影响别的。
+    const cv = Math.round(+body.c), bv = Math.round(+body.b);
+    if (isFinite(cv) && cv > 0 && cv <= 1000) rec.c = cv;
+    if (isFinite(bv) && bv >= 0 && bv <= 1000) rec.b = bv;
+    days.push(rec);
     days.sort((a, b) => (a.d < b.d ? -1 : 1));
     if (days.length > SEC_DAILY_KEEP) days = days.slice(-SEC_DAILY_KEEP);
     await env.WATCH.put(SEC_DAILY_KEY, JSON.stringify(days));

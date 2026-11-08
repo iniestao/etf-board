@@ -1515,29 +1515,54 @@ var QUAD_INFO = {
   lw:{ n:'轮动扩散', c:'#2563eb' },
   ll:{ n:'涣散无主线', c:'#5b6472' }
 };
-function secQuadCard(core, conc, top3){
-  var H = SEC_HIST;
-  if (!H || !H.c || H.c.length < 40 || !H.b || H.b.length < 40) return '';
-  if (!core || core.length < 5 || !(conc > 0)) return '';
-
-  // 宽度按指数数，不按格数：18 个格只有 19 个离散值，散点会排成一条条竖线。
-  var i, j, nIx = 0, nUp = 0;
-  for (i=0;i<core.length;i++){
-    var ixA = core[i].ix;
-    for (j=0;j<ixA.length;j++){
-      if (!(ixA[j].amt > 0)) continue;
+/* 今天的集中度与宽度。卡片和「收盘记日档」都用它——两处口径必须是同一个函数，
+   否则散点云的尾巴和今天的点会飘在两条口径上，图上看着像数据错乱。
+   宽度按指数数、不按格数：18 个格只有 19 个离散值，散点会排成一条条竖线。 */
+function secQuadOf(core, coreAmt){
+  var n = core ? core.length : 0, i, j, nIx = 0, nUp = 0;
+  for (i=0;i<n;i++){
+    var a = core[i].ix;
+    for (j=0;j<a.length;j++){
+      if (!(a[j].amt > 0)) continue;
       nIx++;
-      if (ixA[j].chg > 0) nUp++;
+      if (a[j].chg > 0) nUp++;
     }
   }
-  if (nIx < 40) return '';
-  var brd = nUp / nIx * 100;
+  var byAmt = (core || []).slice().sort(function(x,y){ return y.amt - x.amt; });
+  var s3 = 0;
+  for (i=0;i<3 && i<byAmt.length;i++) s3 += byAmt[i].amt;
+  return {
+    conc: coreAmt > 0 ? s3 / coreAmt * 100 : 0,
+    brd: nIx ? nUp / nIx * 100 : 0,
+    nUp: nUp, nIx: nIx,
+    top3: byAmt.slice(0, 3).map(function(o){ return o.k; })
+  };
+}
+
+function secQuadCard(core, coreAmt){
+  var H = SEC_HIST;
+  if (!H || !H.c || H.c.length < 40 || !H.b || H.b.length < 40) return '';
+  if (!core || core.length < 5) return '';
+
+  var Q0 = secQuadOf(core, coreAmt);
+  var nIx = Q0.nIx, nUp = Q0.nUp, conc = Q0.conc, brd = Q0.brd;
+  if (nIx < 40 || !(conc > 0)) return '';
 
   // 历史序列（千分位 → 百分数）。c 与 b 同长，缺一天就整体不用。
-  var C = [], B = [];
+  var i, C = [], B = [];
   for (i=0;i<H.c.length;i++){
     var cv = H.c[i] / 10, bv = (H.b[i] || 0) / 10;
     if (cv > 0 && H.b[i] > 0){ C.push(cv); B.push(bv); }
+  }
+  // 基线之后的尾巴用日档补：比基线新、且带了 c/b 的日档才用（这两个字段是后加的，
+  // 老记录没有）。不补的话，基线一旦停止更新，散点云就停在原地，
+  // 「今天」越走越远，看起来像异常值。
+  var recs = SEC_BASE || [], lastD = H.d[H.d.length - 1];
+  for (i=0;i<recs.length;i++){
+    var r = recs[i];
+    if (!r || !r.d || r.d <= lastD) continue;
+    if (!(r.c > 0) || !(r.b > 0)) continue;
+    C.push(r.c / 10); B.push(r.b / 10);
   }
   if (C.length < 40) return '';
 
@@ -1610,7 +1635,7 @@ function secQuadCard(core, conc, top3){
     + '</svg>';
 
   var c3 = secConcPct(conc), b3 = secBrdPct(brd);
-  var names = top3.join('、'), upTxt = nUp + '/' + nIx;
+  var names = Q0.top3.join('、'), upTxt = nUp + '/' + nIx;
   var desc;
   if (hiC && !wide) desc = '钱压在 ' + names + ' 上（TOP3 占 ' + conc.toFixed(1) + '%），'
     + nIx + ' 个指数只有 ' + nUp + ' 个在涨——赚了指数不赚面。';
@@ -1803,7 +1828,9 @@ function maybeSaveSecDaily(){
 
   var recs = SEC_BASE || [];
   var last = recs.length ? recs[recs.length-1] : null;
-  if (last && last.d === d) return;                 // 这天已经记过
+  // 同一天已经记过、而且带上了集中度/宽度就停。只判日期的话，早期写的那些
+  // 没有 c/b 的旧记录会永远补不上，四象限的云就少一截。
+  if (last && last.d === d && last.c > 0 && last.b > 0) return;
   if (last && last.s){
     var keys = 0, same = 0;
     for (var k in s){
@@ -1816,10 +1843,29 @@ function maybeSaveSecDaily(){
   }
   SEC_SAVE_TS = Date.now();
   var pad = function(v){ return (v < 10 ? '0' : '') + v; };
+  // 顺带记下当天的集中度和宽度。四象限的散点云靠这两列往后接：只存成交额的话，
+  // 基线一停止更新，云就停在原地，而「今天」每天往里走，看起来像异常值。
+  var qNow = null;
+  for (var ga=0;ga<SEC_GROUPS_OUT.length;ga++){
+    if (SEC_GROUPS_OUT[ga].code !== 'a') continue;
+    var cA = [];
+    for (var ca=0;ca<SEC_GROUPS_OUT[ga].cells.length;ca++){
+      if (!SEC_GROUPS_OUT[ga].cells[ca].th) cA.push(SEC_GROUPS_OUT[ga].cells[ca]);
+    }
+    if (cA.length) qNow = secQuadOf(cA, SEC_GROUPS_OUT[ga].core);
+  }
+  var body = { d: d, t: pad(hh) + ':' + pad(mm), s: s };
+  if (qNow && qNow.nIx >= 40){
+    // 千分位整数（58.7% → 587），和 SEC_HIST 里 c / b 的单位一致。
+    // 写成 ×1000 会得到 58694——服务端的上限 1000 会把它当脏数据丢掉，
+    // 前端这边看起来就是「写了但没存」。
+    body.c = Math.round(qNow.conc * 10);
+    body.b = Math.round(qNow.brd * 10);
+  }
   fetch('/api/secdaily', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ d: d, t: pad(hh) + ':' + pad(mm), s: s })
+    body: JSON.stringify(body)
   }).then(function(r){ return r.json(); }).then(function(j){
     if (j && j.ok) loadSecBase();
   }).catch(function(){});
@@ -2041,16 +2087,6 @@ function renderSectors(){
     for (var m2=0;m2<core.length;m2++){ mxAmt = Math.max(mxAmt, core[m2].amt); if (core[m2].ret > 0) nUp++; }
     var top = core[0], bot = core[core.length-1];
     var spread = top.ret - bot.ret;
-    // 集中度只算 A 股：港股 7 格、跨境 8 地区，TOP3 占比天然很高，报了没有区分度。
-    // 它是「抱团还是扩散」的读数——宽度看涨跌家数，集中度看钱压在哪。
-    var t3 = null, t3n = null, byAmt = null;
-    if (G2.code === 'a' && G2.core > 0 && core.length >= 5){
-      byAmt = core.slice().sort(function(a,b){ return b.amt - a.amt; });
-      var s3 = 0;
-      for (var m5=0;m5<3 && m5<byAmt.length;m5++) s3 += byAmt[m5].amt;
-      t3 = s3 / G2.core * 100;
-      t3n = byAmt.slice(0, 3).map(function(o){ return o.k; });
-    }
     // 组内资金占比上升最多的那一格（不到 0.5pt 不报，噪声）
     var bk = null, bv = 0;
     if (sdel){
@@ -2072,7 +2108,7 @@ function renderSectors(){
       + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
       + '<span class="sgm t3">' + nUp + ' 涨 ' + (core.length - nUp) + ' 跌</span>'
       + '</div>'
-      + (G2.code === 'a' && t3 != null ? secQuadCard(core, t3, t3n) : '')
+      + (G2.code === 'a' ? secQuadCard(core, G2.core) : '')
       + '<div class="smgrid">'
       + cellHtml(G2, core, mxAmt, sdel)
       + (ths.length
