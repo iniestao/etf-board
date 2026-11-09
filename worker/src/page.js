@@ -162,16 +162,30 @@ background:var(--bg3)}
 .futgrp td{background:var(--bg3);font-size:11px;color:var(--txt2);font-weight:600;
 padding:5px 9px!important;border-bottom:1px solid var(--line)}
 .futgrp b{font-family:var(--mono);font-weight:600}
+.futgh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;min-width:0}
+.futgh>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fq{font-size:10px;padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px}
 .tbl .nm + .code{margin-left:6px}
 /* 期指的表格列多（合约/价格/涨跌/基差/基差率/年化/持仓），375px 一定放不下。
    这里放开横滑而不是砍列：砍掉哪一列都会有人要，「剩 11 天」和基差率是连着看的。 */
 @media(max-width:900px){
-  #futSec .tbl{overflow-x:auto}
+  /* grid 项默认 min-width:auto，会被里面 400px 的表格反向撑破卡片：
+     卡片 418px 塞进 354px 的列，结果是整页能横向平移 76px（2026-11-10 实测
+     scrollX=76）。必须先把这个 min-width 放开，overflow-x:auto 才真的生效。 */
+  #futSec .futgrid>div{min-width:0}
+  #futSec .tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
   /* 横向滚动容器里的表头 sticky 会跟内容叠出重影（表头粘在左上角，行从下面穿过去），
      这几张表统共十几行，不需要吸顶 */
   #futSec .tbl thead th{position:static}
   #futSec table{min-width:400px}
+}
+/* 390 屏一行要塞 5 列，400px 的保底会让「基差率」留在屏幕外要滑一下才看得到，
+   而这列恰恰是这张表最该被一眼看到的。压到 11px + 3px 内边距后 354px 正好放下 */
+@media(max-width:560px){
+  #futSec table{min-width:0}
+  #futSec .tbl th,#futSec .tbl td{padding-left:3px;padding-right:3px;font-size:11px}
+  #futSec .tbl .nm{font-size:11px}
+  #futSec .tbl .code{font-size:10px}
 }
 .futfoot{margin-top:7px;font-size:10.5px;color:var(--txt3);line-height:1.7}
 .quad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
@@ -7374,7 +7388,6 @@ function renderFutBasis(){
   // 昨收持仓还没生成时（收盘日档还没跑），这一列只会是一排「—」，不如整列撤掉
   var hasOi = false;
   for (var z = 0; z < list.length; z++) if (list[z].oiD != null){ hasOi = true; break; }
-  var span = hasOi ? 7 : 6;
 
   var h = '<table><thead><tr><th class="l">合约</th><th>价格</th><th>涨跌</th>'
     + '<th title="期货 − 现货，点数。负数=贴水">基差</th>'
@@ -7387,8 +7400,15 @@ function renderFutBasis(){
     var p = order[k], rows = byP[p];
     if (!rows || !rows.length) continue;
     var sp = (FUT.spot || {})[rows[0].u];
-    h += '<tr class="futgrp"><td class="l" colspan="4">' + p + (sp ? ' · ' + esc(sp.n || '') : '') + '</td>'
-      + '<td colspan="' + (span - 4) + '" class="l">' + (sp ? fNum(sp.p, 2) + ' <b class="' + fSign(sp.chg) + '">' + fPct(sp.chg, 2) + '</b>' : '现货缺失') + '</td></tr>';
+    // 分组行整行只放一个格子，内部 flex 分开左右。
+    // 之前拆成「colspan=4 + colspan=span-4」两格，右侧现货点位那串宽度会被摊到
+    // 最后一列上（手机断点下基差率列被撑到 101px），表比容器宽 18px、最后一列被切掉；
+    // 一格跨完所有列（99 会被浏览器按实际列数收拢），列宽就只由数据行决定。
+    h += '<tr class="futgrp"><td colspan="99" class="l"><div class="futgh"><span>' + p
+      + (sp ? ' · ' + esc(sp.n || '') : '') + '</span><span>'
+      + (sp ? fNum(sp.p, 2) + ' <b class="' + fSign(sp.chg) + '">' + fPct(sp.chg, 2) + '</b>' : '现货缺失')
+      + '</span></div></td></tr>';
+
     for (var j = 0; j < rows.length; j++){
       var r = rows[j];
       var q = FQ[r.q] || null;
