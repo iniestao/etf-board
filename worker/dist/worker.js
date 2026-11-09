@@ -870,27 +870,44 @@ function isOvSid(sid) {
 
 async function serveOvMin(sid, env, ctx) {
   const cache = await getCache();
-  const key = new Request('https://etf.internal/ovmin/' + sid, { method: 'GET' });
+  // v2：响应多了 pre（昨收），旧缓存里没有，换个 key 免得前端拿到老格式
+  const key = new Request('https://etf.internal/ovmin/v2/' + sid, { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
       if (hit) return hit;
     } catch (e) { /* 降级直连 */ }
   }
-  const r = await fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
-    + '&fields1=f1,f2&fields2=f51,f53&iscr=0&ndays=1', {
-    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-    signal: AbortSignal.timeout(9000),
-  });
-  if (!r.ok) return json({ ok: false, error: '分时上游 HTTP ' + r.status });
-  const j = await r.json();
+  /* 上游偶发直接 RST（沙箱实测一分钟内可能连着失败两次，隔几秒又正常）。
+     一次就放弃的话，点开弹窗看到的是「读取失败」，比慢 400ms 差得多。
+     失败也返回 JSON：抛出去会被外层兜成 500 纯文本，前端 JSON.parse 报
+     「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。 */
+  let j;
+  try {
+    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', {
+      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+      signal: AbortSignal.timeout(8000),
+    }).then((r) => {
+      if (!r.ok) throw new Error('分时上游 HTTP ' + r.status);
+      return r.json();
+    }));
+  } catch (e) {
+    return json({ ok: false, error: '分时上游取不到：' + String((e && e.message) || e) });
+  }
   const trends = j && j.data && j.data.trends;
   if (!trends || !trends.length) return json({ ok: false, error: '没有分时数据' });
   const pts = trends.map((s) => {
     const a = s.split(',');
     return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
   });
-  const res = json({ ok: true, sid, pts, ts: Date.now() }, 120);
+  /* 昨收一起带回去：前端左轴要画涨跌幅刻度，基准必须是昨收，
+     不能拿本时段第一个点凑——那画出来的「+0.00%」不是涨跌，
+     和卡片上的 +2.10% 对不上，看图的人反而更糊涂。
+     期货只有 preSettlement（昨结），指数/个股才有 preClose，依次退。 */
+  const d = j.data || {};
+  const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
+  const res = json({ ok: true, sid, pre, pts, ts: Date.now() }, 120);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
@@ -3574,6 +3591,9 @@ align-items:center;justify-content:center;padding:18px}
 #ovBody svg{display:block;width:100%;height:auto}
 .ovmeta{display:flex;gap:8px 16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
 margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
+#ovBody .ovretry{margin-top:2px;font-size:11.5px;padding:3px 11px;border:1px solid var(--line);
+border-radius:6px;background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:inherit}
+#ovBody .ovretry:hover{border-color:var(--txt3);color:var(--txt)}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 8px 28px rgba(23,32,54,.16);overflow:hidden}
@@ -9425,9 +9445,11 @@ var ON_TRACKS = [
 var ON_HEAD = ['NDX', 'INX', 'DJI'];     // 美股三大指数，摆在前排不当赛道
 var ON_FUT_ORDER = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
 /* 点条目看分时：东财 trends2 的 secid。美股三大指数在腾讯叫 usNDX/usINX/usDJI，
-   到东财那边是另一套代码（纳指综合 100.NDX、标普 100.SPX、道指 100.DJIA），
-   形状一致、名字有差（综合 vs 100），图上以数据自身为准。 */
-var ON_SECID = { NDX:'100.NDX', INX:'100.SPX', DJI:'100.DJIA',
+   到东财那边是另一套代码：标普 100.SPX、道指 100.DJIA（报价与腾讯逐个对得上），
+   但纳指要的是 100.NDX100——100.NDX 是「纳斯达克综合」（24579），不是
+   纳斯达克100（26990），两者差 10%，点「纳斯达克100」弹出综合指的走势，
+   图上的涨跌幅也就跟着对不上卡片。 */
+var ON_SECID = { NDX:'100.NDX100', INX:'100.SPX', DJI:'100.DJIA',
   'hf_NQ':'103.NQ00Y', 'hf_CHA50CFD':'104.CN00Y', 'hf_GC':'101.GC00Y', 'hf_CL':'102.CL00Y' };
 
 function onCls(v){ return v > 0.05 ? 'up' : (v < -0.05 ? 'down' : ''); }
@@ -9440,8 +9462,8 @@ function ovChip(n, chg, sid){
 }
 
 /* 分时弹窗：东财 trends2 最近一个完整时段。美股/期货拿到的是昨晚那场，
-   亚太是今天。y 轴全自适应 + 首点虚线做基准——基准用开盘价而不是昨收，
-   因为这条线回答的是「这一场里怎么走」，不是「今天涨多少」（涨跌幅已在卡上）。 */
+   亚太是今天。图上有两套纵轴：左边涨跌幅（0 轴＝昨收，虚线），右边价格。
+   只标价格的话，「涨了 2.1%」在图上占多少、是急拉还是缓抬，全得自己心算。 */
 function ovOpen(sid, nm){
   var mask = document.getElementById('ovMask');
   var body = document.getElementById('ovBody');
@@ -9452,18 +9474,27 @@ function ovOpen(sid, nm){
   fetch('/api/ovmin?sid=' + encodeURIComponent(sid)).then(function(r){ return r.json(); })
     .then(function(j){
       if (!j.ok) throw new Error(j.error || '无数据');
-      body.innerHTML = ovChartSvg(j.pts);
+      body.innerHTML = ovChartSvg(j.pts, j.pre);
     })
     .catch(function(e){
-      body.innerHTML = '<div class="iotip">分时读取失败：' + esc(e.message || e) + '</div>';
+      /* 上游偶发空回，给一个能点的重试（按钮带 data-ovsid，走的是同一个
+         点击委托，等于把这次打开重做一遍） */
+      body.innerHTML = '<div class="iotip">分时读取失败：' + esc(e.message || e) + '</div>'
+        + '<button class="ovretry" data-ovsid="' + esc(sid) + '" data-ovnm="' + esc(nm) + '">重试</button>';
     });
 }
 function ovClose(){ document.getElementById('ovMask').classList.remove('on'); }
 document.getElementById('ovClose').onclick = ovClose;
 document.getElementById('ovMask').onclick = function(e){ if (e.target === this) ovClose(); };
 
-function ovChartSvg(pts){
-  var W = 680, H = 230, ml = 10, mr = 64, mt = 12, mb = 20;
+function ovChartSvg(pts, pre){
+  /* viewBox 宽度跟着窗口走。svg 是 width:100% 缩放的，固定 680 在手机上
+     按 0.48 缩，10px 的字到屏上只剩 5px，纵轴加了也读不出来。让「画布宽
+     ≈ 容器宽」，屏幕上是 1:1，写多大就是多大。 */
+  var vw = Math.max(320, Math.min(720, (window.innerWidth || 900) - 76));
+  var W = vw, H = vw < 480 ? 200 : 236;
+  var ml = vw < 480 ? 50 : 56, mr = vw < 480 ? 56 : 62, mt = 12, mb = 20;
+  var plotW = W - ml - mr, plotH = H - mt - mb;
   var step = Math.max(1, Math.ceil(pts.length / 240));
   var s = [], i;
   for (i = 0; i < pts.length; i += step) s.push(pts[i]);
@@ -9471,36 +9502,81 @@ function ovChartSvg(pts){
 
   var mn = s[0][1], mx = s[0][1];
   for (i = 1; i < s.length; i++){ if (s[i][1] < mn) mn = s[i][1]; if (s[i][1] > mx) mx = s[i][1]; }
-  var pad = (mx - mn) * 0.1 || mx * 0.002;
-  var lo = mn - pad, hi = mx + pad;
-  var xOf = function(k){ return ml + k / (s.length - 1) * (W - ml - mr); };
-  var yOf = function(v){ return mt + (1 - (v - lo) / (hi - lo)) * (H - mt - mb); };
 
-  var up = s[s.length - 1][1] >= s[0][1];
+  /* 基准：优先用上游昨收，和卡片上那个涨跌幅同源；拿不到才退回本时段开盘
+     并在 meta 里说明。基准用开盘价的话，左轴那个「0.00%」不是涨跌，
+     和卡片上的 +2.10% 对不起来，加了刻度反而更容易看错。 */
+  var usePre = pre > 0;
+  var base = usePre ? pre : s[0][1];
+  if (mn > base) mn = base;          // 全程在基准一侧时，把 0 轴留在图内
+  if (mx < base) mx = base;
+
+  /* 上下各自取整到整档（0.1/0.2/0.5/1/2/5%），左轴才是 +1.25% 这种能读的数。
+     不做上下对称：黄金那种单边行情，对称会让下半张图全是空白，线被压在上沿。
+     两侧共用一个档位宽，刻度仍是同一套整数百分比，只是档数上下各算各的。 */
+  var upPct = Math.max(0, (mx / base - 1) * 100);
+  var dnPct = Math.max(0, (1 - mn / base) * 100);
+  var spanPct = Math.max(upPct, dnPct) * 1.15;
+  if (!(spanPct > 0)) spanPct = 0.2;
+  var sp = spanPct > 8 ? 5 : spanPct > 4 ? 2 : spanPct > 2 ? 1
+         : spanPct > 1 ? 0.5 : spanPct > 0.4 ? 0.2 : 0.1;
+  var kUp = Math.max(1, Math.min(4, Math.ceil(upPct * 1.15 / sp)));
+  var kDn = Math.max(1, Math.min(4, Math.ceil(dnPct * 1.15 / sp)));
+  var hi = base * (1 + kUp * sp / 100), lo = base * (1 - kDn * sp / 100);
+
+  var xOf = function(k){ return ml + k / (s.length - 1) * plotW; };
+  var yOf = function(v){ return mt + (1 - (v - lo) / (hi - lo)) * plotH; };
+  var fmt = function(v){ return v >= 1000 ? v.toFixed(0) : (v >= 10 ? v.toFixed(2) : v.toFixed(4)); };
+  var last = s[s.length - 1][1];
+  var up = last >= base;
   var col = up ? 'var(--up)' : 'var(--down)';
+  var chg = (last / base - 1) * 100;
+  var yLast = Math.max(mt + 8, Math.min(mt + plotH - 8, yOf(last)));
+
   var d = '';
   for (i = 0; i < s.length; i++) d += (i ? 'L' : 'M') + xOf(i).toFixed(1) + ' ' + yOf(s[i][1]).toFixed(1);
-  var area = d + 'L' + xOf(s.length - 1).toFixed(1) + ' ' + (H - mb) + 'L' + ml + ' ' + (H - mb) + 'Z';
-  var baseY = yOf(s[0][1]).toFixed(1);
-  var fmt = function(v){ return v >= 1000 ? v.toFixed(0) : (v >= 10 ? v.toFixed(2) : v.toFixed(4)); };
-  var chg = (s[s.length-1][1] / s[0][1] - 1) * 100;
+  var area = d + 'L' + xOf(s.length - 1).toFixed(1) + ' ' + (mt + plotH) + 'L' + ml + ' ' + (mt + plotH) + 'Z';
 
+  /* 网格 + 左轴涨跌幅 + 右轴价格。右侧先占住「最新价」牌的位置，
+     刻度标签和它挨得太近就跳过——宁可少标一行，也别糊成一团。 */
+  var g = '', usedY = [yLast], j, q, clash;
+  for (j = -kDn; j <= kUp; j++){
+    var pv = base * (1 + j * sp / 100), yy = yOf(pv);
+    if (j !== 0){
+      g += '<line x1="' + ml + '" y1="' + yy.toFixed(1) + '" x2="' + (ml + plotW)
+         + '" y2="' + yy.toFixed(1) + '" stroke="var(--line)" stroke-width="0.8"/>';
+    }
+    g += '<text x="' + (ml - 5) + '" y="' + (yy + 3.5).toFixed(1) + '" font-size="10"'
+       + ' text-anchor="end" fill="' + (j > 0 ? 'var(--up)' : j < 0 ? 'var(--down)' : 'var(--txt3)')
+       + '" opacity="0.9">' + (j > 0 ? '+' : '') + (j * sp).toFixed(2) + '%</text>';
+    clash = false;
+    for (q = 0; q < usedY.length; q++) if (Math.abs(usedY[q] - yy) < 11) clash = true;
+    if (!clash){
+      usedY.push(yy);
+      g += '<text x="' + (ml + plotW + 5) + '" y="' + (yy + 3.5).toFixed(1) + '" font-size="9.5"'
+         + ' fill="var(--txt3)">' + fmt(pv) + '</text>';
+    }
+  }
+
+  var badgeW = 50;
   var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg">'
-    + '<line x1="' + ml + '" y1="' + baseY + '" x2="' + (W - mr) + '" y2="' + baseY
-    + '" stroke="var(--txt3)" stroke-dasharray="3 3" stroke-width="0.8"/>'
+    + g
+    + '<line x1="' + ml + '" y1="' + yOf(base).toFixed(1) + '" x2="' + (ml + plotW)
+    + '" y2="' + yOf(base).toFixed(1) + '" stroke="var(--txt3)" stroke-dasharray="3 3" stroke-width="0.9"/>'
     + '<path d="' + area + '" fill="' + col + '" opacity="0.08"/>'
     + '<path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="1.6"/>'
-    + '<circle cx="' + xOf(s.length - 1).toFixed(1) + '" cy="' + yOf(s[s.length - 1][1]).toFixed(1)
-    + '" r="2.6" fill="' + col + '"/>'
+    + '<circle cx="' + xOf(s.length - 1).toFixed(1) + '" cy="' + yLast.toFixed(1) + '" r="2.6" fill="' + col + '"/>'
+    + '<rect x="' + (ml + plotW + 2) + '" y="' + (yLast - 7.5).toFixed(1) + '" width="' + badgeW
+    + '" height="15" rx="3" fill="' + col + '"/>'
+    + '<text x="' + (ml + plotW + 2 + badgeW / 2) + '" y="' + (yLast + 3.6).toFixed(1)
+    + '" font-size="10" font-weight="bold" fill="#fff" text-anchor="middle">' + fmt(last) + '</text>'
     + '<text x="' + ml + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)">' + esc(s[0][0]) + '</text>'
-    + '<text x="' + (W - mr) + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + esc(s[s.length - 1][0]) + '</text>'
-    + '<text x="' + (W - mr + 4) + '" y="' + (yOf(mx) + 4).toFixed(1) + '" font-size="10.5" fill="var(--txt2)">' + fmt(mx) + '</text>'
-    + '<text x="' + (W - mr + 4) + '" y="' + (yOf(lo) + 4).toFixed(1) + '" font-size="10.5" fill="var(--txt2)">' + fmt(lo) + '</text>'
-    + '<text x="' + (W - mr + 4) + '" y="' + (yOf(s[s.length - 1][1]) + 4).toFixed(1) + '" font-size="11" font-weight="bold" fill="' + col + '">'
-    + fmt(s[s.length - 1][1]) + '</text>'
+    + '<text x="' + (ml + plotW) + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)" text-anchor="end">'
+    + esc(s[s.length - 1][0]) + '</text>'
     + '</svg>'
-    + '<div class="ovmeta"><span>场内 <b class="' + (up ? 'up' : 'down') + '">' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</b></span>'
-    + '<span>基准＝本时段开盘 ' + fmt(s[0][1]) + '</span>'
+    + '<div class="ovmeta"><span>' + (usePre ? '较昨收 ' : '较本时段开盘 ')
+    + '<b class="' + (up ? 'up' : 'down') + '">' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</b></span>'
+    + '<span>基准（0 轴）＝' + (usePre ? '昨收 ' : '开盘 ') + fmt(base) + '</span>'
     + '<span>' + s.length + ' 个点 · ' + (s.length >= pts.length ? '' : '按 ' + step + ' 抽 1 显示') + '</span></div>';
   return h;
 }

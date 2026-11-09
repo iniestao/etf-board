@@ -429,8 +429,14 @@ async function runContracts(base, pass) {
   r = await rawRequest(base, '/api/ovmin?sid=100.N225', { cookie });
   const ovm = r.json();
   if (ovm && ovm.ok) {
-    ok('/api/ovmin 日经分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）');
+    ok('/api/ovmin 日经分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）· 昨收 ' + ovm.pre);
     if (!ovm.pts || ovm.pts.length < 50) bad('/api/ovmin 日经分时点数过少');
+    // 左轴涨跌幅要靠这个数当 0 轴，缺了就只能退回开盘价，和卡片上的涨跌幅对不上
+    if (!(ovm.pre > 0)) bad('/api/ovmin 没带 pre（昨收），纵轴涨跌幅会退回「本时段开盘」口径');
+    else {
+      const fp = ovm.pts[0][1];
+      if (Math.abs(ovm.pre / fp - 1) > 0.25) bad('/api/ovmin pre 与首点偏离超过 25%，像是拿错了字段');
+    }
   } else bad('/api/ovmin 失败：' + r.text.slice(0, 160));
   // 白名单负例：A 股「个股」仍必须拒绝（指数已放行给亚太行，个股走 K 线面板）
   r = await rawRequest(base, '/api/ovmin?sid=1.600519', { cookie });

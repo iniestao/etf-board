@@ -871,27 +871,44 @@ function isOvSid(sid) {
 
 async function serveOvMin(sid, env, ctx) {
   const cache = await getCache();
-  const key = new Request('https://etf.internal/ovmin/' + sid, { method: 'GET' });
+  // v2：响应多了 pre（昨收），旧缓存里没有，换个 key 免得前端拿到老格式
+  const key = new Request('https://etf.internal/ovmin/v2/' + sid, { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
       if (hit) return hit;
     } catch (e) { /* 降级直连 */ }
   }
-  const r = await fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
-    + '&fields1=f1,f2&fields2=f51,f53&iscr=0&ndays=1', {
-    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-    signal: AbortSignal.timeout(9000),
-  });
-  if (!r.ok) return json({ ok: false, error: '分时上游 HTTP ' + r.status });
-  const j = await r.json();
+  /* 上游偶发直接 RST（沙箱实测一分钟内可能连着失败两次，隔几秒又正常）。
+     一次就放弃的话，点开弹窗看到的是「读取失败」，比慢 400ms 差得多。
+     失败也返回 JSON：抛出去会被外层兜成 500 纯文本，前端 JSON.parse 报
+     「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。 */
+  let j;
+  try {
+    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', {
+      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+      signal: AbortSignal.timeout(8000),
+    }).then((r) => {
+      if (!r.ok) throw new Error('分时上游 HTTP ' + r.status);
+      return r.json();
+    }));
+  } catch (e) {
+    return json({ ok: false, error: '分时上游取不到：' + String((e && e.message) || e) });
+  }
   const trends = j && j.data && j.data.trends;
   if (!trends || !trends.length) return json({ ok: false, error: '没有分时数据' });
   const pts = trends.map((s) => {
     const a = s.split(',');
     return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
   });
-  const res = json({ ok: true, sid, pts, ts: Date.now() }, 120);
+  /* 昨收一起带回去：前端左轴要画涨跌幅刻度，基准必须是昨收，
+     不能拿本时段第一个点凑——那画出来的「+0.00%」不是涨跌，
+     和卡片上的 +2.10% 对不上，看图的人反而更糊涂。
+     期货只有 preSettlement（昨结），指数/个股才有 preClose，依次退。 */
+  const d = j.data || {};
+  const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
+  const res = json({ ok: true, sid, pre, pts, ts: Date.now() }, 120);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
