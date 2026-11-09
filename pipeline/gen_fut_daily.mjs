@@ -282,6 +282,31 @@ function buildDay(rows, spotMap, posObj) {
   return { fut: futRows, opt: optRows, spot: S, pos: posObj };
 }
 
+// ---------------------------------------------------------------- 单日快照
+// Worker 冷启动只读这一小块（~6KB），不必 parse 79KB 历史
+function mkSnap(date, day, posObj, spotMap) {
+  return {
+    ok: true, td: date, ts: Date.now(),
+    spot: Object.fromEntries(Object.entries(spotMap).map(([k, v]) => [k, { p: v }])),
+    fut: day.fut.map((x) => ({ c: x.c, p: x.p, u: FUT_MAP[x.p], px: x.px, chg: x.chg,
+      vol: x.vol, oi: x.oi, oiD: x.oiD, dte: x.dte, basis: x.basis, bp: x.bp, ann: x.ann })),
+    opt: day.opt,
+    pos: posObj,
+  };
+}
+
+async function fetchPosFor(date, ymDir) {
+  const parts = [];
+  for (const p of FUT_PRODS) {
+    try {
+      const px = await fetchText('http://www.cffex.com.cn/sj/ccpm/' + ymDir + '/' + p + '.xml', 2);
+      parts.push(...parsePosXml(px, p, date).rows);
+    } catch (e) { /* 单个品种失败不影响其他 */ }
+    await sleep(120);
+  }
+  return parts.length ? { d: date, rows: parts } : null;
+}
+
 // ---------------------------------------------------------------- 日期
 function shToday() {
   return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
@@ -343,17 +368,7 @@ async function main() {
 
     // 会员持仓只补最近 POS_DAYS 天（dates 是升序，所以看的是「离末尾多远」）
     let posObj = null;
-    if (dates.length - 1 - dates.indexOf(date) < POS_DAYS) {
-      const parts = [];
-      for (const p of FUT_PRODS) {
-        try {
-          const px = await fetchText('http://www.cffex.com.cn/sj/ccpm/' + ymDir + '/' + p + '.xml', 2);
-          parts.push(...parsePosXml(px, p, date).rows);
-        } catch (e) { /* 单个品种失败不影响其他 */ }
-        await sleep(120);
-      }
-      if (parts.length) posObj = { d: date, rows: parts };
-    }
+    if (dates.length - 1 - dates.indexOf(date) < POS_DAYS) posObj = await fetchPosFor(date, ymDir);
 
     const spotMap = {};
     for (const code of Object.keys(SPOT_SECID)) {
@@ -409,17 +424,8 @@ async function main() {
     }
     hist.d.push(date);
 
-    // 最新那份快照单独存：Worker 冷启动时只读 15KB，不必 parse 90KB 历史
-    if (!hist._last || date >= hist._last.td) {
-      hist._last = {
-        ok: true, td: date, ts: Date.now(),
-        spot: Object.fromEntries(Object.entries(spotMap).map(([k, v]) => [k, { p: v }])),
-        fut: day.fut.map((x) => ({ c: x.c, p: x.p, u: FUT_MAP[x.p], px: x.px, chg: x.chg,
-          vol: x.vol, oi: x.oi, oiD: x.oiD, dte: x.dte, basis: x.basis, bp: x.bp, ann: x.ann })),
-        opt: day.opt,
-        pos: posObj,
-      };
-    }
+    // 最新那份快照单独存：Worker 冷启动时只读 6KB，不必 parse 79KB 历史
+    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap);
     added++;
     log(`  ${date} 期货 ${day.fut.length} 行 / 期权 ${day.opt.length} 行` + (posObj ? ` / 持仓 ${posObj.rows.length} 行` : ''));
     await sleep(150);
@@ -444,13 +450,43 @@ async function main() {
     for (const c of Object.keys(hist.spot)) hist.spot[c] = hist.spot[c].slice(cut);
   }
 
+  // 兜底：存量日档里没有 _last（早期版本把它删掉了），或快照落后于历史最后一天，
+  // 而本次又没补到新数据（凌晨跑、当天行情还没出，todo 全命中 have → 循环一次都没进），
+  // 就直接按历史里最后一天重抓一次重建快照。只重建快照，不动 hist 数组，
+  // 免得同一天被写两遍、数组和日期串位
+  if ((!hist._last || hist._last.td < hist.d[hist.d.length - 1]) && hist.d.length) {
+    const date = hist.d[hist.d.length - 1];
+    const ymd = date.replace(/-/g, '');
+    const ymDir = ymd.slice(0, 6) + '/' + ymd.slice(6, 8);
+    const at = hist.d.indexOf(date);
+    const spotMap = {};
+    for (const code of Object.keys(SPOT_SECID)) {
+      const v = (hist.spot[code] || [])[at];
+      if (v) spotMap[code] = v;
+    }
+    try {
+      currentDate = date;
+      const rows = parseDailyXml(await fetchText('http://www.cffex.com.cn/sj/hqsj/rtj/' + ymDir + '/index.xml'));
+      if (rows.length && Object.keys(spotMap).length >= 3) {
+        const posObj = await fetchPosFor(date, ymDir);
+        hist._last = mkSnap(date, buildDay(rows, spotMap, posObj), posObj, spotMap);
+        log(`快照缺失，按 ${date} 重建了一份（期货 ${hist._last.fut.length} 行 / 期权 ${hist._last.opt.length} 行）`);
+      } else {
+        log(`快照重建跳过：${date} 日行情 ${rows.length} 行、现货 ${Object.keys(spotMap).length} 只`);
+      }
+    } catch (e) {
+      log('快照重建失败（不影响历史）：' + e.message);
+    }
+  }
+
   hist.generated_at = new Date().toISOString();
   hist.last_trade_date = hist.d[hist.d.length - 1] || null;
   hist.ok = true;
 
   const last = hist._last || null;
-  delete hist._last;
-
+  // _last 留在 fut_daily.json 里：data 分支每次 force push，下次开工只能取回
+  // 上一次发布的那两个文件；如果快照只写在 fut_last.json、而某天没有新数据
+  // （比如凌晨跑，当天行情还没出），取回来就只剩历史、快照丢了
   writeFileSync(dailyPath, JSON.stringify(hist));
   if (last) writeFileSync(join(DIST, 'fut_last.json'), JSON.stringify(last));
 
