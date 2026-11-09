@@ -47,13 +47,15 @@ const WAIT_TOTAL = 6000;    // 先到者不完整时，等另一个源的上限
 // 出口打过去实测要 43 秒（沙箱侧只要 2 秒），任何「一次请求内拉完」的写法都
 // 必然撞超时，页面就整块空白。现在改成：只用缓存回答，刷新放后台。
 const ALL_TTL = 60;                 // 边缘缓存有效期（秒）
-const ALL_FRESH_MS = 180000;        // KV 快照多久算「新鲜」
+const ALL_FRESH_MS = 12 * 60000;     // KV 快照多久算「新鲜」（见 ALL_KV_GAP）
 // 为什么是 3 分钟而不是 60 秒：16:00 那次线上自检，新浪 20 页 6 秒内就回来了；
 // 17:50 再测要 43 秒。中间唯一的变量就是新加的 60 秒轮询把请求量放大了一个量级，
 // 撞上游限流。既然自选已经走腾讯 5 秒实时，全市场 3 分钟够用，先把压力降下来。
 const ALL_BUDGET = 22000;           // 冷启动时同步等上游的硬上限
 const ALL_KV = 'all-last-v1';       // KV 里最近一次成功快照
-const ALL_KV_GAP = 2 * 60 * 1000;   // KV 最少间隔 2 分钟写一次（免费额度 1000 写/天，720 次留足余量）
+const ALL_KV_GAP = 10 * 60 * 1000;  // KV 最少间隔 10 分钟写一次。
+// 原来 2 分钟 → 一天 720 次写，单它一项就吃掉免费额度（1000 写/天）的七成。
+// 这份快照只是「边缘缓存 miss 时的兜底」，常规访问走 60 秒的边缘缓存，10 分钟足够。
 const SINA_ABORT = 9000;            // 新浪单页超时
 const SINA_CONC = 6;                // 新浪并发页数（20 个并发会被对端限速）
 
@@ -225,7 +227,7 @@ async function kvGetAll(env) {
 }
 async function kvPutAll(env, body) {
   try {
-    if (env && env.WATCH) await env.WATCH.put(ALL_KV, body);
+    if (env && env.WATCH && kvWriteAllowed('all-snap')) await env.WATCH.put(ALL_KV, body);
   } catch (e) { /* KV 写失败不影响本次响应 */ }
 }
 
@@ -339,7 +341,7 @@ const SEC_DAILY_KEEP = 12;
    现在按「值变了 + 距上次写满 10 分钟」才落盘。这份快照的唯一用途是上游抽风时
    退回上一次成功的结果，10 分钟的粒度远远够用（同一天里集中度不会十分钟就变个样）。
    变量放模块级：同一个 isolate 内共享，isolate 被回收后最多多写一次，无妨。 */
-const MKT_SNAP_GAP = 10 * 60 * 1000;
+const MKT_SNAP_GAP = 30 * 60 * 1000;   // 30 分钟一次：一天 48 次，纯粹是兜底，不必更勤
 let mktSnapAt = 0;
 let mktSnapSig = '';
 
@@ -1019,7 +1021,7 @@ async function serveMkt(env, ctx) {
     // 但写要有节制，见 MKT_SNAP_GAP 那段：十分钟一次、且数值真变了才写。
     const sig = [out.c, out.b, out.u, out.w, out.t, out.p5].join('|');
     const nowMs = Date.now();
-    if (env && env.WATCH && sig !== mktSnapSig && nowMs - mktSnapAt >= MKT_SNAP_GAP) {
+    if (env && env.WATCH && sig !== mktSnapSig && nowMs - mktSnapAt >= MKT_SNAP_GAP && kvWriteAllowed('mkt-snap')) {
       mktSnapAt = nowMs;
       mktSnapSig = sig;
       const keep = { ...out };
@@ -1400,6 +1402,27 @@ const PCF_MAX_Q = 520;            // 中证500 有 500 只，留点余量
 function cstDay(off) {
   const t = new Date(Date.now() + 8 * 3600e3 - (off || 0) * 86400e3);
   return t.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+/* ---------------- KV 写保险丝 ----------------
+   免费额度 1000 写/天，而且是**账户级**的：超了不是某次 put 返回 429，而是接下来
+   24 小时所有 KV 操作一起挂——自选存不上、预热停摆、/api/all 读不到兜底快照，
+   页面退回现场拉上游，慢到看起来像「清单空了」。2026-11-09 凌晨就是这么被 block 的。
+
+   病根是 cron 每分钟一轮预热、每轮写 1 次进度 + 3~4 个分片，一天一千多次。
+   频率已经按 5 分钟一轮重算过（约 540 次/天），这里再压一道闸：常量哪天被改错，
+   宁可少写几次缓存，也别让整个账户被 block。只挡缓存类写入，自选那种用户数据不挡。 */
+const KV_WRITE_CAP = 700;
+let kvw = { day: '', n: 0 };
+function kvWriteAllowed(tag) {
+  const d = cstDay();
+  if (kvw.day !== d) kvw = { day: d, n: 0 };
+  if (kvw.n >= KV_WRITE_CAP) {
+    if (kvw.n === KV_WRITE_CAP) console.log('[kvcap] 今日写次数到顶，跳过 ' + tag);
+    return false;
+  }
+  kvw.n++;
+  return true;
 }
 
 /**
@@ -1909,7 +1932,7 @@ const PCFS_KV = 'pcfsh-v1/';
 const PCFW_KV = 'pcfwarm-v1/';
 const PCFP_KV = 'pcfpool-v4/';
 const PCFS_TTL = 3 * 86400;       // 分片留 3 天：周末回来还能给周五的清单兜个底
-const WARM_PER_RUN = 20;          // 每轮至少这么多只（按整片取，允许超出）
+const WARM_PER_RUN = 24;          // 每轮至少这么多只（按整片取，允许超出）
 const WARM_PROBE = '510300';      // 沪深300ETF：盘前清单发布的风向标
 
 /** 分片键：沪市看前 4 位，深市看前 5 位（见上面为什么） */
@@ -2095,6 +2118,8 @@ async function pcfForWarm(code) {
 async function warmRound(env) {
   if (!env || !env.WATCH) return { ok: false, error: '没有 KV 绑定，预热无从谈起' };
   const day = cstDay();
+  // 今日写额度见顶就整轮别跑：跑了也写不进去，只会重复抓同一批、白烧上游请求
+  if (kvw.day === day && kvw.n >= KV_WRITE_CAP) return { ok: true, budget: true, day };
 
   let plan = null;
   try { plan = await env.WATCH.get(PCFP_KV + day, 'json'); } catch (e) { /* 重建 */ }
@@ -2156,7 +2181,12 @@ async function warmRound(env) {
   }
 
   if (st.i >= plan.n) {
-    try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
+    /* 收工之后再每个 cron 都写一次进度，纯粹是白烧额度：一天 96 次写，只为记一句
+       「还是做完了」。只在第一次完成时落一个标记，之后读到的 st 自己就带 done。 */
+    if (!st.done) {
+      st.done = 1;
+      try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
+    }
     return { ok: true, done: true, day, i: st.i, n: st.n, pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, exact: plan.exact };
   }
 
@@ -2188,6 +2218,7 @@ async function warmRound(env) {
   }
   let wrote = 0;
   for (const k of Object.keys(shards)) {
+    if (!kvWriteAllowed('pcf-shard')) break;   // 额度见顶就停手，剩下的走现场拉
     try {
       await env.WATCH.put(PCFS_KV + day + '/' + k, JSON.stringify(shards[k]), { expirationTtl: PCFS_TTL });
       wrote++;
