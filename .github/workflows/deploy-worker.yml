@@ -75,6 +75,26 @@ jobs:
           workingDirectory: worker
           command: deploy
 
+      # 部署后核对「线上跑的到底是哪个版本」。
+      # 之前踩过：wrangler 报 success、也给了新的 Version ID，但 workers.dev 上
+      # 返回的还是旧代码（/api/fut 一直 404）。这条把 Cloudflare 侧的部署记录打出来，
+      # 是 100% 还是被切成了灰度，一眼能看到。
+      - name: 核对线上版本
+        continue-on-error: true
+        run: |
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/deployments?per_page=5" \
+            | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          if not d.get('success'):
+              print('查询失败：', json.dumps(d.get('errors'))[:300]); raise SystemExit(0)
+          for x in (d.get('result') or {}).get('deployments', [])[:3]:
+              ver=x.get('versions') or []
+              print(x.get('created_on'), x.get('id','')[:8],
+                    [(v.get('version_id','')[:8], v.get('percentage')) for v in ver])
+          "
+
       # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
       # 这里只做提醒不回显值，避免把口令打进日志。
       - name: 部署后提醒
