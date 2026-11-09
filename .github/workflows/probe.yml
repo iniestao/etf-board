@@ -1,0 +1,37 @@
+name: 线上探测
+
+# 为什么需要：Worker 部署在 Cloudflare，沙箱里访问不了 workers.dev（出口被挡），
+# 只能借 GitHub runner 的出口去摸一下线上到底活没活。
+# 改完 Worker 想确认「线上真的生效了」时手动跑一次，不参与任何定时任务。
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: 要探测的路径（不带域名）
+        required: false
+        default: /
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 摸一下
+        env:
+          BASE: https://etf-board.171098509.workers.dev
+          P: ${{ inputs.path }}
+        run: |
+          echo "GET $BASE$P"
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 30 "$BASE$P" || echo "000")
+          echo "HTTP $code"
+          echo "--- 前 300 字节 ---"
+          head -c 300 /tmp/body || true
+          echo
+          echo "--- 判定 ---"
+          case "$code" in
+            401) echo "✅ 服务正常：口令门禁在工作（未登录看到 401 就是对的）" ;;
+            200) echo "✅ 服务正常：200" ;;
+            429) echo "⚠️ 429：撞限流/额度封禁，看 Cloudflare 用量面板" ;;
+            000) echo "❌ 连不上：可能部署失败或域名不通" ;;
+            *)   echo "⚠️ 非预期状态码 $code" ;;
+          esac
