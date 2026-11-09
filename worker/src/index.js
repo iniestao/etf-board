@@ -3304,7 +3304,9 @@ async function serveFutOpt(url, env, ctx) {
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial };
-  if (DBG) out.diag = diag;
+  // 一条都没配对出来时把原因一并带上：这种时候最需要知道是「东财不通」还是
+  // 「配不出月份」，而线上又没法 attach 调试器
+  if (DBG || !items.length) out.diag = diag;
   const res = json(out, ttl);
   if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
