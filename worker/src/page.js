@@ -7366,13 +7366,6 @@ function renderFutBasis(){
   var list = FUT.fut || [];
   if (!list.length){ box.innerHTML = '<div class="empty">没有合约数据</div>'; return; }
 
-  var h = '<table><thead><tr><th class="l">合约</th><th>价格</th><th>涨跌</th>'
-    + '<th title="期货 − 现货，点数。负数=贴水">基差</th>'
-    + '<th title="基差 ÷ 现货 × 100%">基差率</th>'
-    + '<th class="hide-sm" title="基差率 × 365 ÷ 剩余自然日">年化</th>'
-    + (hasOi ? '<th class="hide-sm" title="持仓量双边合计的当日变化，只能推断谁在动">持仓变化</th>' : '')
-    + '</tr></thead><tbody>';
-
   var order = ['IF', 'IH', 'IC', 'IM'], byP = {};
   for (var i = 0; i < list.length; i++){
     var x = list[i];
@@ -7382,6 +7375,14 @@ function renderFutBasis(){
   var hasOi = false;
   for (var z = 0; z < list.length; z++) if (list[z].oiD != null){ hasOi = true; break; }
   var span = hasOi ? 7 : 6;
+
+  var h = '<table><thead><tr><th class="l">合约</th><th>价格</th><th>涨跌</th>'
+    + '<th title="期货 − 现货，点数。负数=贴水">基差</th>'
+    + '<th title="基差 ÷ 现货 × 100%">基差率</th>'
+    + '<th class="hide-sm" title="基差率 × 365 ÷ 剩余自然日">年化</th>'
+    + (hasOi ? '<th class="hide-sm" title="持仓量双边合计的当日变化，只能推断谁在动">持仓变化</th>' : '')
+    + '</tr></thead><tbody>';
+
   for (var k = 0; k < order.length; k++){
     var p = order[k], rows = byP[p];
     if (!rows || !rows.length) continue;
@@ -7402,7 +7403,8 @@ function renderFutBasis(){
         + (hasOi ? '<td class="hide-sm">' + (r.oiD == null
             ? '<span class="code">—</span>'
             : '<span class="' + fSign(r.oiD) + '">' + (r.oiD > 0 ? '+' : '') + fInt(r.oiD) + '</span>'
-              + (q ? ' <span class="fq" style="color:' + q[1] + '">' + q[0] + '</span>' : ''))
+              // 持仓没动就别挂徽章：16 行全写「持仓持平」比一排 0 还吵
+              + (q && r.q !== 'flat' ? ' <span class="fq" style="color:' + q[1] + '">' + q[0] + '</span>' : ''))
           + '</td>' : '')
         + '</tr>';
     }
@@ -7502,7 +7504,7 @@ function renderFutPos(){
         + '<i>' + (arr.length ? arr.slice(0, 4).map(function(x){ return x.c; }).join(' ') : '—') + '</i></div>';
     }
     h += '</div>';
-    var flat = (cnt.flat || []).length + (list.length - Object.keys(cnt).reduce(function(s, kk){ return s + cnt[kk].length; }, 0));
+    var flat = (cnt.flat || []).length;
     h += '<div class="futfoot">共 ' + list.length + ' 个合约有昨日持仓可比，其中 ' + flat + ' 个变化不足阈值（按昨仓 0.2%、最少 50 手）。</div>';
     box.innerHTML = h;
     return;
