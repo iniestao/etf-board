@@ -22,8 +22,10 @@ jobs:
           P: ${{ inputs.path }}
         run: |
           echo "GET $BASE$P"
-          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 30 "$BASE$P" || echo "000")
-          echo "HTTP $code"
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 30 "$BASE$P" 2>/tmp/err) || true
+          echo "HTTP [$code]"
+          echo "--- curl 诊断 ---"
+          cat /tmp/err || true
           echo "--- 前 300 字节 ---"
           head -c 300 /tmp/body || true
           echo
