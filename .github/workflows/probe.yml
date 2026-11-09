@@ -20,19 +20,30 @@ jobs:
         env:
           BASE: https://etf-board.171098509.workers.dev
           P: ${{ inputs.path }}
+          PASS: ${{ secrets.ACCESS_PASS }}
         run: |
           echo "GET $BASE$P"
+          # 想把 /api/* 探到底就得先过口令门禁：跟浏览器一样表单 POST /__auth
+          # 拿 Cookie。没配 ACCESS_PASS 就按未登录走，只看 401 也是有效信息。
+          CK=''
+          if [ -n "$PASS" ]; then
+            CK=$(curl -sS -D - -o /dev/null --max-time 20 -X POST -d "p=$PASS" "$BASE/__auth" \
+                 | tr -d '\r' | grep -i '^set-cookie:' | head -1 | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1) || true
+            if [ -n "$CK" ]; then echo "已登录（Cookie ${CK:0:12}…）"; else echo "登录失败，按未登录继续"; fi
+          fi
+          HDR=()
+          [ -n "$CK" ] && HDR=(-H "Cookie: $CK")
           # 有些 runner 的 DNS 解析不了 *.workers.dev，退回 DoH 再试一次
-          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 20 "$BASE$P" 2>/tmp/err) || true
+          code=$(curl -sS "${HDR[@]}" -o /tmp/body -w '%{http_code}' --max-time 20 "$BASE$P" 2>/tmp/err) || true
           if [ "$code" = "000" ]; then
             echo "直连没解析出来，换 DoH 再试"
-            code=$(curl -sS --doh-url https://cloudflare-dns.com/dns-query -o /tmp/body -w '%{http_code}' --max-time 25 "$BASE$P" 2>/tmp/err) || true
+            code=$(curl -sS "${HDR[@]}" --doh-url https://cloudflare-dns.com/dns-query -o /tmp/body -w '%{http_code}' --max-time 25 "$BASE$P" 2>/tmp/err) || true
           fi
           echo "HTTP [$code]"
           echo "--- curl 诊断 ---"
           cat /tmp/err || true
-          echo "--- 前 300 字节 ---"
-          head -c 300 /tmp/body || true
+          echo "--- 前 2000 字节 ---"
+          head -c 2000 /tmp/body || true
           echo
           echo "--- 判定 ---"
           case "$code" in
