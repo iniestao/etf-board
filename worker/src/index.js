@@ -3196,20 +3196,20 @@ async function fetchOptChain(secid, spt) {
   const diff = (j && j.data && j.data.diff) || [];
   const arr = Array.isArray(diff) ? diff : Object.values(diff);
   const out = [];
-  let live = 0;
+  // f2 是最新价、f18 是昨收。2026-11-10 实测：从 Cloudflare 出口拉这条链，
+  // 49 条里最新价一条都不是数字（全是 '-'），昨收却有值——东财对海外出口只给昨收。
+  // 两个价都留着，由调用方决定整只用哪一套：混着用会把合成期货算出 1.5% 的假贴水。
   for (const x of arr) {
     const k = +x.f161;
     const dte = +x.f162;
-    // f2 是最新价、f18 是昨收。2026-11-10 实测：从 Cloudflare 出口拉这条链，
-    // 49 条里最新价一条都不是数字（全是 '-'），昨收却有 47 条有值——
-    // 东财对海外出口只给昨收。这时候整张卡只能按昨收算，硬用 f2 就是空白。
+    if (!(k > 0) || !(dte >= 0)) continue;
     const p2 = +x.f2;
-    const px = p2 > 0 ? p2 : +x.f18;
-    if (!(k > 0) || !(px > 0) || !(dte >= 0)) continue;
-    if (p2 > 0) live++;
-    out.push({ k, px, dte, vol: +x.f5 || 0, oi: +x.f108 || 0 });
+    const p18 = +x.f18;
+    if (!(p2 > 0) && !(p18 > 0)) continue;
+    out.push({ k, dte, p2: p2 > 0 ? p2 : 0, p18: p18 > 0 ? p18 : 0,
+      vol: +x.f5 || 0, oi: +x.f108 || 0 });
   }
-  return { rows: out, live };
+  return out;
 }
 
 async function fetchEtfSpot(secids) {
@@ -3329,19 +3329,27 @@ async function serveFutOpt(url, env, ctx) {
     const s = spot && spot[code];
     if (!c || !p || !s) {
       partial.push(code);
-      if (!diag[code]) diag[code] = [c ? 'call ' + c.rows.length + ' 行' : 'call 失败',
-        p ? 'put ' + p.rows.length + ' 行' : 'put 失败', s ? 'spot ok' : 'spot missing'];
+      if (!diag[code]) diag[code] = [c ? 'call ' + c.length + ' 行' : 'call 失败',
+        p ? 'put ' + p.length + ' 行' : 'put 失败', s ? 'spot ok' : 'spot missing'];
       continue;
     }
-    // 期权侧一条最新价都没拿到 → 整张卡退到昨收口径，现价也必须换成昨收。
-    // 一边用今天的现货、一边用昨天的合成期货，等于把当日涨跌全算进基差了。
-    const live = (c.live || 0) + (p.live || 0);
-    const prevOnly = live === 0;
-    const S = prevOnly ? (s.p0 > 0 ? s.p0 : s.p) : s.p;
-    if (!(S > 0)) { partial.push(code); diag[code] = ['价全缺']; continue; }
+    // 整只用哪一套价：购和沽都过半有最新价才用最新价，否则（典型情况是东财对
+    // 境外出口只给昨收）两册一起退到昨收。一边实时一边昨收，合成期货会凭空
+    // 低/高出一个当日涨跌幅，看着像深度贴水，其实是数据错位。
+    const n2c = c.filter((x) => x.p2 > 0).length;
+    const n2p = p.filter((x) => x.p2 > 0).length;
+    const useLive = n2c >= c.length * 0.5 && n2p >= p.length * 0.5;
+    const S = useLive ? s.p : s.p0;
+    if (!(S > 0)) { partial.push(code); diag[code] = ['现价与昨收都缺']; continue; }
     const rows = [];
-    for (const x of c.rows) rows.push({ ...x, side: 'C' });
-    for (const x of p.rows) rows.push({ ...x, side: 'P' });
+    for (const x of c) {
+      const px = useLive ? (x.p2 || x.p18) : x.p18;
+      if (px > 0) rows.push({ k: x.k, px, dte: x.dte, vol: x.vol, oi: x.oi, side: 'C' });
+    }
+    for (const x of p) {
+      const px = useLive ? (x.p2 || x.p18) : x.p18;
+      if (px > 0) rows.push({ k: x.k, px, dte: x.dte, vol: x.vol, oi: x.oi, side: 'P' });
+    }
     const months = calcEtfMonths(rows, S);
     if (!months.length) {
       partial.push(code);
@@ -3349,13 +3357,13 @@ async function serveFutOpt(url, env, ctx) {
       continue;
     }
     const name = (list.find((x) => x[1] === code) || [])[2] || code;
-    items.push({ c: code, n: name, S, chg: prevOnly ? 0 : s.chg, months, on: prevOnly ? 'prev' : 'live' });
+    items.push({ c: code, n: name, S, chg: useLive ? s.chg : 0, months, on: useLive ? 'live' : 'prev' });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial };
-  // prev = 整块都按上一交易日收盘价算的；前端据此在卡片底部标一句，
-  // 免得把「昨天的基差」当成盘中实时数字看
-  out.mode = items.some((x) => x.on === 'live') ? 'live' : 'prev';
+  // live = 期权用当日最新价；prev = 只能拿到昨收，整块按昨收算；
+  // none = 连昨收都不自洽（平价校验全挂），这时候不显示比显示错数好
+  out.mode = !items.length ? 'none' : (items.some((x) => x.on === 'live') ? 'live' : 'prev');
   // 一条都没配对出来时把原因一并带上：这种时候最需要知道是「东财不通」还是
   // 「配不出月份」，而线上又没法 attach 调试器
   if (DBG || !items.length) out.diag = diag;

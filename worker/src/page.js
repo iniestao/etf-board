@@ -7473,7 +7473,16 @@ function renderFutOptEtf(){
   var rest = (FUTOPT.rest && FUTOPT.rest.items) || [];
   var all = main.concat(rest);
   if (!all.length){
-    box.innerHTML = '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>';
+    // 还没回来 ≠ 回来了但是空的。后者要说明原因，不然会一直转圈
+    var loaded = !!FUTOPT.main || !!FUTOPT.rest;
+    if (!loaded){
+      box.innerHTML = '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>';
+      return;
+    }
+    var none = (FUTOPT.main && FUTOPT.main.mode === 'none') || (FUTOPT.rest && FUTOPT.rest.mode === 'none');
+    box.innerHTML = '<div class="empty">' + (none
+      ? '此时拿不到期权最新价，合成基差算出来不自洽，先不显示（盘中会自动重试）'
+      : '没有可用的期权链') + '</div>';
     return;
   }
   var h = '<table><thead><tr><th class="l">标的</th><th>现价</th>'
