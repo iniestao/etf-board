@@ -2822,6 +2822,24 @@ function shTodayStr() {
   return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
 }
 
+/** 实时 quote 文件里那份数据到底是哪个交易日的。
+ *
+ *  CFFEX 的 quote_*.txt 不带时间戳，收盘后就一直停着：09:15 开盘前、整个周末，
+ *  文件里还是上一交易日的收盘值。这时候如果把 td 当成今天，卡片会写
+ *  「收盘 11-10」而数字其实是 11-09 的——每天早八点和周末都会错一天。
+ *  既然能确定「此刻不可能有新数据」，就直接用日档的交易日当 td；
+ *  没有日档就退回今天（宁可不显示日期，也不要假装知道）。
+ */
+function futDataDate(last) {
+  const today = shTodayStr();
+  if (!last || !last.td || last.td >= today) return today;
+  const d = new Date(Date.now() + 8 * 3600e3);
+  const wd = d.getUTCDay();
+  const preOpen = d.getUTCHours() * 60 + d.getUTCMinutes() < 9 * 60 + 15;
+  if (preOpen || wd === 0 || wd === 6) return last.td;
+  return today;
+}
+
 function dteOf(ym) {
   const t = shDate();
   const today = Date.UTC(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6, 8));
@@ -3043,7 +3061,7 @@ async function serveFut(env, ctx) {
 
   // 昨收持仓：只有「昨天那份快照」才有意义，今天的不算
   const last = await loadFutLast(env);
-  const td = shTodayStr();
+  const td = futDataDate(last);
   const oiPrev = {};
   if (last && last.td && last.td !== td && Array.isArray(last.fut)) {
     for (const f of last.fut) oiPrev[f.c] = f.oi;
