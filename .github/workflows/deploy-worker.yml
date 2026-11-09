@@ -94,6 +94,14 @@ jobs:
               print(x.get('created_on'), x.get('id','')[:8],
                     [(v.get('version_id','')[:8], v.get('percentage')) for v in ver])
           "
+          # 再确认一次「Cloudflare 手里到底存的是哪份代码」
+          echo "--- 已上传脚本的内容特征 ---"
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/content" \
+            -o /tmp/script.js -w 'content bytes=%{size_download}\n' || true
+          for kw in 期指期权 serveFut futprobe; do
+            printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/script.js 2>/dev/null || true)"
+          done
 
       # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
       # 这里只做提醒不回显值，避免把口令打进日志。
