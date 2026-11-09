@@ -5798,9 +5798,11 @@ function stampN(id, pointTs){
   if (old && old.parentNode) old.parentNode.removeChild(old);
   var base = String(el.textContent || '').trim();
   if (base === '-' || base === '—') el.textContent = '';
+  // 前面没有内容时不要留一个孤零零的「·」——板块地图/今日概况的 meta 本来就是空的
+  var dot = String(el.textContent || '').trim() ? ' · ' : '';
   el.insertAdjacentHTML('beforeend',
-    '<span class="tsm">' + (pointTs ? ' · 数据时点 ' + _hm(pointTs) : '')
-    + '<span class="hide-sm"> · 算于 ' + _hms() + '</span></span>');
+    '<span class="tsm">' + dot + (pointTs ? '数据时点 ' + _hm(pointTs) : '')
+    + '<span class="hide-sm">' + (pointTs ? ' · ' : '') + '算于 ' + _hms() + '</span></span>');
 }
 
 function setStale(msg, bad){
