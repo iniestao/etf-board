@@ -45,6 +45,12 @@ jobs:
           echo "--- 前 2000 字节 ---"
           head -c 2000 /tmp/body || true
           echo
+          # 部署到底生没生效，看响应体里有没有新代码的特征串最直接
+          echo "--- 关键字命中 ---"
+          for kw in 期指期权 futHistSvg futprobe serveFut; do
+            printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/body 2>/dev/null || echo 0)"
+          done
+          echo
           echo "--- 判定 ---"
           case "$code" in
             401) echo "✅ 服务正常：口令门禁在工作（未登录看到 401 就是对的）" ;;
