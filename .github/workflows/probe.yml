@@ -47,8 +47,9 @@ jobs:
           echo
           # 部署到底生没生效，看响应体里有没有新代码的特征串最直接
           echo "--- 关键字命中 ---"
+          echo "body 字节：$(wc -c < /tmp/body 2>/dev/null || echo 0)"
           for kw in 期指期权 futHistSvg futprobe serveFut; do
-            printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/body 2>/dev/null || echo 0)"
+            printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/body 2>/dev/null || true)"
           done
           echo
           echo "--- 判定 ---"
