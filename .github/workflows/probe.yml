@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: 摸一下
         env:
-          BASE: https://etf-board.171098509.workers.dev
+          BASE: https://etf-board.iniestao.workers.dev
           P: ${{ inputs.path }}
           PASS: ${{ secrets.ACCESS_PASS }}
         run: |

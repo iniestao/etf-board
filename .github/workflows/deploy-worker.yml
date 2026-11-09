@@ -79,6 +79,6 @@ jobs:
       # 这里只做提醒不回显值，避免把口令打进日志。
       - name: 部署后提醒
         run: |
-          echo "线上地址：https://etf-board.171098509.workers.dev"
+          echo "线上地址：https://etf-board.iniestao.workers.dev"
           echo "ACCESS_PASS 由 Cloudflare 侧 secret 管理，本次部署不会改动它。"
           echo "若页面显示 503 设置说明页，说明这个 secret 不在了，需要重新添加。"
