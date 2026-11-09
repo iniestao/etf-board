@@ -4486,6 +4486,14 @@ function secClass(ix){
   if (v !== undefined) return v;
   var probe = ix.indexOf('恒生A股') >= 0 ? ix.split('恒生A股').join('') : ix;
   var i, j;
+  /* 名字里同时带两个行业的词时，defs 的顺序会替你做决定，而它常常做错。
+     「国证商用卫星通信产业」先撞上「通信」（defs 第 3 位），可它装的是卫星制造、
+     发射、地面站——跟光模块/CPO/运营商不是一条线。留在通信格里，卫星这条线
+     +6% 会把通信整格抬上去，同时军工那边白丢一个当日最强的指数。
+     「中证卫星产业」「中证全指航空航天」本来就走军工格，这里只是把同类补齐。
+     写成函数内的局部数组（不是外面的 var）是因为 pipeline/gen_sec_hist.mjs
+     用文本切片抽 secClass 整段去重算历史日档，写在外面会抽不到。 */
+  var FIX = [['卫星', '军工'], ['商业航天', '军工']];
   for (i=0;i<SEC_COMMOD.length;i++){
     if (probe.indexOf(SEC_COMMOD[i]) >= 0){ SEC_CACHE[ix] = null; return null; }
   }
@@ -4498,6 +4506,17 @@ function secClass(ix){
     var G = null;
     for (var gi=0;gi<SEC_GROUPS.length;gi++) if (SEC_GROUPS[gi].code === order[m]) G = SEC_GROUPS[gi];
     if (!G) continue;
+    // 先按纠偏表定夺，表里没有的才回到 defs 顺序
+    for (i=0;i<FIX.length && !v;i++){
+      if (probe.indexOf(FIX[i][0]) < 0) continue;
+      for (j=0;j<G.defs.length;j++){
+        if (G.defs[j][0] === FIX[i][1]){
+          v = { g:G.g, code:G.code, k:G.defs[j][0], th:G.defs[j][2] ? 1 : 0 };
+          break;
+        }
+      }
+    }
+    if (v) break;
     for (i=0;i<G.defs.length;i++){
       var ws = G.defs[i][1];
       for (j=0;j<ws.length;j++){
