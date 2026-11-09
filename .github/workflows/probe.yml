@@ -11,6 +11,10 @@ on:
         description: 要探测的路径（不带域名）
         required: false
         default: /
+      base:
+        description: 换成别的主机（版本预览域名 / 自定义域名），留空用默认
+        required: false
+        default: ''
 
 jobs:
   probe:
@@ -18,7 +22,7 @@ jobs:
     steps:
       - name: 摸一下
         env:
-          BASE: https://etf-board.iniestao.workers.dev
+          BASE: ${{ inputs.base != '' && inputs.base || 'https://etf-board.iniestao.workers.dev' }}
           P: ${{ inputs.path }}
           PASS: ${{ secrets.ACCESS_PASS }}
         run: |
