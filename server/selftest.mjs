@@ -188,6 +188,19 @@ function cookieOf(res) {
 
 async function runContracts(base, pass) {
   console.log('\n[2/2] 接口契约（' + base + '）');
+
+  /* 界面口径哨兵：K 线的「涨跌」（tooltip 数值、收价染色、柱体红绿、量柱）必须
+     以**前一交易日收盘**为基准。以开盘价为基准算出来的是日内方向，会把
+     「跳空低开、收回一半」判成上涨还画成红线，跟账户盈亏正好相反——
+     159108 2026-11-06 实际 -3.13%，曾经显示 +1.88%。 */
+  const pageSrc = fs.readFileSync(path.join(SRC, 'page.js'), 'utf8');
+  if (!/function hChgPct\(/.test(pageSrc)) {
+    bad('K 线涨跌没有统一的基准函数（hChgPct 丢了）');
+  } else if (/c\.close\[[^\]]*\]\s*\/\s*c\.open\[[^\]]*\]/.test(pageSrc)) {
+    bad('K 线涨跌又回到「收 ÷ 开」：那不是涨跌，是日内方向');
+  } else {
+    ok('K 线涨跌以前收为基准（hChgPct），不是收 ÷ 开');
+  }
   let cookie = '';
 
   // 门禁：未登录

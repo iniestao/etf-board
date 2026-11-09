@@ -6711,6 +6711,19 @@ function fnum(v, d){
   return Number(v).toFixed(d == null ? 3 : d);
 }
 
+/* 涨跌一律以「前一交易日收盘」为基准——这是行情软件的通行口径，也是「今天涨没涨」
+   的语义。以开盘价为基准算出来的是「日内振幅方向」：跳空低开再收回一半，
+   会显示成上涨、还标红，跟账户里的盈亏正好相反。
+   159108 就是一个现成的例子：2026-11-06 前收 0.894、开 0.850、收 0.866，
+   实际 -3.13%，按开盘算却成了 +1.88%。 */
+function hChgPct(c, i){
+  var cl = c.close, op = c.open;
+  if (!isFinite(cl[i])) return NaN;
+  if (i > 0 && isFinite(cl[i - 1]) && cl[i - 1] > 0) return (cl[i] / cl[i - 1] - 1) * 100;
+  if (isFinite(op[i]) && op[i] > 0) return (cl[i] / op[i] - 1) * 100;   // 首根没有前收
+  return NaN;
+}
+
 /* ================= 当日补丁：把今天接成最后一根 K 线 =================
    .bin 由 Actions 每天 16:35 生成，盘中打开时最后一根永远是昨天——
    盯盘最需要看的「今天」反而没有，副图指标也停在昨天。
@@ -7841,7 +7854,8 @@ function hDraw(){
   /* --- 成交量 --- */
   for (i = i0; i < n; i++){
     if (!isFinite(vol[i]) || vol[i] <= 0) continue;
-    var cUp = cl[i] >= o[i];
+    // 量柱跟着 K 线染色，K 线跟涨跌（昨收基准）走，不跟「开 vs 收」走
+    var cUp = (i > 0 && isFinite(cl[i - 1])) ? cl[i] >= cl[i - 1] : cl[i] >= o[i];
     ctx.fillStyle = cUp ? 'rgba(217,58,58,.55)' : 'rgba(14,154,97,.55)';
     var x0 = xOf(i) - ew / 2, hgt = yV + hV - yVx(vol[i]);
     ctx.fillRect(x0, yVx(vol[i]), ew, Math.max(1, hgt));
@@ -7852,7 +7866,9 @@ function hDraw(){
   /* --- K 线 --- */
   for (i = i0; i < n; i++){
     if (!isFinite(o[i]) || !isFinite(cl[i])) continue;
-    var up = cl[i] >= o[i];
+    // 红绿是「涨跌」不是「阴阳」：跳空低开但收回开盘上方，只要没回到昨收，
+    // 这根仍然是跌的，必须画绿。首根没有前收才退回开盘价。
+    var up = (i > 0 && isFinite(cl[i - 1])) ? cl[i] >= cl[i - 1] : cl[i] >= o[i];
     var col = up ? HC.up : HC.dn;
     var xc = xOf(i);
     ctx.strokeStyle = col; ctx.fillStyle = col;
@@ -7980,8 +7996,7 @@ function hLegend(idx){
 
   var ds = String(d.dates[idx]);
   var dt = ds.slice(0,4) + '-' + ds.slice(4,6) + '-' + ds.slice(6,8);
-  var chg = (isFinite(c.close[idx]) && isFinite(c.open[idx]) && c.open[idx] > 0)
-    ? (c.close[idx] / c.open[idx] - 1) * 100 : NaN;
+  var chg = hChgPct(c, idx);
   var hc = HC.up;
   leg.innerHTML =
     '<span style="color:var(--txt)"><b>' + dt + '</b></span>'
