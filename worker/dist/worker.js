@@ -2725,6 +2725,64 @@ async function gateCheck(request, env, url) {
   return new Response(gatePage(url.pathname + url.search, ''), { status: 401, headers: htmlNoStore });
 }
 
+// ---------------------------------------------------------------- 期指探针
+/**
+ * 中金所只吃 http 明文（https 实测无响应），而 Worker 跑在 Cloudflare 出口上。
+ * 沙箱里 curl 得通，不代表线上 Worker 也得通——这两件事之间隔着一层出口策略。
+ * 所以先只上这一个端点：逐个打一遍，把状态码 / 耗时 / 字节数 / 首行原样吐出来。
+ * 它通了，后面的解析和计算才值得写；它不通，整个实时链路降级成「收盘日档」。
+ *
+ * 只给人工排障用，不做缓存（每次都是真打上游），也不进前端。
+ */
+const CFFEX_QUOTE = ['IF', 'IC', 'IH', 'IM', 'IO', 'MO', 'HO'];
+
+function shDate(offsetDay = 0) {
+  // 北京时间；cffex 的日行情目录用 YYYYMM/DD 两级
+  const t = new Date(Date.now() + 8 * 3600e3 + offsetDay * 86400e3);
+  return t.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+async function probeOne(name, u) {
+  const t0 = Date.now();
+  try {
+    const r = await fetch(u, {
+      headers: { 'User-Agent': UA, Referer: 'http://www.cffex.com.cn/' },
+      signal: AbortSignal.timeout(6000),
+    });
+    // 只解前 400 字节：日行情 index.xml 有 500 多 KB，为了看一行字把整份
+    // 文本 decode 一遍不值，先量字节数再切一小片解码
+    const ab = await r.arrayBuffer();
+    const head = new TextDecoder('utf-8').decode(ab.slice(0, 400)).replace(/\s+/g, ' ').trim();
+    return { n: name, u, s: r.status, ms: Date.now() - t0, bytes: ab.byteLength, head };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    return { n: name, u, s: 0, ms: Date.now() - t0, bytes: 0, err: msg.slice(0, 120) };
+  }
+}
+
+async function serveFutProbe(url) {
+  // ?d=20261109 指定日行情日期；缺省用今天（非交易日会 404，属正常，看 quote_*.txt 就行）
+  const d = (url.searchParams.get('d') || shDate()).replace(/\D/g, '');
+  if (!/^\d{8}$/.test(d)) return json({ ok: false, error: 'd 需为 YYYYMMDD' });
+  const ymd = d.slice(0, 6) + '/' + d.slice(6, 8);
+
+  const jobs = CFFEX_QUOTE.map((p) => [p, 'http://www.cffex.com.cn/quote_' + p + '.txt']);
+  jobs.push(['daily', 'http://www.cffex.com.cn/sj/hqsj/rtj/' + ymd + '/index.xml']);
+  jobs.push(['ccpm_IF', 'http://www.cffex.com.cn/sj/ccpm/' + ymd + '/IF.xml']);
+  jobs.push(['https_IF', 'https://www.cffex.com.cn/quote_IF.txt']);           // 顺带确认 https 是否真的不通
+  jobs.push(['spot', 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2'
+    + '&secids=1.000300,1.000905,1.000016,1.000852&fields=f2,f3,f12,f14']);  // 对照组：已知能通的源
+
+  const list = await Promise.all(jobs.map(([n, u]) => probeOne(n, u)));
+  const ok = list.filter((x) => x.s === 200 && x.bytes > 0).length;
+  return json({
+    ok: true, d, at: Date.now(), pass: ok, total: list.length,
+    // 首行是不是 CSV 表头，肉眼一看就知道有没有被运营商的拦截页替换掉
+    hint: ok >= 9 ? 'cffex 可达，实时链路成立' : 'cffex 有源不可达，实时链路需降级',
+    list,
+  });
+}
+
 // ---------------------------------------------------------------- 路由
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -2813,6 +2871,11 @@ export default {
 
     if (p === '/api/status') {
       return serveStatus(env);
+    }
+
+    if (p === '/api/futprobe') {
+      // 第 1 步：确认 Cloudflare 出口能不能连中金所（只有 http 明文源）
+      return serveFutProbe(url);
     }
 
     if (p === '/api/all') {
