@@ -2861,19 +2861,40 @@ async function fetchCffex(path) {
   return r.text();
 }
 
+/** 东财 ulist.np 批量报价。主域偶发 502（2026-11-10 线上撞了两次，一次把指数
+ *  现货整批打空、期指四张表的基差全成 null），所以主域/延迟子域各试两次再放弃。 */
+async function emUlist(secids, fields) {
+  const qs = secids.join(',');
+  const hosts = ['push2.eastmoney.com', 'push2delay.eastmoney.com'];
+  let lastErr = null;
+  for (const h of hosts) {
+    const u = 'https://' + h + '/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + qs
+      + '&fields=' + fields;
+    for (let k = 0; k < 2; k++) {
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const diff = (j && j.data && j.data.diff) || [];
+        const arr = Array.isArray(diff) ? diff : Object.values(diff);
+        if (arr.length) return arr;
+        throw new Error('空数据');
+      } catch (e) {
+        lastErr = e;
+        if (k === 0) await new Promise((res) => setTimeout(res, 350));
+      }
+    }
+  }
+  throw new Error(String((lastErr && lastErr.message) || lastErr) + '（两个域名都试过）');
+}
+
 async function fetchSpotIdx() {
-  const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
-    + FUT_SPOT_ID + '&fields=f2,f3,f12,f14';
-  const j = await emRetry(() => fetch(u, {
-    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-    signal: AbortSignal.timeout(3500),
-  }).then((r) => {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
-  }));
+  const arr = await emUlist(FUT_SPOT_ID.split(','), 'f2,f3,f12,f14');
   const out = {};
-  const diff = (j && j.data && j.data.diff) || [];
-  for (const x of diff) {
+  for (const x of arr) {
     const c = String(x.f12 || '');
     const p = +x.f2;
     if (c && p > 0) out[c] = { p, chg: +(+x.f3 || 0).toFixed(2) };
@@ -3212,37 +3233,14 @@ async function fetchOptChain(secid, spt) {
 }
 
 async function fetchEtfSpot(secids) {
-  const qs = secids.join(',');
-  // 8 只标的的现价：主域偶发 502（2026-11-10 线上就撞到），换延迟子域再来一遍。
-  // 现货拿不到等于整张卡没法定价，比多等两秒严重得多。
-  const hosts = ['push2.eastmoney.com', 'push2delay.eastmoney.com'];
-  let lastErr = null;
-  for (const h of hosts) {
-    const u = 'https://' + h + '/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + qs
-      + '&fields=f2,f3,f12,f14,f18';
-    for (let k = 0; k < 2; k++) {
-      try {
-        const r = await fetch(u, {
-          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const j = await r.json();
-        const out = {};
-        for (const x of ((j && j.data && j.data.diff) || [])) {
-          const p = +x.f2;
-          const p0 = +x.f18;
-          if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
-        }
-        if (Object.keys(out).length) return out;
-        throw new Error('空数据');
-      } catch (e) {
-        lastErr = e;
-        if (k === 0) await new Promise((res) => setTimeout(res, 350));
-      }
-    }
+  const arr = await emUlist(secids, 'f2,f3,f12,f14,f18');
+  const out = {};
+  for (const x of arr) {
+    const p = +x.f2;
+    const p0 = +x.f18;
+    if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
   }
-  throw new Error(String((lastErr && lastErr.message) || lastErr) + '（两个域名都试过）');
+  return out;
 }
 
 function calcEtfMonths(rows, S) {
