@@ -2821,6 +2821,24 @@ function shTodayStr() {
   return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
 }
 
+/** 实时 quote 文件里那份数据到底是哪个交易日的。
+ *
+ *  CFFEX 的 quote_*.txt 不带时间戳，收盘后就一直停着：09:15 开盘前、整个周末，
+ *  文件里还是上一交易日的收盘值。这时候如果把 td 当成今天，卡片会写
+ *  「收盘 11-10」而数字其实是 11-09 的——每天早八点和周末都会错一天。
+ *  既然能确定「此刻不可能有新数据」，就直接用日档的交易日当 td；
+ *  没有日档就退回今天（宁可不显示日期，也不要假装知道）。
+ */
+function futDataDate(last) {
+  const today = shTodayStr();
+  if (!last || !last.td || last.td >= today) return today;
+  const d = new Date(Date.now() + 8 * 3600e3);
+  const wd = d.getUTCDay();
+  const preOpen = d.getUTCHours() * 60 + d.getUTCMinutes() < 9 * 60 + 15;
+  if (preOpen || wd === 0 || wd === 6) return last.td;
+  return today;
+}
+
 function dteOf(ym) {
   const t = shDate();
   const today = Date.UTC(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6, 8));
@@ -3042,7 +3060,7 @@ async function serveFut(env, ctx) {
 
   // 昨收持仓：只有「昨天那份快照」才有意义，今天的不算
   const last = await loadFutLast(env);
-  const td = shTodayStr();
+  const td = futDataDate(last);
   const oiPrev = {};
   if (last && last.td && last.td !== td && Array.isArray(last.fut)) {
     for (const f of last.fut) oiPrev[f.c] = f.oi;
@@ -3163,34 +3181,68 @@ async function emJson(u, ms) {
 }
 
 /** 一条期权链（单边）。spt 9=购 10=沽，字段：f2 最新价 f5 成交量
- *  f12 代码 f14 名称 f108 持仓量 f152 购沽标记 f161 行权价 f162 剩余自然日 */
+ *  f12 代码 f14 名称 f108 持仓量 f152 购沽标记 f161 行权价 f162 剩余自然日
+ *
+ *  超时给到 8 秒：/api/optprobe 实测，同样这几个 URL 从 Cloudflare 出口要
+ *  1.5~5.6 秒才回（延迟子域最快 1.5s，push2 主域 2.7~3.0s，82 子域 5.6s）。
+ *  原先 3.5 秒，赶上慢的那次就整批 abort，八条链全 null，卡片一片空白——
+ *  而接口本身是 200、diff 有 49 条，看起来像「东财不给数据」，其实是自己掐断的。 */
 async function fetchOptChain(secid, spt) {
   const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
-    + '&fltt=2&invt=2&fields=f2,f5,f12,f14,f108,f152,f161,f162'
+    + '&fltt=2&invt=2&fields=f2,f5,f12,f14,f18,f108,f152,f161,f162'
     + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
-  const j = await emJson(u);
+  const j = await emJson(u, 8000);
   const diff = (j && j.data && j.data.diff) || [];
+  const arr = Array.isArray(diff) ? diff : Object.values(diff);
   const out = [];
-  for (const x of diff) {
-    const px = +x.f2;
+  // f2 是最新价、f18 是昨收。2026-11-10 实测：从 Cloudflare 出口拉这条链，
+  // 49 条里最新价一条都不是数字（全是 '-'），昨收却有值——东财对海外出口只给昨收。
+  // 两个价都留着，由调用方决定整只用哪一套：混着用会把合成期货算出 1.5% 的假贴水。
+  for (const x of arr) {
     const k = +x.f161;
     const dte = +x.f162;
-    if (!(k > 0) || !(px > 0) || !(dte >= 0)) continue;
-    out.push({ k, px, dte, vol: +x.f5 || 0, oi: +x.f108 || 0 });
+    if (!(k > 0) || !(dte >= 0)) continue;
+    const p2 = +x.f2;
+    const p18 = +x.f18;
+    if (!(p2 > 0) && !(p18 > 0)) continue;
+    out.push({ k, dte, p2: p2 > 0 ? p2 : 0, p18: p18 > 0 ? p18 : 0,
+      vol: +x.f5 || 0, oi: +x.f108 || 0 });
   }
   return out;
 }
 
 async function fetchEtfSpot(secids) {
-  const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
-    + secids.join(',') + '&fields=f2,f3,f12,f14';
-  const j = await emJson(u);
-  const out = {};
-  for (const x of ((j && j.data && j.data.diff) || [])) {
-    const p = +x.f2;
-    if (p > 0) out[String(x.f12)] = { p, chg: +(+x.f3 || 0).toFixed(2) };
+  const qs = secids.join(',');
+  // 8 只标的的现价：主域偶发 502（2026-11-10 线上就撞到），换延迟子域再来一遍。
+  // 现货拿不到等于整张卡没法定价，比多等两秒严重得多。
+  const hosts = ['push2.eastmoney.com', 'push2delay.eastmoney.com'];
+  let lastErr = null;
+  for (const h of hosts) {
+    const u = 'https://' + h + '/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + qs
+      + '&fields=f2,f3,f12,f14,f18';
+    for (let k = 0; k < 2; k++) {
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const out = {};
+        for (const x of ((j && j.data && j.data.diff) || [])) {
+          const p = +x.f2;
+          const p0 = +x.f18;
+          if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
+        }
+        if (Object.keys(out).length) return out;
+        throw new Error('空数据');
+      } catch (e) {
+        lastErr = e;
+        if (k === 0) await new Promise((res) => setTimeout(res, 350));
+      }
+    }
   }
-  return out;
+  throw new Error(String((lastErr && lastErr.message) || lastErr) + '（两个域名都试过）');
 }
 
 function calcEtfMonths(rows, S) {
@@ -3236,7 +3288,10 @@ function calcEtfMonths(rows, S) {
 async function serveFutOpt(url, env, ctx) {
   const g = url.searchParams.get('g') === 'rest' ? 'rest' : 'main';
   const ttl = g === 'rest' ? 300 : 120;
-  const cache = await getCache();
+  // ?dbg=1：把每条期权链的失败原因带回来。东财对 Cloudflare 出口和家宽出口
+  // 的态度可能不一样，沙箱里复现不了线上，只能让接口自己说哪里断了
+  const DBG = url.searchParams.get('dbg') === '1';
+  const cache = DBG ? null : await getCache();
   const key = new Request('https://etf.internal/futopt/v1/' + g, { method: 'GET' });
   if (cache) {
     try {
@@ -3246,36 +3301,136 @@ async function serveFutOpt(url, env, ctx) {
   }
 
   const list = ETF_OPT[g];
-  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch(() => null);
-  // 每个标的 2 个请求（购/沽），4 个标的 8 个，加上现货 1 个 = 9 个
-  const chainP = Promise.all(list.map(([sid, code]) => Promise.all([
-    fetchOptChain(sid, 9).catch(() => null),
-    fetchOptChain(sid, 10).catch(() => null),
-  ]).then(([c, p]) => ({ code, c, p }))));
+  const diag = {};
+  const grab = (sid, code, spt) => fetchOptChain(sid, spt).catch((e) => {
+    (diag[code] = diag[code] || []).push('spt' + spt + ' ' + String((e && e.message) || e));
+    return null;
+  });
+  // 分两批发：4 个标的的购 + 现货 = 5 个并发，回完再发 4 个沽。
+  // 9 个一起发会撞 Cloudflare 对同 host 的连接数上限，后面的排队，
+  // 单个请求的墙钟时间被顶到 5 秒以上（探针里 8 个并发最快那条也要 2.7s）
+  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch((e) => {
+    diag.spot = String((e && e.message) || e);
+    return null;
+  });
+  const [spot, calls] = await Promise.all([
+    spotP,
+    Promise.all(list.map(([sid, code]) => grab(sid, code, 9))),
+  ]);
+  const puts = await Promise.all(list.map(([sid, code]) => grab(sid, code, 10)));
+  const chains = list.map(([, code], i) => ({ code, c: calls[i], p: puts[i] }));
 
-  const [spot, chains] = await Promise.all([spotP, chainP]);
   const partial = [];
   if (!spot) partial.push('spot');
 
   const items = [];
   for (const { code, c, p } of chains) {
     const s = spot && spot[code];
-    if (!c || !p || !s) { partial.push(code); continue; }
+    if (!c || !p || !s) {
+      partial.push(code);
+      if (!diag[code]) diag[code] = [c ? 'call ' + c.length + ' 行' : 'call 失败',
+        p ? 'put ' + p.length + ' 行' : 'put 失败', s ? 'spot ok' : 'spot missing'];
+      continue;
+    }
+    // 整只用哪一套价：购和沽都过半有最新价才用最新价，否则（典型情况是东财对
+    // 境外出口只给昨收）两册一起退到昨收。一边实时一边昨收，合成期货会凭空
+    // 低/高出一个当日涨跌幅，看着像深度贴水，其实是数据错位。
+    const n2c = c.filter((x) => x.p2 > 0).length;
+    const n2p = p.filter((x) => x.p2 > 0).length;
+    const useLive = n2c >= c.length * 0.5 && n2p >= p.length * 0.5;
+    const S = useLive ? s.p : s.p0;
+    if (!(S > 0)) { partial.push(code); diag[code] = ['现价与昨收都缺']; continue; }
     const rows = [];
-    for (const x of c) rows.push({ ...x, side: 'C' });
-    for (const x of p) rows.push({ ...x, side: 'P' });
-    const months = calcEtfMonths(rows, s.p);
-    if (!months.length) { partial.push(code); continue; }
+    for (const x of c) {
+      const px = useLive ? (x.p2 || x.p18) : x.p18;
+      if (px > 0) rows.push({ k: x.k, px, dte: x.dte, vol: x.vol, oi: x.oi, side: 'C' });
+    }
+    for (const x of p) {
+      const px = useLive ? (x.p2 || x.p18) : x.p18;
+      if (px > 0) rows.push({ k: x.k, px, dte: x.dte, vol: x.vol, oi: x.oi, side: 'P' });
+    }
+    const months = calcEtfMonths(rows, S);
+    if (!months.length) {
+      partial.push(code);
+      diag[code] = ['rows ' + rows.length + ' 配不出月份'];
+      continue;
+    }
     const name = (list.find((x) => x[1] === code) || [])[2] || code;
-    items.push({ c: code, n: name, S: s.p, chg: s.chg, months });
+    items.push({ c: code, n: name, S, chg: useLive ? s.chg : 0, months, on: useLive ? 'live' : 'prev' });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial };
+  // live = 期权用当日最新价；prev = 只能拿到昨收，整块按昨收算；
+  // none = 连昨收都不自洽（平价校验全挂），这时候不显示比显示错数好
+  out.mode = !items.length ? 'none' : (items.some((x) => x.on === 'live') ? 'live' : 'prev');
+  // 有标的没配对出来时把原因一并带上：这种时候最需要知道是「东财不通」还是
+  // 「配不出月份」，而线上又没法 attach 调试器
+  if (DBG || partial.length) out.diag = diag;
   const res = json(out, ttl);
   if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
   }
   return res;
+}
+
+/** 东财期权链探针：一次性把几种地址/参数都试一遍，回状态码、耗时、字节数、
+ *  以及 data.diff 的长度。2026-11-10 线上 g=main/g=rest 全空、现货接口却正常，
+ *  沙箱里又复现不了（本地同样的 URL 能拿到 200 多档），只能让 Worker 自己逐个试。
+ *  /api/optprobe?secid=1.510050 */
+const EM_UT = 'bd1d9ddb04089700cf9c27f6f7426281';
+const EM_FIELDS = 'f2,f5,f12,f14,f18,f108,f152,f161,f162';
+
+async function serveOptProbe(url) {
+  const secid = (url.searchParams.get('secid') || '1.510050').replace(/[^\d.]/g, '');
+  const q = (host, extra) => 'https://' + host + '/api/qt/slist/get?spt=9&fltt=2&invt=2'
+    + '&fields=' + EM_FIELDS + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3' + (extra || '');
+  const cases = [
+    ['slist', q('push2.eastmoney.com')],
+    ['slist+ts', q('push2.eastmoney.com', '&_=' + Date.now())],
+    ['no-np', q('push2.eastmoney.com').replace('&np=1', '')],
+    ['delay', q('push2delay.eastmoney.com', '&ut=' + EM_UT)],
+    ['ut', q('push2.eastmoney.com', '&ut=' + EM_UT)],
+    ['ulist-spot', 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + secid + '&fields=f2,f3,f12,f14'],
+  ];
+  const one = async ([n, u]) => {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(9000),
+      });
+      const txt = await r.text();
+      let diff = null, rc = null, sample = null, numF2 = 0, numF18 = 0;
+      try {
+        const j = JSON.parse(txt);
+        rc = j && j.rc;
+        const d = j && j.data;
+        const arr = d && (Array.isArray(d.diff) ? d.diff
+          : (d.diff && typeof d.diff === 'object' ? Object.values(d.diff) : []));
+        if (arr.length) {
+          diff = arr.length;
+          // 关键统计：最新价有几个能当数字用、昨收有几个能当数字用。
+          // 全是 '-' 的话就是「接口给了结构但不给价」，得换字段兜底
+          for (const x of arr) {
+            if (+x.f2 > 0) numF2++;
+            if (+x.f18 > 0) numF18++;
+          }
+          const f = arr[0] || {};
+          sample = { f12: f.f12, f2: f.f2, f18: f.f18, f161: f.f161, f162: f.f162 };
+        }
+      } catch (e) { /* 不是 JSON */ }
+      return { n, s: r.status, ms: Date.now() - t0, bytes: txt.length, rc, diff, numF2, numF18, sample };
+    } catch (e) {
+      return { n, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e) };
+    }
+  };
+  const list = await Promise.all(cases.map(one));
+  const best = list.reduce((a, x) => Math.max(a, x.numF2 || 0, x.numF18 || 0), 0);
+  return json({
+    ok: true, secid, best, total: list.length,
+    hint: best ? '有 ' + best + ' 条能拿到价' : '所有变体都只有结构没有价，得换数据源',
+    list,
+  }, 15);
 }
 
 /** 250 天基线：原样透传 Actions 生成的 fut_daily.json。
@@ -3400,6 +3555,11 @@ export default {
     if (p === '/api/futprobe') {
       // 第 1 步：确认 Cloudflare 出口能不能连中金所（只有 http 明文源）
       return serveFutProbe(url);
+    }
+
+    if (p === '/api/optprobe') {
+      // 东财期权链逐个变体试探：线上拿不到 diff 时的定位工具
+      return serveOptProbe(url);
     }
 
     if (p === '/api/fut') {
@@ -3673,16 +3833,30 @@ background:var(--bg3)}
 .futgrp td{background:var(--bg3);font-size:11px;color:var(--txt2);font-weight:600;
 padding:5px 9px!important;border-bottom:1px solid var(--line)}
 .futgrp b{font-family:var(--mono);font-weight:600}
+.futgh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;min-width:0}
+.futgh>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fq{font-size:10px;padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px}
 .tbl .nm + .code{margin-left:6px}
 /* 期指的表格列多（合约/价格/涨跌/基差/基差率/年化/持仓），375px 一定放不下。
    这里放开横滑而不是砍列：砍掉哪一列都会有人要，「剩 11 天」和基差率是连着看的。 */
 @media(max-width:900px){
-  #futSec .tbl{overflow-x:auto}
+  /* grid 项默认 min-width:auto，会被里面 400px 的表格反向撑破卡片：
+     卡片 418px 塞进 354px 的列，结果是整页能横向平移 76px（2026-11-10 实测
+     scrollX=76）。必须先把这个 min-width 放开，overflow-x:auto 才真的生效。 */
+  #futSec .futgrid>div{min-width:0}
+  #futSec .tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
   /* 横向滚动容器里的表头 sticky 会跟内容叠出重影（表头粘在左上角，行从下面穿过去），
      这几张表统共十几行，不需要吸顶 */
   #futSec .tbl thead th{position:static}
   #futSec table{min-width:400px}
+}
+/* 390 屏一行要塞 5 列，400px 的保底会让「基差率」留在屏幕外要滑一下才看得到，
+   而这列恰恰是这张表最该被一眼看到的。压到 11px + 3px 内边距后 354px 正好放下 */
+@media(max-width:560px){
+  #futSec table{min-width:0}
+  #futSec .tbl th,#futSec .tbl td{padding-left:3px;padding-right:3px;font-size:11px}
+  #futSec .tbl .nm{font-size:11px}
+  #futSec .tbl .code{font-size:10px}
 }
 .futfoot{margin-top:7px;font-size:10.5px;color:var(--txt3);line-height:1.7}
 .quad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
@@ -10885,7 +11059,6 @@ function renderFutBasis(){
   // 昨收持仓还没生成时（收盘日档还没跑），这一列只会是一排「—」，不如整列撤掉
   var hasOi = false;
   for (var z = 0; z < list.length; z++) if (list[z].oiD != null){ hasOi = true; break; }
-  var span = hasOi ? 7 : 6;
 
   var h = '<table><thead><tr><th class="l">合约</th><th>价格</th><th>涨跌</th>'
     + '<th title="期货 − 现货，点数。负数=贴水">基差</th>'
@@ -10898,8 +11071,15 @@ function renderFutBasis(){
     var p = order[k], rows = byP[p];
     if (!rows || !rows.length) continue;
     var sp = (FUT.spot || {})[rows[0].u];
-    h += '<tr class="futgrp"><td class="l" colspan="4">' + p + (sp ? ' · ' + esc(sp.n || '') : '') + '</td>'
-      + '<td colspan="' + (span - 4) + '" class="l">' + (sp ? fNum(sp.p, 2) + ' <b class="' + fSign(sp.chg) + '">' + fPct(sp.chg, 2) + '</b>' : '现货缺失') + '</td></tr>';
+    // 分组行整行只放一个格子，内部 flex 分开左右。
+    // 之前拆成「colspan=4 + colspan=span-4」两格，右侧现货点位那串宽度会被摊到
+    // 最后一列上（手机断点下基差率列被撑到 101px），表比容器宽 18px、最后一列被切掉；
+    // 一格跨完所有列（99 会被浏览器按实际列数收拢），列宽就只由数据行决定。
+    h += '<tr class="futgrp"><td colspan="99" class="l"><div class="futgh"><span>' + p
+      + (sp ? ' · ' + esc(sp.n || '') : '') + '</span><span>'
+      + (sp ? fNum(sp.p, 2) + ' <b class="' + fSign(sp.chg) + '">' + fPct(sp.chg, 2) + '</b>' : '现货缺失')
+      + '</span></div></td></tr>';
+
     for (var j = 0; j < rows.length; j++){
       var r = rows[j];
       var q = FQ[r.q] || null;
@@ -10964,7 +11144,16 @@ function renderFutOptEtf(){
   var rest = (FUTOPT.rest && FUTOPT.rest.items) || [];
   var all = main.concat(rest);
   if (!all.length){
-    box.innerHTML = '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>';
+    // 还没回来 ≠ 回来了但是空的。后者要说明原因，不然会一直转圈
+    var loaded = !!FUTOPT.main || !!FUTOPT.rest;
+    if (!loaded){
+      box.innerHTML = '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>';
+      return;
+    }
+    var none = (FUTOPT.main && FUTOPT.main.mode === 'none') || (FUTOPT.rest && FUTOPT.rest.mode === 'none');
+    box.innerHTML = '<div class="empty">' + (none
+      ? '此时拿不到期权最新价，合成基差算出来不自洽，先不显示（盘中会自动重试）'
+      : '没有可用的期权链') + '</div>';
     return;
   }
   var h = '<table><thead><tr><th class="l">标的</th><th>现价</th>'
@@ -10986,6 +11175,11 @@ function renderFutOptEtf(){
   }
   h += '</tbody></table>';
   if (rest.length < 4) h += '<div class="futfoot">另外 ' + (4 - rest.length) + ' 个标的还在读…</div>';
+  // 东财对海外出口的期权链接口只回昨收（最新价全是「-」），这时整块按昨收算，
+  // 现价那一列也是昨收——不说明的话会被当成盘中实时数字
+  var onPrev = (FUTOPT.main && FUTOPT.main.mode === 'prev')
+    || (FUTOPT.rest && FUTOPT.rest.mode === 'prev');
+  if (onPrev) h += '<div class="futfoot">拿不到期权最新价，本表用的是东财的<b>滞后收盘价</b>（比最新交易日再早一天，现价列同理），只能看个大概；有最新价时自动切回实时</div>';
   box.innerHTML = h;
 }
 
