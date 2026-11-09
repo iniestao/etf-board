@@ -108,6 +108,23 @@ jobs:
           curl -sS -H "Authorization: Bearer $CF_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/settings" | head -c 600; echo
 
+      # 2026-11-09 踩到的：wrangler 报 success、deployments 接口也显示最新版本
+      # 100%，但 workers.dev 别名返回的还是上一个版本的代码（版本预览域名是新的）。
+      # 显式再把这个版本挂一次到别名上，比在 Dashboard 里手点省事。
+      - name: 强制把最新版本挂到 workers.dev 别名
+        continue-on-error: true
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          VER=$(curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/deployments?per_page=1" \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print((d['result']['deployments'][0]['versions'] or [{}])[0].get('version_id',''))")
+          echo "latest version: $VER"
+          [ -n "$VER" ] || exit 0
+          npx --yes wrangler@3.90.0 versions deploy "$VER@100%" --yes 2>&1 | tail -5
+
       # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
       # 这里只做提醒不回显值，避免把口令打进日志。
       - name: 部署后提醒
