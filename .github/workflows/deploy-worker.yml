@@ -102,6 +102,11 @@ jobs:
           for kw in 期指期权 serveFut futprobe; do
             printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/script.js 2>/dev/null || true)"
           done
+          echo "--- 账号子域与 workers.dev 开关 ---"
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/subdomain" | head -c 300; echo
+          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/settings" | head -c 600; echo
 
       # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
       # 这里只做提醒不回显值，避免把口令打进日志。
