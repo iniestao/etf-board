@@ -3330,7 +3330,7 @@ async function serveFutOpt(url, env, ctx) {
  *  沙箱里又复现不了（本地同样的 URL 能拿到 200 多档），只能让 Worker 自己逐个试。
  *  /api/optprobe?secid=1.510050 */
 const EM_UT = 'bd1d9ddb04089700cf9c27f6f7426281';
-const EM_FIELDS = 'f2,f5,f12,f14,f108,f152,f161,f162';
+const EM_FIELDS = 'f2,f5,f12,f14,f18,f108,f152,f161,f162';
 
 async function serveOptProbe(url) {
   const secid = (url.searchParams.get('secid') || '1.510050').replace(/[^\d.]/g, '');
@@ -3338,12 +3338,10 @@ async function serveOptProbe(url) {
     + '&fields=' + EM_FIELDS + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3' + (extra || '');
   const cases = [
     ['slist', q('push2.eastmoney.com')],
-    ['slist+ut', q('push2.eastmoney.com', '&ut=' + EM_UT)],
     ['slist+ts', q('push2.eastmoney.com', '&_=' + Date.now())],
-    ['slist+ut+ts', q('push2.eastmoney.com', '&ut=' + EM_UT + '&_=' + Date.now())],
     ['no-np', q('push2.eastmoney.com').replace('&np=1', '')],
     ['delay', q('push2delay.eastmoney.com', '&ut=' + EM_UT)],
-    ['82', q('82.push2.eastmoney.com', '&ut=' + EM_UT)],
+    ['ut', q('push2.eastmoney.com', '&ut=' + EM_UT)],
     ['ulist-spot', 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + secid + '&fields=f2,f3,f12,f14'],
   ];
   const one = async ([n, u]) => {
@@ -3351,31 +3349,38 @@ async function serveOptProbe(url) {
     try {
       const r = await fetch(u, {
         headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-        signal: AbortSignal.timeout(6000),
+        signal: AbortSignal.timeout(9000),
       });
       const txt = await r.text();
-      let diff = null, rc = null, first = null, sample = null;
+      let diff = null, rc = null, sample = null, numF2 = 0, numF18 = 0;
       try {
         const j = JSON.parse(txt);
         rc = j && j.rc;
         const d = j && j.data;
-        if (d && Array.isArray(d.diff)) { diff = d.diff.length; first = d.diff[0]; }
-        else if (d && d.diff && typeof d.diff === 'object') { diff = Object.keys(d.diff).length; first = d.diff['0']; }
-        // 条数够不代表能用：f161 行权价 / f162 剩余日 缺一个就整条被过滤掉，
-        // 最后「diff 49 条、rows 0 行」看起来像接口没数据
-        if (first) sample = { f12: first.f12, f2: first.f2, f161: first.f161, f162: first.f162, f108: first.f108 };
+        const arr = d && (Array.isArray(d.diff) ? d.diff
+          : (d.diff && typeof d.diff === 'object' ? Object.values(d.diff) : []));
+        if (arr.length) {
+          diff = arr.length;
+          // 关键统计：最新价有几个能当数字用、昨收有几个能当数字用。
+          // 全是 '-' 的话就是「接口给了结构但不给价」，得换字段兜底
+          for (const x of arr) {
+            if (+x.f2 > 0) numF2++;
+            if (+x.f18 > 0) numF18++;
+          }
+          const f = arr[0] || {};
+          sample = { f12: f.f12, f2: f.f2, f18: f.f18, f161: f.f161, f162: f.f162 };
+        }
       } catch (e) { /* 不是 JSON */ }
-      return { n, s: r.status, ms: Date.now() - t0, bytes: txt.length, rc, diff, sample,
-        head: txt.slice(0, 120) };
+      return { n, s: r.status, ms: Date.now() - t0, bytes: txt.length, rc, diff, numF2, numF18, sample };
     } catch (e) {
       return { n, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e) };
     }
   };
   const list = await Promise.all(cases.map(one));
-  const pass = list.filter((x) => (x.diff || 0) > 0).map((x) => x.n);
+  const best = list.reduce((a, x) => Math.max(a, x.numF2 || 0, x.numF18 || 0), 0);
   return json({
-    ok: true, secid, pass, total: list.length,
-    hint: pass.length ? '有可用变体：' + pass.join(',') : '全部拿不到 diff，多半是出口被挡或接口改了',
+    ok: true, secid, best, total: list.length,
+    hint: best ? '有 ' + best + ' 条能拿到价' : '所有变体都只有结构没有价，得换数据源',
     list,
   }, 15);
 }
