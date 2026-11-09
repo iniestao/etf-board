@@ -3271,7 +3271,14 @@ function calcEtfMonths(rows, S) {
     const pairs = [];
     for (const x of g.c) {
       const p = pm.get(x.k);
-      if (p) pairs.push({ k: x.k, c: x.px, p: p.px });
+      if (!p) continue;
+      // 看涨看跌平价：C − P ≈ S − K（远期要加上折现项，所以容差随 dte 放大）。
+      // 买卖价差最多千分之几，超出这个范围的偏差只有一个解释——两边不是同一
+      // 口径/同一天的价，或者行权价错配了一档。实测：东财只给滞后价时，
+      // 510500 会算出 −4% 的近月基差（一档 0.25 元 ≈ 3.8%），一眼假。
+      const tol = x.k * (0.004 + 0.08 * x.dte / 365);
+      if (Math.abs((x.px - p.px) - (S - x.k)) > tol) continue;
+      pairs.push({ k: x.k, c: x.px, p: p.px });
     }
     if (!pairs.length) continue;
     const near = atmWindow(pairs, S);
