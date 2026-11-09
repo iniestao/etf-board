@@ -87,7 +87,10 @@ background:var(--bg3)}
    --navH 由 JS 量出来，区块 scroll-margin-top 和表头 sticky 都引用它。 */
 .secnav{position:sticky;top:0;z-index:6;display:flex;gap:2px;align-items:center;
   margin:-2px 0 10px;padding:4px 0;background:rgba(245,246,248,.9);
-  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+  /* 六项在 375px 上必然溢出，横滑比换行好：换行会把吸顶导航顶成两行，吃掉半屏 */
+  overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.secnav::-webkit-scrollbar{display:none}
 .secnav a{font-size:13px;color:var(--txt2);padding:4px 14px;border-radius:6px;cursor:pointer;
   user-select:none;white-space:nowrap}
 .secnav a:hover{color:var(--txt)}
@@ -147,6 +150,37 @@ background:var(--bg3)}
 .mtab:hover{border-color:#c9d6ef}
 .mtab.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8;font-weight:600}
 .mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10.5px;opacity:.7}
+
+/* 期指期权区块：五张卡，桌面两列、手机一列。
+   「基差历史」占整行——曲线要横向空间，塞进半列会把 250 个点压成一团。 */
+.futgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.futgrid .wide{grid-column:1 / -1}
+@media(max-width:900px){.futgrid{grid-template-columns:1fr}.futgrid .wide{grid-column:auto}}
+.futttl{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:7px}
+.futttl b{font-size:12.5px;font-weight:600;color:var(--txt);white-space:nowrap}
+.futttl span{font-size:10.5px;color:var(--txt3)}
+.futgrp td{background:var(--bg3);font-size:11px;color:var(--txt2);font-weight:600;
+padding:5px 9px!important;border-bottom:1px solid var(--line)}
+.futgrp b{font-family:var(--mono);font-weight:600}
+.fq{font-size:10px;padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px}
+.tbl .nm + .code{margin-left:6px}
+/* 期指的表格列多（合约/价格/涨跌/基差/基差率/年化/持仓），375px 一定放不下。
+   这里放开横滑而不是砍列：砍掉哪一列都会有人要，「剩 11 天」和基差率是连着看的。 */
+@media(max-width:900px){
+  #futSec .tbl{overflow-x:auto}
+  /* 横向滚动容器里的表头 sticky 会跟内容叠出重影（表头粘在左上角，行从下面穿过去），
+     这几张表统共十几行，不需要吸顶 */
+  #futSec .tbl thead th{position:static}
+  #futSec table{min-width:400px}
+}
+.futfoot{margin-top:7px;font-size:10.5px;color:var(--txt3);line-height:1.7}
+.quad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.qcell{border:1px solid var(--line);border-radius:7px;padding:8px 10px;background:var(--bg)}
+.qcell b{display:block;font-size:11px;color:var(--txt2);font-weight:500;margin-bottom:3px}
+.qcell u{text-decoration:none;font-family:var(--mono);font-size:15px;font-weight:600}
+.qcell i{display:block;font-style:normal;font-size:10px;color:var(--txt3);margin-top:3px;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sechd .n.warn{color:#a9660a}
 .mhead,.mrow{display:grid;grid-template-columns:minmax(0,1fr) 44px 48px 46px 58px;
   gap:8px;align-items:center}
 /* 宽屏两栏：13 行铺满 1376px 时，第一列会被 1fr 撑到 1148px，
@@ -958,6 +992,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <a data-t="secSec">板块地图</a>
   <a data-t="watchSec">自选</a>
   <a data-t="spdSec">急涨急跌</a>
+  <a data-t="futSec">期指期权</a>
   <a data-t="rankSec">清单</a>
 </nav>
 
@@ -1062,6 +1097,44 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <div class="mkbox">
       <div class="mtabs" id="mktTabs"></div>
       <div id="mktList"><div class="empty">读取中…</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="sec" id="futSec">
+  <div class="sechd"><b>期指期权</b><span class="n" id="futN"></span>
+    <span class="sync" id="btnFut" title="重新读一遍中金所实时行情">刷新</span></div>
+  <div class="dnote">期指基差＝期货−现货，负数即贴水；期权用 <b>K＋购−沽</b> 合成一张期货，再和同月期货对照。年化按自然日折算，剩余不足 3 天不给——那时分母太小，算出来是噪音。</div>
+
+  <div class="futgrid">
+    <div class="mkbox">
+      <div class="futttl"><b>期指基差</b><span id="futBasisSub">四象限是「持仓量变化 × 价格方向」的推断，不是交易所多空</span></div>
+      <div class="tbl" id="futBasis"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
+    </div>
+
+    <div class="mkbox">
+      <div class="futttl"><b>股指期权合成基差</b><span id="futOptIdxSub">IO/MO/HO</span></div>
+      <div class="tbl" id="futOptIdx"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
+    </div>
+
+    <div class="mkbox">
+      <div class="futttl"><b>ETF 期权合成基差</b><span id="futOptEtfSub">沪深 8 个标的</span></div>
+      <div class="tbl" id="futOptEtf"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
+    </div>
+
+    <div class="mkbox">
+      <div class="futttl"><b>多空持仓</b><span id="futPosSub"></span></div>
+      <div class="mtabs" id="futPosTabs">
+        <span class="mtab on" data-p="live">盘中推断</span>
+        <span class="mtab" data-p="settle">收盘结算</span>
+      </div>
+      <div class="tbl" id="futPos"><div class="empty">读取中…</div></div>
+    </div>
+
+    <div class="mkbox wide">
+      <div class="futttl"><b>基差历史</b><span id="futHistSub"></span></div>
+      <div class="mtabs" id="futHistTabs"></div>
+      <div id="futHistChart"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
     </div>
   </div>
 </div>
@@ -1226,6 +1299,7 @@ var LIVE_TS = 0;               // 自选行情最近一次到的时刻（腾讯�
 var g = 'all', sortKey = 'amt', limit = 100, kw = '';
 var DATA_SRC = '', DATA_TS = 0;
 var lastP = {}, timerSlow = null, timerFast = null, timerSpd = null, timerT3 = null, retryTimer = null;
+var timerFut = null;
 
 /* ---------- 分类（浏览器端，带缓存；Worker 端做会吃掉 10ms CPU 预算） ---------- */
 var GROUP_CACHE = new Map();
@@ -6464,6 +6538,25 @@ function schedule(){
     if (TOP3_BUSY) return;
     runTop3(watch.slice(0, 30));
   }, 60000);
+
+  /* 期指期权：盘中 60 秒，盘后 5 分钟。收盘后 16:00~17:00 这段单独加一把劲——
+     中金所的会员持仓和结算价要等它发出来，而这时段的页面如果一直显示昨天的
+     多空表，比不显示更容易误导。查到当天那份出现就自然停止（pos.d === td）。 */
+  clearInterval(timerFut);
+  timerFut = setInterval(function(){
+    if (document.visibilityState === 'hidden') return;
+    loadFut();
+    loadFutOpt('main');
+    if (!isOpen()){
+      var bj = new Date(Date.now() + 8 * 3600e3);
+      var hh = bj.getUTCHours();
+      var td = bj.toISOString().slice(0, 10);
+      if (hh >= 16 && hh < 17 && FUT && FUT.pos && FUT.pos.d !== td){
+        FUTHIST = null;           // 强制重读，Actions 可能刚把新的 fut_daily.json 推上去
+        loadFutHist();
+      }
+    }
+  }, isOpen() ? 60000 : 300000);
 }
 
 /* ---------- 事件 ---------- */
@@ -7163,10 +7256,454 @@ document.getElementById('btnProbe').onclick = function(){
 
 function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
 
+/* ---------- 期指期权 ----------
+   三块数据各走各的接口，互不阻塞：
+     /api/fut      中金所实时（期货 + 股指期权 + 现货）+ 收盘日档里的会员持仓
+     /api/futopt   东财 ETF 期权链，main / rest 两批
+     /api/futhist  Actions 生成的 250 天基线
+   任何一块挂了只影响自己那张卡，整块不消失——这是这个页面一贯的处理方式。 */
+var FUT = null, FUTOPT = {}, FUTHIST = null;
+var FUT_BUSY = false, FUT_OPT_BUSY = false;
+var FUT_TAB = 'live', FUT_HP = 'IF', FUT_HM = 'cmp';
+
+function fNum(v, d){
+  if (v == null || v === '' || !isFinite(v)) return '—';
+  return (+v).toFixed(d);
+}
+function fPct(v, d){
+  if (v == null || v === '' || !isFinite(v)) return '—';
+  return (v > 0 ? '+' : '') + (+v).toFixed(d) + '%';
+}
+function fSign(v){ return v > 0 ? 'up' : (v < 0 ? 'down' : 'flat'); }
+function fInt(v){
+  if (v == null || v === '' || !isFinite(v)) return '—';
+  var n = Math.round(v), neg = n < 0, s = String(Math.abs(n)), out = '';
+  for (var i = 0; i < s.length; i++){
+    if (i && (s.length - i) % 3 === 0) out += ',';
+    out += s.charAt(i);
+  }
+  return (neg ? '-' : '') + out;
+}
+// 持仓量变化推出来的四种状态。名字已经说明它是推断：中金所的持仓量是双边合计，
+// 看不出是哪个方向在开、哪个在平，只能从「仓增还是仓减」+「价涨还是价跌」倒推。
+var FQ = {
+  'up-open':  ['增仓上涨', '#c62f34'],
+  'dn-open':  ['增仓下跌', '#0b7d55'],
+  'up-close': ['减仓上涨', '#a9660a'],
+  'dn-close': ['减仓下跌', '#2563eb'],
+  'flat':     ['持仓持平', '#8b95a5'],
+};
+
+function futStatus(){
+  if (!FUT) return '';
+  if (FUT.stale || FUT.src === 'daily') return '降级 · 收盘值 ' + String(FUT.td || '').slice(5);
+  return isOpen() ? '盘中' : '收盘 ' + String(FUT.td || '').slice(5);
+}
+
+function futFail(msg){
+  var box = document.getElementById('futBasis');
+  if (box){
+    box.innerHTML = '<div class="lerr"><b>期指行情没读上来</b><span>' + esc(msg || '') + '</span>'
+      + '<button id="futRetry">立即重试</button></div>';
+    var b = document.getElementById('futRetry');
+    if (b) b.onclick = function(){ loadFut(); loadFutOpt('main'); };
+  }
+  var n = document.getElementById('futN');
+  if (n) n.textContent = '';
+}
+
+function loadFut(){
+  if (FUT_BUSY) return;
+  FUT_BUSY = true;
+  fetch('/api/fut').then(function(r){ return r.json(); }).then(function(j){
+    FUT_BUSY = false;
+    if (!j || !j.ok){ futFail((j && j.error) || '返回为空'); return; }
+    FUT = j;
+    renderFutAll();
+  }).catch(function(e){
+    FUT_BUSY = false;
+    futFail(e && e.message || String(e));
+  });
+}
+
+function loadFutOpt(g){
+  if (FUT_OPT_BUSY) return;
+  FUT_OPT_BUSY = true;
+  var want = g || 'main';
+  fetch('/api/futopt?g=' + want).then(function(r){ return r.json(); }).then(function(j){
+    FUT_OPT_BUSY = false;
+    if (j && j.ok){ FUTOPT[want] = j; }
+    renderFutOptEtf();
+    // 主标的先回来先看，冷的四个紧接着补——分成两批就是为了这个
+    if (want === 'main' && !FUTOPT.rest) loadFutOpt('rest');
+  }).catch(function(){
+    FUT_OPT_BUSY = false;
+    renderFutOptEtf();
+  });
+}
+
+function renderFutAll(){
+  // 昨收持仓还没生成时，「盘中推断」必然空着——直接落到收盘结算，别让人看到一片空白
+  var anyOi = false;
+  for (var i = 0; i < (FUT.fut || []).length; i++) if (FUT.fut[i].oiD != null){ anyOi = true; break; }
+  if (!anyOi && FUT.pos && FUT_TAB === 'live') FUT_TAB = 'settle';
+
+  renderFutBasis();
+  renderFutOptIdx();
+  renderFutPos();
+  var n = document.getElementById('futN');
+  if (n){
+    var bad = (FUT.partial || []).length;
+    n.textContent = futStatus() + (bad ? ' · 缺 ' + (FUT.partial || []).join('/') : '');
+    n.className = 'n' + (FUT.stale ? ' warn' : '');
+  }
+  stampN('futN', FUT.asof || FUT.ts);
+}
+
+function renderFutBasis(){
+  var box = document.getElementById('futBasis');
+  if (!box) return;
+  var list = FUT.fut || [];
+  if (!list.length){ box.innerHTML = '<div class="empty">没有合约数据</div>'; return; }
+
+  var h = '<table><thead><tr><th class="l">合约</th><th>价格</th><th>涨跌</th>'
+    + '<th title="期货 − 现货，点数。负数=贴水">基差</th>'
+    + '<th title="基差 ÷ 现货 × 100%">基差率</th>'
+    + '<th class="hide-sm" title="基差率 × 365 ÷ 剩余自然日">年化</th>'
+    + (hasOi ? '<th class="hide-sm" title="持仓量双边合计的当日变化，只能推断谁在动">持仓变化</th>' : '')
+    + '</tr></thead><tbody>';
+
+  var order = ['IF', 'IH', 'IC', 'IM'], byP = {};
+  for (var i = 0; i < list.length; i++){
+    var x = list[i];
+    (byP[x.p] = byP[x.p] || []).push(x);
+  }
+  // 昨收持仓还没生成时（收盘日档还没跑），这一列只会是一排「—」，不如整列撤掉
+  var hasOi = false;
+  for (var z = 0; z < list.length; z++) if (list[z].oiD != null){ hasOi = true; break; }
+  var span = hasOi ? 7 : 6;
+  for (var k = 0; k < order.length; k++){
+    var p = order[k], rows = byP[p];
+    if (!rows || !rows.length) continue;
+    var sp = (FUT.spot || {})[rows[0].u];
+    h += '<tr class="futgrp"><td class="l" colspan="4">' + p + (sp ? ' · ' + esc(sp.n || '') : '') + '</td>'
+      + '<td colspan="' + (span - 4) + '" class="l">' + (sp ? fNum(sp.p, 2) + ' <b class="' + fSign(sp.chg) + '">' + fPct(sp.chg, 2) + '</b>' : '现货缺失') + '</td></tr>';
+    for (var j = 0; j < rows.length; j++){
+      var r = rows[j];
+      var q = FQ[r.q] || null;
+      h += '<tr>'
+        + '<td class="l"><span class="nm">' + r.c + '</span>'
+        + '<span class="code">剩 ' + r.dte + ' 天</span></td>'
+        + '<td>' + fNum(r.px, 2) + '</td>'
+        + '<td class="' + fSign(r.chg) + '">' + fPct(r.chg, 2) + '</td>'
+        + '<td class="' + fSign(r.basis) + '">' + fNum(r.basis, 2) + '</td>'
+        + '<td class="' + fSign(r.bp) + '">' + fPct(r.bp, 3) + '</td>'
+        + '<td class="hide-sm ' + fSign(r.ann) + '">' + fPct(r.ann, 2) + '</td>'
+        + (hasOi ? '<td class="hide-sm">' + (r.oiD == null
+            ? '<span class="code">—</span>'
+            : '<span class="' + fSign(r.oiD) + '">' + (r.oiD > 0 ? '+' : '') + fInt(r.oiD) + '</span>'
+              + (q ? ' <span class="fq" style="color:' + q[1] + '">' + q[0] + '</span>' : ''))
+          + '</td>' : '')
+        + '</tr>';
+    }
+  }
+  h += '</tbody></table>';
+  box.innerHTML = h;
+}
+
+function renderFutOptIdx(){
+  var box = document.getElementById('futOptIdx');
+  if (!box) return;
+  var list = FUT.opt || [];
+  if (!list.length){ box.innerHTML = '<div class="empty">期权链没读到</div>'; return; }
+
+  var h = '<table><thead><tr><th class="l">合约</th><th>合成期货</th>'
+    + '<th title="合成期货 − 现货">基差率</th>'
+    + '<th class="hide-sm">年化</th>'
+    + '<th title="合成期货 − 同月期货。两个市场各算一遍，差得多就是套利空间">与期货差</th>'
+    + '<th class="hide-sm" title="认沽成交量 ÷ 认购成交量">PCR</th>'
+    + '</tr></thead><tbody>';
+  var order = ['IO', 'HO', 'MO'], byP = {};
+  for (var i = 0; i < list.length; i++) (byP[list[i].p] = byP[list[i].p] || []).push(list[i]);
+  for (var k = 0; k < order.length; k++){
+    var p = order[k], rows = byP[p];
+    if (!rows || !rows.length) continue;
+    h += '<tr class="futgrp"><td class="l" colspan="6">' + p + ' · ' + esc(rows[0].u === '000300' ? '沪深300' : rows[0].u === '000016' ? '上证50' : '中证1000') + '</td></tr>';
+    for (var j = 0; j < rows.length; j++){
+      var r = rows[j];
+      h += '<tr>'
+        + '<td class="l"><span class="nm">' + r.m + '</span><span class="code">剩 ' + r.dte + ' 天</span></td>'
+        + '<td>' + fNum(r.syn, 2) + '</td>'
+        + '<td class="' + fSign(r.bp) + '">' + fPct(r.bp, 3) + '</td>'
+        + '<td class="hide-sm ' + fSign(r.ann) + '">' + fPct(r.ann, 2) + '</td>'
+        + '<td class="' + fSign(r.fb) + '">' + (r.fb == null ? '—' : (r.fb > 0 ? '+' : '') + fNum(r.fb, 2)) + '</td>'
+        + '<td class="hide-sm">' + fNum(r.pcr, 2) + '</td></tr>';
+    }
+  }
+  h += '</tbody></table>';
+  box.innerHTML = h;
+}
+
+function renderFutOptEtf(){
+  var box = document.getElementById('futOptEtf');
+  if (!box) return;
+  var main = (FUTOPT.main && FUTOPT.main.items) || [];
+  var rest = (FUTOPT.rest && FUTOPT.rest.items) || [];
+  var all = main.concat(rest);
+  if (!all.length){
+    box.innerHTML = '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>';
+    return;
+  }
+  var h = '<table><thead><tr><th class="l">标的</th><th>现价</th>'
+    + '<th title="最近到期那一档的合成期货基差率">近月</th>'
+    + '<th class="hide-sm">年化</th>'
+    + '<th class="hide-sm" title="第二个到期月">次月</th>'
+    + '<th class="hide-sm" title="认沽 ÷ 认购 成交量">PCR</th>'
+    + '</tr></thead><tbody>';
+  for (var i = 0; i < all.length; i++){
+    var it = all[i], ms = it.months || [];
+    var m0 = ms[0] || {}, m1 = ms[1] || {};
+    h += '<tr>'
+      + '<td class="l"><span class="nm">' + esc(it.n) + '</span><span class="code">' + it.c + '</span></td>'
+      + '<td>' + fNum(it.S, 3) + '</td>'
+      + '<td class="' + fSign(m0.bp) + '">' + fPct(m0.bp, 3) + '</td>'
+      + '<td class="hide-sm ' + fSign(m0.ann) + '">' + fPct(m0.ann, 2) + '</td>'
+      + '<td class="hide-sm ' + fSign(m1.bp) + '">' + fPct(m1.bp, 3) + '</td>'
+      + '<td class="hide-sm">' + fNum(m0.pcr, 2) + '</td></tr>';
+  }
+  h += '</tbody></table>';
+  if (rest.length < 4) h += '<div class="futfoot">另外 ' + (4 - rest.length) + ' 个标的还在读…</div>';
+  box.innerHTML = h;
+}
+
+function renderFutPos(){
+  var box = document.getElementById('futPos');
+  if (!box) return;
+  var sub = document.getElementById('futPosSub');
+  var tabs = document.querySelectorAll('#futPosTabs .mtab');
+  for (var t = 0; t < tabs.length; t++) tabs[t].classList.toggle('on', tabs[t].getAttribute('data-p') === FUT_TAB);
+
+  if (FUT_TAB === 'live'){
+    var list = (FUT.fut || []).filter(function(x){ return x.oiD != null; });
+    if (!sub) ;
+    if (sub) sub.textContent = '持仓量双边合计 → 只能推断，不是交易所多空';
+    if (!list.length){
+      box.innerHTML = '<div class="empty">今天还没有昨收持仓可比<br><span class="code">收盘日档生成后，下一次开盘就有四象限了</span></div>';
+      return;
+    }
+    var cnt = { 'up-open': [], 'dn-open': [], 'up-close': [], 'dn-close': [], 'flat': [] };
+    for (var i = 0; i < list.length; i++) (cnt[list[i].q] = cnt[list[i].q] || []).push(list[i]);
+    var cells = [['up-open', '增仓 · 价涨'], ['dn-open', '增仓 · 价跌'], ['up-close', '减仓 · 价涨'], ['dn-close', '减仓 · 价跌']];
+    var h = '<div class="quad">';
+    for (var k = 0; k < cells.length; k++){
+      var key = cells[k][0], arr = cnt[key] || [];
+      h += '<div class="qcell"><b>' + cells[k][1] + '</b>'
+        + '<u style="color:' + FQ[key][1] + '">' + arr.length + ' 个合约</u>'
+        + '<i>' + (arr.length ? arr.slice(0, 4).map(function(x){ return x.c; }).join(' ') : '—') + '</i></div>';
+    }
+    h += '</div>';
+    var flat = (cnt.flat || []).length + (list.length - Object.keys(cnt).reduce(function(s, kk){ return s + cnt[kk].length; }, 0));
+    h += '<div class="futfoot">共 ' + list.length + ' 个合约有昨日持仓可比，其中 ' + flat + ' 个变化不足阈值（按昨仓 0.2%、最少 50 手）。</div>';
+    box.innerHTML = h;
+    return;
+  }
+
+  var pos = FUT.pos;
+  if (!pos || !pos.rows || !pos.rows.length){
+    if (sub) sub.textContent = '前 20 会员';
+    box.innerHTML = '<div class="empty">收盘结算还没出来<br><span class="code">中金所每天收盘后发布前 20 会员持仓，约 16:00 前后</span></div>';
+    return;
+  }
+  if (sub) sub.textContent = '前 20 会员 · ' + String(pos.d || '').slice(5) + ' 收盘';
+  var h2 = '<table><thead><tr><th class="l">合约</th><th>多单</th><th class="hide-sm">增减</th>'
+    + '<th>空单</th><th class="hide-sm">增减</th><th title="空单 − 多单，正数=净空">净空</th>'
+    + '<th class="hide-sm">净空变化</th></tr></thead><tbody>';
+  var ord = ['IF', 'IH', 'IC', 'IM'];
+  var rows = pos.rows.slice().sort(function(a, b){
+    var ia = ord.indexOf(a.p), ib = ord.indexOf(b.p);
+    if (ia !== ib) return ia - ib;
+    return a.c < b.c ? -1 : 1;
+  });
+  for (var j = 0; j < rows.length; j++){
+    var r = rows[j];
+    h2 += '<tr>'
+      + '<td class="l"><span class="nm">' + r.c + '</span></td>'
+      + '<td>' + fInt(r.lv) + '</td>'
+      + '<td class="hide-sm ' + fSign(r.lvD) + '">' + (r.lvD > 0 ? '+' : '') + fInt(r.lvD) + '</td>'
+      + '<td>' + fInt(r.sv) + '</td>'
+      + '<td class="hide-sm ' + fSign(r.svD) + '">' + (r.svD > 0 ? '+' : '') + fInt(r.svD) + '</td>'
+      + '<td class="' + fSign(r.netS) + '">' + (r.netS > 0 ? '+' : '') + fInt(r.netS) + '</td>'
+      + '<td class="hide-sm ' + fSign(r.netSD) + '">' + (r.netSD > 0 ? '+' : '') + fInt(r.netSD) + '</td></tr>';
+  }
+  h2 += '</tbody></table>';
+  box.innerHTML = h2;
+}
+
+function loadFutHist(){
+  if (FUTHIST) { renderFutHist(); return; }
+  fetch('/api/futhist').then(function(r){ return r.json(); }).then(function(j){
+    FUTHIST = j || { ok: false };
+    renderFutHist();
+  }).catch(function(e){
+    FUTHIST = { ok: false, error: e && e.message };
+    renderFutHist();
+  });
+}
+
+function fQuant(sorted, q){
+  if (!sorted.length) return null;
+  var i = (sorted.length - 1) * q;
+  var lo = Math.floor(i), hi = Math.ceil(i);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
+}
+
+function renderFutHist(){
+  var box = document.getElementById('futHistChart');
+  var tabs = document.getElementById('futHistTabs');
+  if (!box || !tabs) return;
+
+  // 品种 tab + 口径 tab 只建一次，之后只切 class
+  if (!tabs.getAttribute('data-built')){
+    var prods = ['IF', 'IH', 'IC', 'IM', 'IO', 'HO', 'MO'];
+    var s = '';
+    for (var i = 0; i < prods.length; i++){
+      s += '<span class="mtab' + (prods[i] === FUT_HP ? ' on' : '') + '" data-h="' + prods[i] + '">' + prods[i] + '</span>';
+    }
+    s += '<span class="mtab' + (FUT_HM === 'cmp' ? ' on' : '') + '" data-m="cmp" style="margin-left:10px">30 天恒定</span>'
+      + '<span class="mtab' + (FUT_HM === 'bp' ? ' on' : '') + '" data-m="bp">主力近月</span>';
+    tabs.innerHTML = s;
+    tabs.setAttribute('data-built', '1');
+  }
+  var ks = tabs.getElementsByTagName('span');
+  for (var k = 0; k < ks.length; k++){
+    if (ks[k].getAttribute('data-h')) ks[k].classList.toggle('on', ks[k].getAttribute('data-h') === FUT_HP);
+    if (ks[k].getAttribute('data-m')) ks[k].classList.toggle('on', ks[k].getAttribute('data-m') === FUT_HM);
+  }
+
+  if (!FUTHIST){ box.innerHTML = '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>'; return; }
+  if (!FUTHIST.ok || !FUTHIST.d || FUTHIST.d.length < 10){
+    box.innerHTML = '<div class="empty">历史基线还没生成<br><span class="code">' +
+      esc((FUTHIST && (FUTHIST.error || FUTHIST.msg)) || 'fut_daily.json 不存在') + '</span></div>';
+    return;
+  }
+
+  var isOpt = FUT_HP === 'IO' || FUT_HP === 'HO' || FUT_HP === 'MO';
+  var src = ((isOpt ? FUTHIST.opt : FUTHIST.fut) || {})[FUT_HP] || {};
+  var vals = src[FUT_HM] || [];
+  var dates = FUTHIST.d || [];
+  if (!vals.length){ box.innerHTML = '<div class="empty">这个品种还没有历史</div>'; return; }
+
+  var clean = [];
+  for (var t = 0; t < vals.length; t++) if (vals[t] != null && isFinite(vals[t])) clean.push(vals[t]);
+  clean.sort(function(a, b){ return a - b; });
+  var cur = null;
+  for (var t2 = vals.length - 1; t2 >= 0; t2--) if (vals[t2] != null){ cur = vals[t2]; break; }
+  var p10 = fQuant(clean, 0.1), p50 = fQuant(clean, 0.5), p90 = fQuant(clean, 0.9);
+  var rank = 0;
+  for (var t3 = 0; t3 < clean.length; t3++) if (clean[t3] <= cur) rank++;
+  var pctile = clean.length ? Math.round(rank / clean.length * 100) : 0;
+
+  var sub = document.getElementById('futHistSub');
+  if (sub){
+    sub.innerHTML = (FUT_HM === 'cmp' ? '30 天恒定到期' : '主力近月')
+      + ' · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 3) + '</b>'
+      + ' · 分位 ' + pctile + '%（' + clean.length + ' 天样本）'
+      + ' · p10 ' + fPct(p10, 2) + ' / 中位 ' + fPct(p50, 2) + ' / p90 ' + fPct(p90, 2);
+  }
+  box.innerHTML = futHistSvg(vals, dates, { p10: p10, p50: p50, p90: p90, cur: cur });
+
+  if (clean.length < 60){
+    box.insertAdjacentHTML('beforeend', '<div class="futfoot">样本只有 ' + clean.length + ' 天，分位会偏极端，先当参考。</div>');
+  }
+}
+
+/* 基差率曲线的纵轴是百分比、0 就是平水。这里没有复用 ovChartSvg：
+   那个函数的语义是「相对某个基准的涨跌幅」，标题文案、右侧价格标牌都不适用，
+   硬套会把「较本时段开盘」这种话印在基差图上。 */
+function futHistSvg(vals, dates, st){
+  var W = 880, H = 190, ml = 46, mr = 12, mt = 12, mb = 20;
+  var n = vals.length;
+  var mn = Infinity, mx = -Infinity, i;
+  for (i = 0; i < n; i++){
+    if (vals[i] == null || !isFinite(vals[i])) continue;
+    if (vals[i] < mn) mn = vals[i];
+    if (vals[i] > mx) mx = vals[i];
+  }
+  if (!isFinite(mn)) return '<div class="empty">没有有效数据</div>';
+  if (st.p90 != null) mx = Math.max(mx, st.p90);
+  if (st.p10 != null) mn = Math.min(mn, st.p10);
+  var padV = (mx - mn) * 0.12 || 0.2;
+  var lo = mn - padV, hi = mx + padV;
+  var xOf = function(idx){ return ml + (n <= 1 ? 0 : idx / (n - 1)) * (W - ml - mr); };
+  var yOf = function(v){ return mt + (1 - (v - lo) / (hi - lo)) * (H - mt - mb); };
+
+  var d = '', open = false, lastX = 0, lastY = 0;
+  for (i = 0; i < n; i++){
+    var v = vals[i];
+    if (v == null || !isFinite(v)){ open = false; continue; }
+    var x = xOf(i), y = yOf(v);
+    d += (open ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    open = true; lastX = x; lastY = y;
+  }
+
+  var y0 = yOf(0);
+  var g = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '" xmlns="http://www.w3.org/2000/svg">';
+  // 0 轴：基差率过 0 就是平水，这条线是整张图的分界
+  if (y0 > mt && y0 < H - mb){
+    g += '<line x1="' + ml + '" y1="' + y0.toFixed(1) + '" x2="' + (W - mr) + '" y2="' + y0.toFixed(1)
+      + '" stroke="var(--line)" stroke-width="1"/>';
+    g += '<text x="' + (ml - 6) + '" y="' + (y0 + 4).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">0</text>';
+  }
+  // p10 / p90 虚线：贴水是不是极端，看的是「现在离这对线有多远」
+  var bands = [[st.p90, '#f0b6b6'], [st.p10, '#b6dcc9']];
+  for (i = 0; i < bands.length; i++){
+    if (bands[i][0] == null) continue;
+    var by = yOf(bands[i][0]);
+    if (by < mt || by > H - mb) continue;
+    g += '<line x1="' + ml + '" y1="' + by.toFixed(1) + '" x2="' + (W - mr) + '" y2="' + by.toFixed(1)
+      + '" stroke="' + bands[i][1] + '" stroke-width="1" stroke-dasharray="4 4"/>';
+    g += '<text x="' + (W - mr - 2) + '" y="' + (by - 3).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">'
+      + (i === 0 ? 'p90 ' : 'p10 ') + (+bands[i][0]).toFixed(2) + '%</text>';
+  }
+  g += '<path d="' + d + '" fill="none" stroke="#2563eb" stroke-width="1.4" stroke-linejoin="round"/>';
+  g += '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.8" fill="#2563eb"/>';
+  g += '<text x="' + ml + '" y="' + (H - 5) + '" font-size="10" fill="var(--txt3)">' + esc(String(dates[0] || '').slice(2)) + '</text>';
+  g += '<text x="' + (W - mr) + '" y="' + (H - 5) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + esc(String(dates[n - 1] || '').slice(2)) + '</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (yOf(hi) + 10).toFixed(1) + '" font-size="10" fill="var(--txt2)" text-anchor="end">' + hi.toFixed(2) + '%</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (yOf(lo) - 2).toFixed(1) + '" font-size="10" fill="var(--txt2)" text-anchor="end">' + lo.toFixed(2) + '%</text>';
+  g += '</svg>';
+  return g;
+}
+
+function futInit(){
+  var btn = document.getElementById('btnFut');
+  if (btn) btn.onclick = function(){ FUT = null; loadFut(); loadFutOpt('main'); if (FUTHIST) loadFutHist(); };
+  var tabs = document.getElementById('futPosTabs');
+  if (tabs) tabs.addEventListener('click', function(e){
+    var t = e.target && e.target.closest ? e.target.closest('.mtab') : null;
+    if (!t) return;
+    FUT_TAB = t.getAttribute('data-p') || 'live';
+    renderFutPos();
+  });
+  var ht = document.getElementById('futHistTabs');
+  if (ht) ht.addEventListener('click', function(e){
+    var t = e.target && e.target.closest ? e.target.closest('.mtab') : null;
+    if (!t) return;
+    var h = t.getAttribute('data-h'), m = t.getAttribute('data-m');
+    if (h) FUT_HP = h;
+    if (m) FUT_HM = m;
+    renderFutHist();
+  });
+  loadFut();
+  loadFutOpt('main');
+  loadFutHist();
+}
+
 /* 锚点导航：点击平滑滚动；滚动时把视口上缘以下 120px 处的区块点亮。
    量出来的 --navH 同时供区块 scroll-margin-top 和表格表头 sticky 用，
    窗口尺寸变化（转屏、缩放）时重算。 */
-var NAV_SECS = ['onCard', 'secSec', 'watchSec', 'spdSec', 'rankSec'];   // 按文档顺序
+var NAV_SECS = ['onCard', 'secSec', 'watchSec', 'spdSec', 'futSec', 'rankSec'];   // 按文档顺序
 function navMeasure(){
   var nav = document.getElementById('secNav');
   if (nav) document.documentElement.style.setProperty('--navH', (nav.offsetHeight + 8) + 'px');
@@ -7241,6 +7778,7 @@ if (RS_MODE){
   // 全 A 快照和全量行情并行：它只要 0.5 秒，等 loadFull 的三四秒跑完再发，
   // 首屏那张卡片就已经用基线最后一天画完了（会显示「11-06」而不是「今天」）
   loadMktSnap();
+  futInit();                    // 期指这块不依赖全市场行情，先发出去
   loadFull().then(function(){
     renderCards();
     mktInit();

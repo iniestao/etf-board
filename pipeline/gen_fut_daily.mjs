@@ -1,0 +1,469 @@
+#!/usr/bin/env node
+/**
+ * 期指期权日档：中金所 XML → dist/fut_daily.json（250 天历史）+ dist/fut_last.json（最新一天）
+ *
+ * 为什么放在 Actions 而不是 Worker 里算：
+ *   中金所的单日全品种文件 539KB / 788 个合约，Worker 免费版只有 10ms CPU，
+ *   解析它必然超时。这里一天跑一次，慢一点无所谓。
+ *
+ * 用法：
+ *   node pipeline/gen_fut_daily.mjs                 # 补最近 5 个工作日（幂等，已有的跳过）
+ *   node pipeline/gen_fut_daily.mjs --backfill 250  # 首次建库
+ *   node pipeline/gen_fut_daily.mjs --force         # 忽略已有数据重算
+ *
+ * 产物由 update-data.yml 的 cp 白名单带进 data 分支，Worker 用 readAsset 读。
+ */
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const DIST = join(ROOT, 'dist');
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+const args = process.argv.slice(2);
+const BACKFILL = (() => {
+  const i = args.indexOf('--backfill');
+  return i >= 0 ? Math.max(1, parseInt(args[i + 1], 10) || 250) : 5;
+})();
+const FORCE = args.includes('--force');
+const POS_DAYS = 60;          // 会员持仓只补最近 60 天：再往前没人看，且一天 4 个 90KB 文件
+const KEEP = 250;
+
+const FUT_PRODS = ['IF', 'IC', 'IH', 'IM'];
+const OPT_PRODS = ['IO', 'MO', 'HO'];
+const FUT_MAP = { IF: '000300', IH: '000016', IC: '000905', IM: '000852' };
+const OPT_MAP = { IO: 'IF', HO: 'IH', MO: 'IM' };
+const SPOT_SECID = { '000300': '1.000300', '000905': '1.000905', '000016': '1.000016', '000852': '1.000852' };
+
+function log(...a) { console.log(...a); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchText(url, tries = 3, timeout = 20000) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': UA, Referer: 'http://www.cffex.com.cn/' },
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.text();
+    } catch (e) {
+      last = e;
+      await sleep(400 * (i + 1));
+    }
+  }
+  throw last;
+}
+
+/** 第三个周五。中金所股指期货/期权交割日，遇法定假日顺延一天（这里不查表）。 */
+function thirdFriday(ym) {
+  const y = 2000 + parseInt(ym.slice(0, 2), 10);
+  const m = parseInt(ym.slice(2, 4), 10);
+  const wd = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  const day = 1 + ((5 - wd + 7) % 7) + 14;
+  return Date.UTC(y, m - 1, day);
+}
+
+function dteOn(dateStr, ym) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return Math.round((thirdFriday(ym) - Date.UTC(y, m - 1, d)) / 86400e3);
+}
+
+function median(a) {
+  const s = a.slice().sort((x, y) => x - y);
+  const n = s.length;
+  if (!n) return null;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+function atmWindow(pairs, S) {
+  const byDist = pairs.slice().sort((a, b) => Math.abs(a.k - S) - Math.abs(b.k - S));
+  for (const w of [0.03, 0.05, 0.08, 0.12]) {
+    const near = byDist.filter((x) => Math.abs(x.k / S - 1) <= w).slice(0, 5);
+    if (near.length >= 3) return near;
+  }
+  return byDist.slice(0, Math.min(3, byDist.length));
+}
+
+function cmValue(list) {
+  const a = list.filter((x) => x.ann != null && x.dte > 0).sort((x, y) => x.dte - y.dte);
+  if (!a.length) return null;
+  if (a.length < 2 || a[0].dte > 30) return +a[0].bp.toFixed(3);
+  for (let i = 0; i < a.length - 1; i++) {
+    const x = a[i], y = a[i + 1];
+    if (x.dte <= 30 && y.dte >= 30) {
+      const w = (30 - x.dte) / (y.dte - x.dte);
+      return +(x.bp + (y.bp - x.bp) * w).toFixed(3);
+    }
+  }
+  return +a[a.length - 1].bp.toFixed(3);
+}
+
+/** 单日全品种行情：一次 539KB，期货 + 期权都在里面 */
+function parseDailyXml(xml) {
+  const out = [];
+  const re = /<dailydata>([\s\S]*?)<\/dailydata>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const b = m[1];
+    const g = (tag) => {
+      const x = b.match(new RegExp('<' + tag + '>([^<]*)</' + tag + '>'));
+      return x ? x[1] : '';
+    };
+    const id = g('instrumentid');
+    if (!id) continue;
+    out.push({
+      id,
+      td: g('tradingday'),
+      close: +g('closeprice') || 0,
+      settle: +g('settlementprice') || 0,
+      preSettle: +g('presettlementprice') || 0,
+      preOi: +g('preopeninterest') || 0,
+      oi: +g('openinterest') || 0,
+      vol: +g('volume') || 0,
+      prod: g('productid') || id.replace(/\d.*$/, ''),
+    });
+  }
+  return out;
+}
+
+/** 会员持仓排名：datatypeid 1=持买单量 2=持卖单量，varvolume 是较前一日的增减 */
+function parsePosXml(xml, prod, date) {
+  const rows = [];
+  // <data Value="1" Text="IF2611"> 带属性，不能只匹配 <data>
+  const re = /<data[^>]*>([\s\S]*?)<\/data>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const b = m[1];
+    const g = (tag) => {
+      const x = b.match(new RegExp('<' + tag + '>([^<]*)</' + tag + '>'));
+      return x ? x[1] : '';
+    };
+    const inst = g('instrumentid');
+    const dt = g('datatypeid');
+    if (!inst || (dt !== '1' && dt !== '2')) continue;
+    rows.push({
+      c: inst, type: dt,
+      v: +g('volume') || 0,
+      dv: +g('varvolume') || 0,
+    });
+  }
+  // 按合约汇总
+  const byC = new Map();
+  for (const r of rows) {
+    let x = byC.get(r.c);
+    if (!x) { x = { c: r.c, lv: 0, lvD: 0, sv: 0, svD: 0 }; byC.set(r.c, x); }
+    if (r.type === '1') { x.lv += r.v; x.lvD += r.dv; } else { x.sv += r.v; x.svD += r.dv; }
+  }
+  const list = [...byC.values()].map((x) => ({ ...x, p: prod, netS: x.sv - x.lv, netSD: x.svD - x.lvD }));
+  list.sort((a, b) => (a.c < b.c ? -1 : 1));
+  return { d: date, rows: list };
+}
+
+// ---------------------------------------------------------------- 现货收盘
+async function fetchSpotClose() {
+  const out = {};
+  for (const [code, secid] of Object.entries(SPOT_SECID)) {
+    const u = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=' + secid
+      + '&klt=101&fqt=1&lmt=320&end=20500101'
+      + '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f53';
+    let map = {};
+    // 少一个现货指数，对应品种（IF/IH/IC/IM）当天的基差全成 null，而且
+    // 期权合成基差也会跟着整块消失——一次抖动不值得毁掉一天的数据，重试三次
+    for (let k = 0; k < 3; k++) {
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const kl = (j && j.data && j.data.klines) || [];
+        const m = {};
+        for (const s of kl) {
+          const a = s.split(',');
+          m[a[0]] = +a[1];
+        }
+        if (Object.keys(m).length) { map = m; break; }
+        throw new Error('空数据');
+      } catch (e) {
+        if (k === 2) log('  现货 ' + code + ' 拉取失败（重试 3 次）：' + e.message);
+        else await sleep(800 * (k + 1));
+      }
+    }
+    out[code] = map;
+    await sleep(150);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- 单日计算
+function buildDay(rows, spotMap, posObj) {
+  const S = {};   // 品种现货收盘
+  for (const p of FUT_PRODS) {
+    const code = FUT_MAP[p];
+    S[p] = spotMap[code] || 0;
+  }
+
+  const futs = rows.filter((r) => FUT_PRODS.includes(r.prod) && /\d{4}$/.test(r.id));
+  const opts = rows.filter((r) => OPT_PRODS.includes(r.prod) && /-[CP]-/.test(r.id));
+
+  const futRows = [];
+  const futPx = {};      // prod -> {ym: close}
+  for (const r of futs) {
+    const ym = r.id.slice(2, 6);
+    const px = r.close > 0 ? r.close : r.settle;
+    if (!(px > 0)) continue;
+    (futPx[r.prod] = futPx[r.prod] || {})[ym] = px;
+    const s = S[r.prod];
+    const basis = s ? px - s : null;
+    const bp = s ? basis / s * 100 : null;
+    const dte = dteOn(currentDate, ym);
+    futRows.push({
+      c: r.id, p: r.prod, ym, px,
+      chg: r.preSettle > 0 ? +((px - r.preSettle) / r.preSettle * 100).toFixed(2) : 0,
+      oi: r.oi, oiD: r.preOi ? r.oi - r.preOi : null, vol: r.vol,
+      dte, basis: s ? +basis.toFixed(2) : null, bp: s ? +bp.toFixed(3) : null,
+      ann: s && dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+    });
+  }
+  futRows.sort((a, b) => (a.c < b.c ? -1 : 1));
+
+  // 期权合成期货：按品种分月，ATM±3% 中位数
+  const optRows = [];
+  const byProd = new Map();
+  for (const r of opts) {
+    const m = r.id.match(/^([A-Z]+)(\d{4})-([CP])-(\d+(?:\.\d+)?)$/);
+    if (!m) continue;
+    const px = r.close > 0 ? r.close : r.settle;
+    if (!(px > 0)) continue;
+    const key = m[1] + m[2];
+    let g = byProd.get(key);
+    if (!g) { g = { prod: m[1], ym: m[2], c: [], p: [] }; byProd.set(key, g); }
+    (m[3] === 'C' ? g.c : g.p).push({ k: +m[4], px, vol: r.vol, oi: r.oi });
+  }
+  for (const g of byProd.values()) {
+    const fp = OPT_MAP[g.prod];
+    const s = fp ? S[fp] : 0;
+    if (!s) continue;
+    const pm = new Map();
+    for (const x of g.p) pm.set(x.k, x);
+    const pairs = [];
+    for (const x of g.c) {
+      const p = pm.get(x.k);
+      if (p) pairs.push({ k: x.k, c: x.px, p: p.px });
+    }
+    if (!pairs.length) continue;
+    const near = atmWindow(pairs, s);
+    if (!near.length) continue;
+    const syn = median(near.map((x) => x.k + x.c - x.p));
+    const volC = g.c.reduce((a, x) => a + x.vol, 0);
+    const volP = g.p.reduce((a, x) => a + x.vol, 0);
+    const oiC = g.c.reduce((a, x) => a + x.oi, 0);
+    const oiP = g.p.reduce((a, x) => a + x.oi, 0);
+    const dte = dteOn(currentDate, g.ym);
+    const basis = syn - s;
+    const bp = basis / s * 100;
+    const f = (futPx[fp] || {})[g.ym];
+    optRows.push({
+      p: g.prod, u: FUT_MAP[fp], m: g.ym, dte,
+      syn: +syn.toFixed(2), basis: +basis.toFixed(2), bp: +bp.toFixed(3),
+      ann: dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+      atm: near[0].k, n: near.length,
+      pcr: volC > 0 ? +(volP / volC).toFixed(2) : (oiC > 0 ? +(oiP / oiC).toFixed(2) : null),
+      futC: f != null ? fp + g.ym : null,
+      fb: f != null ? +(syn - f).toFixed(2) : null,
+    });
+  }
+  optRows.sort((a, b) => (a.p === b.p ? (a.m < b.m ? -1 : 1) : (a.p < b.p ? -1 : 1)));
+
+  return { fut: futRows, opt: optRows, spot: S, pos: posObj };
+}
+
+// ---------------------------------------------------------------- 日期
+function shToday() {
+  return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+}
+
+function prevWeekdays(from, n) {
+  const out = [];
+  const t = new Date(from + 'T00:00:00Z');
+  while (out.length < n) {
+    t.setUTCDate(t.getUTCDate() - 1);
+    const wd = t.getUTCDay();
+    if (wd !== 0 && wd !== 6) out.push(t.toISOString().slice(0, 10));
+  }
+  return out.reverse();
+}
+
+let currentDate = '';
+
+// ---------------------------------------------------------------- 主流程
+async function main() {
+  if (!existsSync(DIST)) mkdirSync(DIST, { recursive: true });
+
+  const dailyPath = join(DIST, 'fut_daily.json');
+  let hist = { ok: true, d: [], spot: {}, fut: {}, opt: {}, pos: {} };
+  // --force 是「重算」不是「追加」：从空表开始，否则同一批日期会被写两遍，
+  // 数组长度翻倍、和日期对不上，前端按索引取会串到隔壁那天
+  if (!FORCE && existsSync(dailyPath)) {
+    try { hist = JSON.parse(readFileSync(dailyPath, 'utf8')); } catch (e) { log('旧日档读不出来，重建：' + e.message); }
+  }
+  const have = new Set(hist.d || []);
+
+  const today = shToday();
+  // 升序、以今天收尾：fut_last.json 要的是「最新一天」，所以今天必须最后处理；
+  // 反过来的话 _last 会停在中间某天，oiD 基准和 pos 都跟着错位
+  const prev = prevWeekdays(today, BACKFILL);
+  const dates = prev.concat([today]).slice(-BACKFILL);
+  const todo = dates.filter((d) => FORCE || !have.has(d));
+  log(`目标 ${dates.length} 天（${dates[dates.length - 1]} ~ ${dates[0]}），已有 ${dates.length - todo.length} 天，本次补 ${todo.length} 天`);
+
+  const spotHist = await fetchSpotClose();
+  log('现货收盘拿到 ' + Object.entries(spotHist).map(([k, v]) => k + ':' + Object.keys(v).length).join(' '));
+
+  let added = 0;
+  for (let i = 0; i < todo.length; i++) {
+    const date = todo[i];
+    currentDate = date;
+    const ymd = date.replace(/-/g, '');
+    const ymDir = ymd.slice(0, 6) + '/' + ymd.slice(6, 8);
+
+    let xml;
+    try {
+      xml = await fetchText('http://www.cffex.com.cn/sj/hqsj/rtj/' + ymDir + '/index.xml');
+    } catch (e) {
+      log(`  ${date} 日行情拿不到（${e.message}）——非交易日就跳过`);
+      continue;
+    }
+    const rows = parseDailyXml(xml);
+    if (!rows.length) { log(`  ${date} 解析出 0 行，跳过`); continue; }
+
+    // 会员持仓只补最近 POS_DAYS 天（dates 是升序，所以看的是「离末尾多远」）
+    let posObj = null;
+    if (dates.length - 1 - dates.indexOf(date) < POS_DAYS) {
+      const parts = [];
+      for (const p of FUT_PRODS) {
+        try {
+          const px = await fetchText('http://www.cffex.com.cn/sj/ccpm/' + ymDir + '/' + p + '.xml', 2);
+          parts.push(...parsePosXml(px, p, date).rows);
+        } catch (e) { /* 单个品种失败不影响其他 */ }
+        await sleep(120);
+      }
+      if (parts.length) posObj = { d: date, rows: parts };
+    }
+
+    const spotMap = {};
+    for (const code of Object.keys(SPOT_SECID)) {
+      const v = (spotHist[code] || {})[date];
+      if (v) spotMap[code] = v;
+    }
+    if (Object.keys(spotMap).length < 3) { log(`  ${date} 现货收盘缺，跳过`); continue; }
+
+    // 逐日写进历史
+    for (const [code, v] of Object.entries(spotMap)) {
+      (hist.spot[code] = hist.spot[code] || []).push(v);
+    }
+    const day = buildDay(rows, spotMap, posObj);
+
+    const front = {};   // 每个品种的主力（最近月）
+    for (const p of FUT_PRODS) {
+      const l = day.fut.filter((x) => x.p === p && x.dte >= 0).sort((a, b) => a.dte - b.dte);
+      if (l.length) front[p] = l[0];
+    }
+
+    for (const p of FUT_PRODS) {
+      const f = hist.fut[p] = hist.fut[p] || { b: [], bp: [], ann: [], cmp: [], oi: [] };
+      const x = front[p] || {};
+      f.b.push(x.basis == null ? null : x.basis);
+      f.bp.push(x.bp == null ? null : x.bp);
+      f.ann.push(x.ann == null ? null : x.ann);
+      f.cmp.push(cmValue(day.fut.filter((y) => y.p === p)));
+      f.oi.push(x.oi == null ? null : x.oi);
+    }
+    for (const p of OPT_PRODS) {
+      const o = hist.opt[p] = hist.opt[p] || { b: [], bp: [], ann: [], cmp: [], pcr: [] };
+      const l = day.opt.filter((x) => x.p === p && x.dte >= 0).sort((a, b) => a.dte - b.dte);
+      const x = l[0] || {};
+      o.b.push(x.basis == null ? null : x.basis);
+      o.bp.push(x.bp == null ? null : x.bp);
+      o.ann.push(x.ann == null ? null : x.ann);
+      o.cmp.push(cmValue(day.opt.filter((y) => y.p === p)));
+      o.pcr.push(x.pcr == null ? null : x.pcr);
+    }
+    // 会员持仓：前 20 名合计。老于 POS_DAYS 的天推 null 占位，保证数组和日期等长
+    for (const p of FUT_PRODS) {
+      const g = hist.pos[p] = hist.pos[p] || { lvD: [], svD: [], netSD: [], netS: [] };
+      const rs = posObj ? posObj.rows.filter((x) => x.p === p) : [];
+      if (rs.length) {
+        const lvD = rs.reduce((s, x) => s + x.lvD, 0);
+        const svD = rs.reduce((s, x) => s + x.svD, 0);
+        const lv = rs.reduce((s, x) => s + x.lv, 0);
+        const sv = rs.reduce((s, x) => s + x.sv, 0);
+        g.lvD.push(lvD); g.svD.push(svD); g.netSD.push(svD - lvD); g.netS.push(sv - lv);
+      } else {
+        g.lvD.push(null); g.svD.push(null); g.netSD.push(null); g.netS.push(null);
+      }
+    }
+    hist.d.push(date);
+
+    // 最新那份快照单独存：Worker 冷启动时只读 15KB，不必 parse 90KB 历史
+    if (!hist._last || date >= hist._last.td) {
+      hist._last = {
+        ok: true, td: date, ts: Date.now(),
+        spot: Object.fromEntries(Object.entries(spotMap).map(([k, v]) => [k, { p: v }])),
+        fut: day.fut.map((x) => ({ c: x.c, p: x.p, u: FUT_MAP[x.p], px: x.px, chg: x.chg,
+          vol: x.vol, oi: x.oi, oiD: x.oiD, dte: x.dte, basis: x.basis, bp: x.bp, ann: x.ann })),
+        opt: day.opt,
+        pos: posObj,
+      };
+    }
+    added++;
+    log(`  ${date} 期货 ${day.fut.length} 行 / 期权 ${day.opt.length} 行` + (posObj ? ` / 持仓 ${posObj.rows.length} 行` : ''));
+    await sleep(150);
+  }
+
+  // 收尾：按日期排序、截断到 KEEP 天
+  const idx = hist.d.map((d, i) => i).sort((a, b) => (hist.d[a] < hist.d[b] ? -1 : 1));
+  hist.d = idx.map((i) => hist.d[i]);
+  for (const grp of ['fut', 'opt', 'pos']) {
+    for (const p of Object.keys(hist[grp])) {
+      for (const k of Object.keys(hist[grp][p])) hist[grp][p][k] = idx.map((i) => hist[grp][p][k][i] ?? null);
+    }
+  }
+  for (const c of Object.keys(hist.spot)) hist.spot[c] = idx.map((i) => hist.spot[c][i] ?? null);
+
+  const cut = Math.max(0, hist.d.length - KEEP);
+  if (cut > 0) {
+    hist.d = hist.d.slice(cut);
+    for (const grp of ['fut', 'opt', 'pos']) for (const p of Object.keys(hist[grp])) {
+      for (const k of Object.keys(hist[grp][p])) hist[grp][p][k] = hist[grp][p][k].slice(cut);
+    }
+    for (const c of Object.keys(hist.spot)) hist.spot[c] = hist.spot[c].slice(cut);
+  }
+
+  hist.generated_at = new Date().toISOString();
+  hist.last_trade_date = hist.d[hist.d.length - 1] || null;
+  hist.ok = true;
+
+  const last = hist._last || null;
+  delete hist._last;
+
+  writeFileSync(dailyPath, JSON.stringify(hist));
+  if (last) writeFileSync(join(DIST, 'fut_last.json'), JSON.stringify(last));
+
+  const size = (o) => (JSON.stringify(o).length / 1024).toFixed(0) + 'KB';
+  log(`写入 fut_daily.json ${hist.d.length} 天 / ${size(hist)}，fut_last.json ${last ? size(last) : '无'}`);
+  log(`本次新增 ${added} 天`);
+
+  if (hist.d.length < 60) {
+    log('::warning::历史不足 60 天，前端的「历史分位」会显示样本不足');
+  }
+}
+
+main().catch((e) => {
+  console.error('失败：' + (e && e.stack || e));
+  process.exit(1);
+});

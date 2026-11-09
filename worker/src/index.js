@@ -2784,6 +2784,530 @@ async function serveFutProbe(url) {
   });
 }
 
+// ---------------------------------------------------------------- 股指期货 / 期权
+/**
+ * 口径（写死在这里，前端只负责显示，不重算）：
+ *   basis = F − S            点数，负数=贴水
+ *   bp    = basis / S × 100   %
+ *   ann   = bp × 365 / dte    自然日；dte < 3 不给，不然只剩一天时年化能到几千 %
+ * F 用实时 lastprice，S 用东财现货指数。两个源不同、报价时点也差几十毫秒，
+ * 所以基差天然带 ±0.02% 的噪音——判断贴水深浅时别把这个当信号。
+ *
+ * 期权合成期货 syn = K + C − P（忽略利率，一个月内误差 <0.1%）：
+ * 取 ATM 附近 |K/S−1| ≤ 3% 的最多 5 档、至少 3 档，取中位数。
+ * 用中位数不是均值：某一条腿挂单稀薄时报个离谱价，均值会被它拽跑。
+ */
+const FUT_PRODS = ['IF', 'IC', 'IH', 'IM'];
+const OPT_PRODS = ['IO', 'MO', 'HO'];
+const FUT_SPOT_ID = '1.000300,1.000905,1.000016,1.000852';
+const FUT_SPOT_NAME = { '000300': '沪深300', '000905': '中证500', '000016': '上证50', '000852': '中证1000' };
+const FUT_MAP = { IF: '000300', IH: '000016', IC: '000905', IM: '000852' };
+const OPT_MAP = { IO: 'IF', HO: 'IH', MO: 'IM' };     // 期权品种 → 同标的期货品种
+const FUT_TTL = 55;
+let FUT_L1 = { ts: 0, body: null };
+
+/** 中金所股指期货/期权都在「到期月第三个周五」交割。遇到法定假日交易所会顺延，
+ *  这里不查节假日表——它只用来算剩余天数和年化，差一天对 bp 的影响在 1/11 以内，
+ *  真要紧的是别把「剩 1 天」当成「剩 30 天」，那一步差不了。 */
+function thirdFriday(ym) {
+  const y = 2000 + parseInt(ym.slice(0, 2), 10);
+  const m = parseInt(ym.slice(2, 4), 10);
+  const wd = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();   // 0=周日
+  const day = 1 + ((5 - wd + 7) % 7) + 14;
+  return Date.UTC(y, m - 1, day);
+}
+
+function shTodayStr() {
+  const s = shDate();
+  return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+}
+
+function dteOf(ym) {
+  const t = shDate();
+  const today = Date.UTC(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6, 8));
+  return Math.round((thirdFriday(ym) - today) / 86400e3);
+}
+
+function expOf(ym) {
+  const d = new Date(thirdFriday(ym));
+  return d.toISOString().slice(0, 10);
+}
+
+/** 中金所实时文件：http 明文、没有 key、每 3 秒刷一次。单文件 400B~16KB。
+ *  不重试：它偶尔会限流，重试反而把一个 700ms 的失败拖成 1.5 秒。 */
+async function fetchCffex(path) {
+  const r = await fetch('http://www.cffex.com.cn/' + path, {
+    headers: { 'User-Agent': UA, Referer: 'http://www.cffex.com.cn/' },
+    signal: AbortSignal.timeout(4500),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.text();
+}
+
+async function fetchSpotIdx() {
+  const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
+    + FUT_SPOT_ID + '&fields=f2,f3,f12,f14';
+  const j = await emRetry(() => fetch(u, {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(3500),
+  }).then((r) => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }));
+  const out = {};
+  const diff = (j && j.data && j.data.diff) || [];
+  for (const x of diff) {
+    const c = String(x.f12 || '');
+    const p = +x.f2;
+    if (c && p > 0) out[c] = { p, chg: +(+x.f3 || 0).toFixed(2) };
+  }
+  return out;
+}
+
+function parseFutCsv(txt, prod) {
+  const out = [];
+  const lines = String(txt).split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    const s = lines[i].trim();
+    if (!s || s.slice(0, 2) !== prod) continue;
+    const a = s.split(',');
+    if (a[0].slice(0, 2) !== prod) continue;
+    const px = +a[4];
+    if (!(px > 0)) continue;
+    const ud = +a[5] || 0;
+    const pc = px - ud;
+    out.push({
+      c: a[0], ym: a[0].slice(2, 6), px,
+      chg: pc > 0 ? +(ud / pc * 100).toFixed(2) : 0,
+      vol: +a[10] || 0, oi: +a[11] || 0,
+    });
+  }
+  return out;
+}
+
+function parseOptCsv(txt, prod) {
+  const out = [];
+  const lines = String(txt).split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    const s = lines[i].trim();
+    if (!s || s.slice(0, 2) !== prod) continue;
+    const a = s.split(',');
+    const m = a[0].match(/^[A-Z]+(\d{4})-([CP])-(\d+(?:\.\d+)?)$/);
+    if (!m) continue;
+    let px = +a[3];
+    // 深度虚值那几条尾巴常年没成交，lastprice 是 0；用买卖中间价补，
+    // 不然整档被丢掉，ATM 窗口就少一档
+    if (!(px > 0)) {
+      const b = +a[5], sp = +a[7];
+      if (b > 0 && sp > 0) px = (b + sp) / 2;
+    }
+    if (!(px > 0)) continue;
+    out.push({ ym: m[1], cp: m[2], k: +m[3], px, vol: +a[2] || 0, oi: +a[1] || 0 });
+  }
+  return out;
+}
+
+function median(arr) {
+  const s = arr.slice().sort((a, b) => a - b);
+  const n = s.length;
+  if (!n) return null;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+/** ATM 附近的配对标的一撮。行权价间距各品种不同：IF 系 50 点一档、
+ *  科创 50ETF 是 0.05 一档（占价格 3.8%），固定 ±3% 会只剩一档。
+ *  所以窗口逐级放宽，够 3 档就停；实在凑不到就取最近的 2~3 档。 */
+function atmWindow(pairs, S) {
+  const byDist = pairs.slice().sort((a, b) => Math.abs(a.k - S) - Math.abs(b.k - S));
+  for (const w of [0.03, 0.05, 0.08, 0.12]) {
+    const near = byDist.filter((x) => Math.abs(x.k / S - 1) <= w).slice(0, 5);
+    if (near.length >= 3) return near;
+  }
+  return byDist.slice(0, Math.min(3, byDist.length));
+}
+
+/** 一个期权品种 → 每个月一条合成期货基差 */
+function calcOptMonths(rows, S, futPx, prod) {
+  const byYm = new Map();
+  for (const r of rows) {
+    let g = byYm.get(r.ym);
+    if (!g) { g = { c: [], p: [] }; byYm.set(r.ym, g); }
+    (r.cp === 'C' ? g.c : g.p).push(r);
+  }
+  const res = [];
+  for (const [ym, g] of byYm) {
+    const pm = new Map();
+    for (const x of g.p) pm.set(x.k, x);
+    const pairs = [];
+    for (const x of g.c) {
+      const p = pm.get(x.k);
+      if (p) pairs.push({ k: x.k, c: x.px, p: p.px });
+    }
+    if (!pairs.length) continue;
+    const near = atmWindow(pairs, S);
+    if (!near.length) continue;
+
+    const syn = median(near.map((x) => x.k + x.c - x.p));
+    const volC = g.c.reduce((s, x) => s + x.vol, 0);
+    const volP = g.p.reduce((s, x) => s + x.vol, 0);
+    const dte = dteOf(ym);
+    const basis = syn - S;
+    const bp = basis / S * 100;
+    const f = futPx[ym];
+    res.push({
+      m: ym, dte, exp: expOf(ym),
+      syn: +syn.toFixed(2), basis: +basis.toFixed(2), bp: +bp.toFixed(3),
+      ann: dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+      atm: near[0].k, n: near.length,
+      pcr: volC > 0 ? +(volP / volC).toFixed(2) : null,
+      futC: f != null ? prod + ym : null,
+      fb: f != null ? +(syn - f).toFixed(2) : null,
+    });
+  }
+  res.sort((a, b) => (a.m < b.m ? -1 : 1));
+  return res;
+}
+
+/** 30 天恒定到期基差率：在两个相邻合约之间线性插值。
+ *  历史分位必须用它——主力合约每月换月，换月那天 bp 会跳 0.3%，直接拿主力
+ *  序列算分位，每个月都会凭空造出一个极值。 */
+function cmValue(list) {
+  const a = list.filter((x) => x.ann != null).sort((x, y) => x.dte - y.dte);
+  if (a.length < 2) return null;
+  if (a[0].dte > 30) return +a[0].bp.toFixed(3);
+  for (let i = 0; i < a.length - 1; i++) {
+    const x = a[i], y = a[i + 1];
+    if (x.dte <= 30 && y.dte >= 30) {
+      const w = (30 - x.dte) / (y.dte - x.dte);
+      return +(x.bp + (y.bp - x.bp) * w).toFixed(3);
+    }
+  }
+  return +a[a.length - 1].bp.toFixed(3);
+}
+
+async function loadFutLast(env) {
+  try {
+    const a = await readAsset(env, 'fut_last.json');
+    if (!a) return null;
+    const j = JSON.parse(await a.text());
+    return j && j.ok !== false ? j : null;
+  } catch (e) { return null; }
+}
+
+/** 盘中实时：期货 + 现货 + 股指期权，55 秒边缘缓存。
+ *  期货全挂时才退到 fut_last.json（收盘日档），并把 stale 标出来——宁可显示
+ *  「昨天收盘 + 日期」，也不要让整块卡片消失。 */
+async function serveFut(env, ctx) {
+  const now = Date.now();
+  if (FUT_L1.body && now - FUT_L1.ts < FUT_TTL * 1000) return json(FUT_L1.body, 45);
+
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/fut/v2/live', { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) {
+        const b = await hit.json();
+        FUT_L1 = { ts: now, body: b };
+        return json(b, 45);
+      }
+    } catch (e) { /* 缓存读失败就当没有 */ }
+  }
+
+  const partial = [];
+  // 三路并发：现货是东财、期货和期权都是中金所。串起来等会多一个 RTT，
+  // 而这三者互不依赖。
+  const spotP = fetchSpotIdx().catch(() => null);
+  const futP = Promise.all(FUT_PRODS.map((p) => fetchCffex('quote_' + p + '.txt')
+    .then((t) => ({ p, rows: parseFutCsv(t, p) }))
+    .catch(() => ({ p, rows: null }))));
+  const optP = Promise.all(OPT_PRODS.map((p) => fetchCffex('quote_' + p + '.txt')
+    .then((t) => ({ p, rows: parseOptCsv(t, p) }))
+    .catch(() => ({ p, rows: null }))));
+
+  const [spot, futRes, optRes] = await Promise.all([spotP, futP, optP]);
+  const spotOk = spot && Object.keys(spot).length >= 3;
+
+  const futList = futRes.filter((x) => x.rows && x.rows.length);
+  if (!futList.length) {
+    // 期货一条都没拿到 → 收盘日档兜底
+    const last = await loadFutLast(env);
+    if (last) {
+      const out = { ...last, ok: true, src: 'daily', stale: 1, ts: now, asof: last.ts || now,
+        age: Math.round((now - (last.ts || now)) / 1000), partial: ['fut'] };
+      FUT_L1 = { ts: now, body: out };
+      return json(out, 15);
+    }
+    return json({ ok: false, error: 'cffex_unreachable', ts: now, partial: ['fut'] }, 15);
+  }
+
+  // 昨收持仓：只有「昨天那份快照」才有意义，今天的不算
+  const last = await loadFutLast(env);
+  const td = shTodayStr();
+  const oiPrev = {};
+  if (last && last.td && last.td !== td && Array.isArray(last.fut)) {
+    for (const f of last.fut) oiPrev[f.c] = f.oi;
+  }
+  // 昨收持仓只对「昨天那份」有意义；但会员多空是收盘结算值，当天那份就是最新的，
+  // 不该因为「td 相同」而丢掉——否则收盘后整张多空表永远是空的
+  const posPrev = last && last.pos ? last.pos : null;
+
+  const futOut = [];
+  const futPxByProd = {};
+  for (const { p, rows } of futRes) {
+    if (!rows) { partial.push(p); continue; }
+    const S = FUT_MAP[p];
+    const sp = spotOk ? spot[S] : null;
+    futPxByProd[p] = {};
+    const tmp = [];
+    for (const r of rows) {
+      futPxByProd[p][r.ym] = r.px;
+      const basis = sp ? r.px - sp.p : null;
+      const bp = sp ? basis / sp.p * 100 : null;
+      const dte = dteOf(r.ym);
+      const oiD = oiPrev[r.c] != null ? r.oi - oiPrev[r.c] : null;
+      tmp.push({
+        c: r.c, p, u: S, px: r.px, chg: r.chg, vol: r.vol, oi: r.oi, oiD,
+        dte, exp: expOf(r.ym),
+        basis: sp ? +basis.toFixed(2) : null,
+        bp: sp ? +bp.toFixed(3) : null,
+        ann: sp && dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+        q: quadOf(oiD, r.chg, r.oi),
+      });
+    }
+    for (const x of tmp) futOut.push(x);
+  }
+
+  const optOut = [];
+  for (const { p, rows } of optRes) {
+    if (!rows) { partial.push(p); continue; }
+    const fp = OPT_MAP[p];
+    const S = FUT_MAP[fp];
+    const sp = spotOk ? spot[S] : null;
+    if (!sp) { partial.push(p); continue; }
+    for (const o of calcOptMonths(rows, sp.p, futPxByProd[fp] || {}, fp)) {
+      optOut.push({ p, u: S, ...o });
+    }
+  }
+
+  const cm = {};
+  for (const p of FUT_PRODS) {
+    const l = futOut.filter((x) => x.p === p && x.bp != null);
+    const v = cmValue(l);
+    if (v != null) cm[p] = { v, dte: 30 };
+  }
+  if (!spotOk) partial.push('spot');
+  if (spotOk) for (const k of Object.keys(spot)) spot[k].n = FUT_SPOT_NAME[k] || k;
+
+  const out = {
+    ok: true, ts: now, td, src: 'cffex', stale: 0,
+    asof: now, age: 0, partial,
+    spot: spotOk ? spot : {},
+    fut: futOut,
+    opt: optOut,
+    cm,
+    pos: posPrev || null,
+  };
+  FUT_L1 = { ts: now, body: out };
+  const res = json(out, 45);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
+}
+
+/** 盘中四象限：持仓量增减 × 价格方向。
+ *  这是**推断**，不是交易所口径——中金所的持仓量是双边合计，看不出谁在开谁在平。
+ *  真正的多空只在收盘后的前 20 会员排名里（pos），前端两处标签分得很清楚。 */
+function quadOf(oiD, chg, oi) {
+  if (oiD == null) return null;
+  const eps = Math.max(50, (oi || 0) * 0.002);
+  if (oiD > eps) return chg > 0 ? 'up-open' : 'dn-open';     // 增仓上涨 / 增仓下跌
+  if (oiD < -eps) return chg > 0 ? 'up-close' : 'dn-close';  // 减仓上涨 / 减仓下跌
+  return 'flat';
+}
+
+// ---------------------------------------------------------------- ETF 期权
+/**
+ * 沪深 ETF 期权走东财的期权链接口（spt=9 认购 / spt=10 认沽），比中金所那边
+ * 多一层好处：直接带 f161 行权价和 f162 剩余自然日，不用自己推到期日。
+ *
+ * 合成期货同样是 K + C − P。标的现价必须另取——期权链里没有 underlying 报价，
+ * 少了它就只剩一堆绝对价，算不出基差。
+ *
+ * 分两批：第一批 4 个主标的（成交占比九成以上），第二批 4 个冷门的。
+ * 一批 9 个上游子请求，两批分开是为了首屏那一批能先回来。
+ */
+const ETF_OPT = {
+  main: [
+    ['1.510050', '510050', '50ETF'],
+    ['1.510300', '510300', '300ETF'],
+    ['0.159919', '159919', '300ETF深'],
+    ['1.588000', '588000', '科创50ETF'],
+  ],
+  rest: [
+    ['0.159915', '159915', '创业板ETF'],
+    ['1.510500', '510500', '500ETF'],
+    ['0.159922', '159922', '500ETF深'],
+    ['1.588080', '588080', '科创板50ETF'],
+  ],
+};
+
+async function emJson(u, ms) {
+  return emRetry(() => fetch(u, {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(ms || 3500),
+  }).then((r) => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }));
+}
+
+/** 一条期权链（单边）。spt 9=购 10=沽，字段：f2 最新价 f5 成交量
+ *  f12 代码 f14 名称 f108 持仓量 f152 购沽标记 f161 行权价 f162 剩余自然日 */
+async function fetchOptChain(secid, spt) {
+  const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
+    + '&fltt=2&invt=2&fields=f2,f5,f12,f14,f108,f152,f161,f162'
+    + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
+  const j = await emJson(u);
+  const diff = (j && j.data && j.data.diff) || [];
+  const out = [];
+  for (const x of diff) {
+    const px = +x.f2;
+    const k = +x.f161;
+    const dte = +x.f162;
+    if (!(k > 0) || !(px > 0) || !(dte >= 0)) continue;
+    out.push({ k, px, dte, vol: +x.f5 || 0, oi: +x.f108 || 0 });
+  }
+  return out;
+}
+
+async function fetchEtfSpot(secids) {
+  const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
+    + secids.join(',') + '&fields=f2,f3,f12,f14';
+  const j = await emJson(u);
+  const out = {};
+  for (const x of ((j && j.data && j.data.diff) || [])) {
+    const p = +x.f2;
+    if (p > 0) out[String(x.f12)] = { p, chg: +(+x.f3 || 0).toFixed(2) };
+  }
+  return out;
+}
+
+function calcEtfMonths(rows, S) {
+  const byDte = new Map();
+  for (const r of rows) {
+    let g = byDte.get(r.dte);
+    if (!g) { g = { c: [], p: [] }; byDte.set(r.dte, g); }
+    (r.side === 'C' ? g.c : g.p).push(r);
+  }
+  const res = [];
+  for (const [dte, g] of byDte) {
+    const pm = new Map();
+    for (const x of g.p) pm.set(x.k, x);
+    const pairs = [];
+    for (const x of g.c) {
+      const p = pm.get(x.k);
+      if (p) pairs.push({ k: x.k, c: x.px, p: p.px });
+    }
+    if (!pairs.length) continue;
+    const near = atmWindow(pairs, S);
+    if (!near.length) continue;
+    const syn = median(near.map((x) => x.k + x.c - x.p));
+    const volC = g.c.reduce((s, x) => s + x.vol, 0);
+    const volP = g.p.reduce((s, x) => s + x.vol, 0);
+    const basis = syn - S;
+    const bp = basis / S * 100;
+    const exp = new Date(Date.now() + 8 * 3600e3 + dte * 86400e3).toISOString().slice(0, 10);
+    // 远月的成交量常年个位数，量比会算出 0.07 这种没意义的数；没量就退回持仓量比
+    const oiC = g.c.reduce((s, x) => s + x.oi, 0);
+    const oiP = g.p.reduce((s, x) => s + x.oi, 0);
+    res.push({
+      dte, exp,
+      syn: +syn.toFixed(4), basis: +basis.toFixed(4), bp: +bp.toFixed(3),
+      ann: dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+      atm: near[0].k, n: near.length,
+      pcr: volC > 0 ? +(volP / volC).toFixed(2) : (oiC > 0 ? +(oiP / oiC).toFixed(2) : null),
+    });
+  }
+  res.sort((a, b) => a.dte - b.dte);
+  return res;
+}
+
+async function serveFutOpt(url, env, ctx) {
+  const g = url.searchParams.get('g') === 'rest' ? 'rest' : 'main';
+  const ttl = g === 'rest' ? 300 : 120;
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/futopt/v1/' + g, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败回源 */ }
+  }
+
+  const list = ETF_OPT[g];
+  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch(() => null);
+  // 每个标的 2 个请求（购/沽），4 个标的 8 个，加上现货 1 个 = 9 个
+  const chainP = Promise.all(list.map(([sid, code]) => Promise.all([
+    fetchOptChain(sid, 9).catch(() => null),
+    fetchOptChain(sid, 10).catch(() => null),
+  ]).then(([c, p]) => ({ code, c, p }))));
+
+  const [spot, chains] = await Promise.all([spotP, chainP]);
+  const partial = [];
+  if (!spot) partial.push('spot');
+
+  const items = [];
+  for (const { code, c, p } of chains) {
+    const s = spot && spot[code];
+    if (!c || !p || !s) { partial.push(code); continue; }
+    const rows = [];
+    for (const x of c) rows.push({ ...x, side: 'C' });
+    for (const x of p) rows.push({ ...x, side: 'P' });
+    const months = calcEtfMonths(rows, s.p);
+    if (!months.length) { partial.push(code); continue; }
+    const name = (list.find((x) => x[1] === code) || [])[2] || code;
+    items.push({ c: code, n: name, S: s.p, chg: s.chg, months });
+  }
+
+  const out = { ok: true, g, ts: Date.now(), items, partial };
+  const res = json(out, ttl);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
+}
+
+/** 250 天基线：原样透传 Actions 生成的 fut_daily.json。
+ *  Worker 这边一个字段都不重算——历史序列一旦两边各算一遍，迟早会不一致。 */
+async function serveFutHist(env) {
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/futhist/v1', { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败回源 */ }
+  }
+  let out;
+  try {
+    const a = await readAsset(env, 'fut_daily.json');
+    if (!a) out = { ok: false, error: 'hist_not_ready', ts: Date.now() };
+    else {
+      const j = JSON.parse(await a.text());
+      out = { ...j, ok: true, ts: Date.now() };
+    }
+  } catch (e) {
+    out = { ok: false, error: 'hist_read_failed', msg: String((e && e.message) || e), ts: Date.now() };
+  }
+  const res = json(out, out.ok ? 1800 : 60);
+  if (cache && out.ok) {
+    try { await cache.put(key, res.clone()); } catch (e) { /* 写缓存失败不影响返回 */ }
+  }
+  return res;
+}
+
 // ---------------------------------------------------------------- 路由
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -2877,6 +3401,21 @@ export default {
     if (p === '/api/futprobe') {
       // 第 1 步：确认 Cloudflare 出口能不能连中金所（只有 http 明文源）
       return serveFutProbe(url);
+    }
+
+    if (p === '/api/fut') {
+      // 期指基差 + 期权合成期货基差 + 前 20 会员多空（后者来自收盘日档）
+      return serveFut(env, ctx);
+    }
+
+    if (p === '/api/futopt') {
+      // 沪深 ETF 期权合成期货基差：g=main 4 个主标的 / g=rest 4 个冷门的
+      return serveFutOpt(url, env, ctx);
+    }
+
+    if (p === '/api/futhist') {
+      // 250 天基差基线（Actions 每天收盘后生成，data 分支静态文件）
+      return serveFutHist(env);
     }
 
     if (p === '/api/all') {

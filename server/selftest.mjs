@@ -442,6 +442,76 @@ async function runContracts(base, pass) {
   r = await rawRequest(base, '/api/ovmin?sid=1.600519', { cookie });
   if (r.status === 200 && r.json().ok) bad('/api/ovmin 白名单失效：A 股个股 secid 竟然放行了');
 
+  // 期指基差：口径对不对，只能靠恒等式核对——基差 = 期货 − 现货，年化 = 基差率×365/天数
+  r = await rawRequest(base, '/api/fut', { cookie });
+  const fu = r.json();
+  if (fu && fu.ok) {
+    const fl = fu.fut || [], ol = fu.opt || [];
+    ok('/api/fut ' + fu.td + ' 期货 ' + fl.length + ' 行 · 期权 ' + ol.length + ' 行 · src=' + fu.src + (fu.stale ? '（降级）' : ''));
+    if (fl.length < 12) bad('/api/fut 期货合约过少（' + fl.length + '），至少应覆盖 4 品种 × 3 个月');
+    if (ol.length < 9) bad('/api/fut 期权合成行过少（' + ol.length + '）');
+    if (Object.keys(fu.spot || {}).length < 4) bad('/api/fut 现货指数不足 4 个');
+
+    let basisBad = 0, annBad = 0, rangeBad = 0;
+    for (const x of fl) {
+      if (!(x.px > 0)) { basisBad++; continue; }
+      const sp = (fu.spot || {})[x.u];
+      if (sp && x.basis != null && Math.abs(x.basis - (x.px - sp.p)) > 0.05) basisBad++;
+      if (sp && x.ann != null && x.bp != null && x.dte >= 3
+          && Math.abs(x.ann - x.bp * 365 / x.dte) > 0.05) annBad++;
+      if (x.bp != null && Math.abs(x.bp) > 15) rangeBad++;
+    }
+    if (basisBad) bad('/api/fut 有 ' + basisBad + ' 行「基差点数 ≠ 期货 − 现货」，口径串了');
+    if (annBad) bad('/api/fut 有 ' + annBad + ' 行年化和基差率对不上（应为 bp×365/dte）');
+    if (rangeBad) bad('/api/fut 有 ' + rangeBad + ' 行基差率超过 ±15%，多半拿错了现货');
+
+    let optBad = 0;
+    for (const o of ol) {
+      if (!(o.syn > 0) || o.n < 2) optBad++;
+      else if (o.fb != null && Math.abs(o.fb / o.syn) > 0.05) optBad++;
+    }
+    if (optBad) bad('/api/fut 有 ' + optBad + ' 行期权合成异常（档数不足或与期货差超 5%）');
+  } else bad('/api/fut 失败：' + r.text.slice(0, 200));
+
+  // ETF 期权：main / rest 两批，参数写错必须回落到 main，不能 500
+  r = await rawRequest(base, '/api/futopt?g=main', { cookie });
+  const fo = r.json();
+  if (fo && fo.ok) {
+    const it = fo.items || [];
+    ok('/api/futopt?g=main ' + it.length + ' 个标的 · 近月档数 ' + it.map((x) => ((x.months || [])[0] || {}).n).join('/'));
+    if (it.length < 3) bad('/api/futopt 主标的不足 3 个（' + it.length + '）');
+    for (const x of it) {
+      const m = (x.months || [])[0];
+      if (!m || !(m.n >= 2)) bad('/api/futopt ' + x.c + ' 近月配对档数不足');
+      if (!(x.S > 0)) bad('/api/futopt ' + x.c + ' 缺标的现价');
+    }
+  } else bad('/api/futopt 失败：' + r.text.slice(0, 200));
+  r = await rawRequest(base, '/api/futopt?g=%E4%B9%B1%E5%86%99', { cookie });
+  const fo2 = r.json();
+  if (!(fo2 && fo2.ok && fo2.g === 'main')) bad('/api/futopt 参数非法时没有回落到 main');
+
+  // 250 天基线：数组必须和日期等长，否则前端按索引取会串到隔壁那天
+  r = await rawRequest(base, '/api/futhist', { cookie });
+  const fh = r.json();
+  if (fh && fh.ok) {
+    const n = (fh.d || []).length;
+    ok('/api/futhist ' + n + ' 天（' + (fh.d || [''])[0] + ' ~ ' + (fh.d || [''])[n - 1] + '）');
+    if (n < 60) bad('/api/futhist 历史只有 ' + n + ' 天，分位会失真');
+    let mis = 0;
+    for (const grp of ['fut', 'opt', 'pos']) {
+      for (const p of Object.keys(fh[grp] || {})) {
+        for (const k of Object.keys(fh[grp][p])) {
+          if ((fh[grp][p][k] || []).length !== n) mis++;
+        }
+      }
+    }
+    if (mis) bad('/api/futhist 有 ' + mis + ' 条数组长度和日期对不上');
+    const cur = ((fh.fut || {}).IF || {}).cmp || [];
+    const last = cur[cur.length - 1];
+    if (last == null) bad('/api/futhist IF 的 30 天恒定基差在最新一天是空的');
+    else if (Math.abs(last) > 15) bad('/api/futhist IF 最新基差率 ' + last + '% 离群');
+  } else bad('/api/futhist 失败：' + r.text.slice(0, 200));
+
   // 状态
   r = await rawRequest(base, '/api/status', { cookie });
   const js = r.json();

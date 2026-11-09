@@ -168,7 +168,57 @@ jobs:
           assert m['u'][-1] + m['w'][-1] > 3000, f"个股家数异常偏少 {m['u'][-1]}+{m['w'][-1]}"
           PY
 
-      # ---------- 3. 发布历史数据 ----------
+      # ---------- 3. 期指期权日档 ----------
+      # 中金所只给「单日全品种」一个 XML（539KB / 788 合约），没有批量历史接口，
+      # 所以 250 天基线是逐日回补出来的：每天跑的时候只补缺的那几天（通常就今天）。
+      # data 分支是 force push，每次都从零开始——所以先把上一版取回来再 upsert，
+      # 否则每天发布出去的都只有当天一天的历史。
+      - name: 取回上一版期指日档
+        continue-on-error: true
+        run: |
+          if git fetch -q --depth=1 origin data 2>/dev/null; then
+            for f in fut_daily.json fut_last.json; do
+              if git show FETCH_HEAD:$f > /tmp/$f 2>/dev/null; then
+                mv /tmp/$f dist/$f
+                echo "取回 $f（$(wc -c < dist/$f) 字节）"
+              else
+                echo "data 分支上还没有 $f，当首次建库"
+              fi
+            done
+          else
+            echo "data 分支不存在，当首次建库"
+          fi
+
+      - name: 生成期指期权日档（滚动 250 天）
+        continue-on-error: true
+        run: node pipeline/gen_fut_daily.mjs --backfill 250
+
+      - name: 期指日档校验
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path('dist/fut_daily.json')
+          if not p.exists():
+              print('::warning::fut_daily.json 没生成，页面的期指区块会退回实时值')
+              sys.exit(0)
+          h = json.loads(p.read_text())
+          n = len(h['d'])
+          print(f"期指日档 {n} 天，最新 {h.get('last_trade_date')}")
+          # 数组必须和日期等长，否则前端按索引取会串到隔壁那天
+          for grp in ('fut', 'opt', 'pos'):
+              for prod, cols in (h.get(grp) or {}).items():
+                  for k, arr in cols.items():
+                      assert len(arr) == n, f'{grp}.{prod}.{k} 长度 {len(arr)} != {n}'
+          for code, arr in (h.get('spot') or {}).items():
+              assert len(arr) == n, f'spot.{code} 长度 {len(arr)} != {n}'
+          valid = [x for x in (h['fut'].get('IF') or {}).get('bp') or [] if x is not None]
+          print(f"IF 基差率样本 {len(valid)} 个，区间 {min(valid):.2f}% ~ {max(valid):.2f}%")
+          for v in valid:
+              assert -15 < v < 15, f'基差率 {v} 超出合理区间，多半是日期或现货对错了'
+          assert n >= 60, f'历史只有 {n} 天，历史分位会失真'
+          PY
+
+      # ---------- 4. 发布历史数据 ----------
       # 默认走 GitHub 自己的 data 分支：不需要 R2、不需要绑卡、不需要配 secret。
       # 每次都是「孤儿单提交 + force push」，所以仓库不会一天涨 62MB。
       # Worker 用 HIST_BASE 指向这个分支的 raw 地址即可。
@@ -182,8 +232,9 @@ jobs:
           cp -r dist/hist "$PUB/"
           cp dist/manifest.json "$PUB/"
           cp dist/research.json "$PUB/"
-          # 首次跑或回算失败时这两个文件可能不存在，别让 cp 把发布带崩
+          # 首次跑或回算失败时这几个文件可能不存在，别让 cp 把发布带崩
           cp dist/sec_daily.json dist/mkt_hist.json "$PUB/" 2>/dev/null || true
+          cp dist/fut_daily.json dist/fut_last.json "$PUB/" 2>/dev/null || true
           cd "$PUB"
           git init -q
           git config user.name "etf-board-bot"
