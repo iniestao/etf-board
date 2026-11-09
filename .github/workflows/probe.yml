@@ -34,12 +34,14 @@ jobs:
           HDR=()
           [ -n "$CK" ] && HDR=(-H "Cookie: $CK")
           # 有些 runner 的 DNS 解析不了 *.workers.dev，退回 DoH 再试一次
-          code=$(curl -sS "${HDR[@]}" -o /tmp/body -w '%{http_code}' --max-time 20 "$BASE$P" 2>/tmp/err) || true
+          code=$(curl -sS "${HDR[@]}" -D /tmp/hdr -o /tmp/body -w '%{http_code}' --max-time 20 "$BASE$P" 2>/tmp/err) || true
           if [ "$code" = "000" ]; then
             echo "直连没解析出来，换 DoH 再试"
-            code=$(curl -sS "${HDR[@]}" --doh-url https://cloudflare-dns.com/dns-query -o /tmp/body -w '%{http_code}' --max-time 25 "$BASE$P" 2>/tmp/err) || true
+            code=$(curl -sS "${HDR[@]}" -D /tmp/hdr --doh-url https://cloudflare-dns.com/dns-query -o /tmp/body -w '%{http_code}' --max-time 25 "$BASE$P" 2>/tmp/err) || true
           fi
           echo "HTTP [$code]"
+          echo "--- 响应头（看 cf-cache-status / etag） ---"
+          grep -iE "^(cf-cache-status|etag|cache-control|content-length|age|last-modified):" /tmp/hdr || true
           echo "--- curl 诊断 ---"
           cat /tmp/err || true
           echo "--- 前 2000 字节 ---"
