@@ -3364,9 +3364,9 @@ async function serveFutOpt(url, env, ctx) {
   // live = 期权用当日最新价；prev = 只能拿到昨收，整块按昨收算；
   // none = 连昨收都不自洽（平价校验全挂），这时候不显示比显示错数好
   out.mode = !items.length ? 'none' : (items.some((x) => x.on === 'live') ? 'live' : 'prev');
-  // 一条都没配对出来时把原因一并带上：这种时候最需要知道是「东财不通」还是
+  // 有标的没配对出来时把原因一并带上：这种时候最需要知道是「东财不通」还是
   // 「配不出月份」，而线上又没法 attach 调试器
-  if (DBG || !items.length) out.diag = diag;
+  if (DBG || partial.length) out.diag = diag;
   const res = json(out, ttl);
   if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
