@@ -3213,18 +3213,37 @@ async function fetchOptChain(secid, spt) {
 }
 
 async function fetchEtfSpot(secids) {
-  const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
-    + secids.join(',') + '&fields=f2,f3,f12,f14,f18';
-  // 同样给 8 秒：/api/optprobe 里这条实测 3.9 秒，默认 3.5 秒会直接超时，
-  // 结果四只标的全部栽在「没有现价」上（call/put 都拿到了却配不出基差）
-  const j = await emJson(u, 8000);
-  const out = {};
-  for (const x of ((j && j.data && j.data.diff) || [])) {
-    const p = +x.f2;
-    const p0 = +x.f18;
-    if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
+  const qs = secids.join(',');
+  // 8 只标的的现价：主域偶发 502（2026-11-10 线上就撞到），换延迟子域再来一遍。
+  // 现货拿不到等于整张卡没法定价，比多等两秒严重得多。
+  const hosts = ['push2.eastmoney.com', 'push2delay.eastmoney.com'];
+  let lastErr = null;
+  for (const h of hosts) {
+    const u = 'https://' + h + '/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + qs
+      + '&fields=f2,f3,f12,f14,f18';
+    for (let k = 0; k < 2; k++) {
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const out = {};
+        for (const x of ((j && j.data && j.data.diff) || [])) {
+          const p = +x.f2;
+          const p0 = +x.f18;
+          if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
+        }
+        if (Object.keys(out).length) return out;
+        throw new Error('空数据');
+      } catch (e) {
+        lastErr = e;
+        if (k === 0) await new Promise((res) => setTimeout(res, 350));
+      }
+    }
   }
-  return out;
+  throw new Error(String((lastErr && lastErr.message) || lastErr) + '（两个域名都试过）');
 }
 
 function calcEtfMonths(rows, S) {
