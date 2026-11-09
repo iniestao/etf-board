@@ -3314,6 +3314,58 @@ async function serveFutOpt(url, env, ctx) {
   return res;
 }
 
+/** 东财期权链探针：一次性把几种地址/参数都试一遍，回状态码、耗时、字节数、
+ *  以及 data.diff 的长度。2026-11-10 线上 g=main/g=rest 全空、现货接口却正常，
+ *  沙箱里又复现不了（本地同样的 URL 能拿到 200 多档），只能让 Worker 自己逐个试。
+ *  /api/optprobe?secid=1.510050 */
+const EM_UT = 'bd1d9ddb04089700cf9c27f6f7426281';
+const EM_FIELDS = 'f2,f5,f12,f14,f108,f152,f161,f162';
+
+async function serveOptProbe(url) {
+  const secid = (url.searchParams.get('secid') || '1.510050').replace(/[^\d.]/g, '');
+  const q = (host, extra) => 'https://' + host + '/api/qt/slist/get?spt=9&fltt=2&invt=2'
+    + '&fields=' + EM_FIELDS + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3' + (extra || '');
+  const cases = [
+    ['slist', q('push2.eastmoney.com')],
+    ['slist+ut', q('push2.eastmoney.com', '&ut=' + EM_UT)],
+    ['slist+ts', q('push2.eastmoney.com', '&_=' + Date.now())],
+    ['slist+ut+ts', q('push2.eastmoney.com', '&ut=' + EM_UT + '&_=' + Date.now())],
+    ['no-np', q('push2.eastmoney.com').replace('&np=1', '')],
+    ['delay', q('push2delay.eastmoney.com', '&ut=' + EM_UT)],
+    ['82', q('82.push2.eastmoney.com', '&ut=' + EM_UT)],
+    ['ulist-spot', 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + secid + '&fields=f2,f3,f12,f14'],
+  ];
+  const one = async ([n, u]) => {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(6000),
+      });
+      const txt = await r.text();
+      let diff = null, rc = null, first = null;
+      try {
+        const j = JSON.parse(txt);
+        rc = j && j.rc;
+        const d = j && j.data;
+        if (d && Array.isArray(d.diff)) { diff = d.diff.length; first = d.diff[0]; }
+        else if (d && d.diff && typeof d.diff === 'object') { diff = Object.keys(d.diff).length; }
+      } catch (e) { /* 不是 JSON */ }
+      return { n, s: r.status, ms: Date.now() - t0, bytes: txt.length, rc, diff,
+        head: txt.slice(0, 120) };
+    } catch (e) {
+      return { n, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e) };
+    }
+  };
+  const list = await Promise.all(cases.map(one));
+  const pass = list.filter((x) => (x.diff || 0) > 0).map((x) => x.n);
+  return json({
+    ok: true, secid, pass, total: list.length,
+    hint: pass.length ? '有可用变体：' + pass.join(',') : '全部拿不到 diff，多半是出口被挡或接口改了',
+    list,
+  }, 15);
+}
+
 /** 250 天基线：原样透传 Actions 生成的 fut_daily.json。
  *  Worker 这边一个字段都不重算——历史序列一旦两边各算一遍，迟早会不一致。 */
 async function serveFutHist(env) {
@@ -3436,6 +3488,11 @@ export default {
     if (p === '/api/futprobe') {
       // 第 1 步：确认 Cloudflare 出口能不能连中金所（只有 http 明文源）
       return serveFutProbe(url);
+    }
+
+    if (p === '/api/optprobe') {
+      // 东财期权链逐个变体试探：线上拿不到 diff 时的定位工具
+      return serveOptProbe(url);
     }
 
     if (p === '/api/fut') {
