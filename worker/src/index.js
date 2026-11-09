@@ -3208,7 +3208,9 @@ async function fetchOptChain(secid, spt) {
 async function fetchEtfSpot(secids) {
   const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
     + secids.join(',') + '&fields=f2,f3,f12,f14';
-  const j = await emJson(u);
+  // 同样给 8 秒：/api/optprobe 里这条实测 3.9 秒，默认 3.5 秒会直接超时，
+  // 结果四只标的全部栽在「没有现价」上（call/put 都拿到了却配不出基差）
+  const j = await emJson(u, 8000);
   const out = {};
   for (const x of ((j && j.data && j.data.diff) || [])) {
     const p = +x.f2;
