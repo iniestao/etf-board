@@ -2852,13 +2852,26 @@ function expOf(ym) {
 
 /** 中金所实时文件：http 明文、没有 key、每 3 秒刷一次。单文件 400B~16KB。
  *  不重试：它偶尔会限流，重试反而把一个 700ms 的失败拖成 1.5 秒。 */
+/** 中金所只有 http 明文源。超时给到 8 秒、失败重试一次：从 Cloudflare 出口
+ *  打国内 http 站点时快时慢，4.5 秒卡掉一个 quote 文件就是整个品种消失
+ *  （2026-11-10 线上就出现 16 个合约只剩 12 个，缺的正是某一个品种）。 */
 async function fetchCffex(path) {
-  const r = await fetch('http://www.cffex.com.cn/' + path, {
-    headers: { 'User-Agent': UA, Referer: 'http://www.cffex.com.cn/' },
-    signal: AbortSignal.timeout(4500),
-  });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.text();
+  const u = 'http://www.cffex.com.cn/' + path;
+  let lastErr = null;
+  for (let k = 0; k < 2; k++) {
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': UA, Referer: 'http://www.cffex.com.cn/' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.text();
+    } catch (e) {
+      lastErr = e;
+      if (k === 0) await new Promise((res) => setTimeout(res, 300));
+    }
+  }
+  throw lastErr;
 }
 
 /** 东财 ulist.np 批量报价。主域偶发 502（2026-11-10 线上撞了两次，一次把指数
