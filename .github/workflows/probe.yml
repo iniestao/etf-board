@@ -15,6 +15,10 @@ on:
         description: 换成别的主机（版本预览域名 / 自定义域名），留空用默认
         required: false
         default: ''
+      jq:
+        description: 可选的 jq 表达式，用来把 JSON 里的关键字段直接打出来
+        required: false
+        default: ''
 
 jobs:
   probe:
@@ -24,6 +28,7 @@ jobs:
         env:
           BASE: ${{ inputs.base != '' && inputs.base || 'https://etf-board.iniestao.workers.dev' }}
           P: ${{ inputs.path }}
+          JQ: ${{ inputs.jq }}
           PASS: ${{ secrets.ACCESS_PASS }}
         run: |
           echo "GET $BASE$P"
@@ -58,6 +63,13 @@ jobs:
             printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/body 2>/dev/null || true)"
           done
           echo
+          # 2000 字节只够看到 JSON 的头几行；要看具体字段就传个 jq 表达式，
+          # 比如 '{ok,td,fut:(.fut|length),pos:(.pos.rows|length)}'
+          if [ -n "$JQ" ]; then
+            echo "--- jq $JQ ---"
+            jq -c "$JQ" /tmp/body 2>&1 | head -c 4000 || echo "（jq 失败：body 不是 JSON？）"
+            echo
+          fi
           echo "--- 判定 ---"
           case "$code" in
             401) echo "✅ 服务正常：口令门禁在工作（未登录看到 401 就是对的）" ;;

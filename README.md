@@ -336,13 +336,22 @@ PCF，上交所那边会空回复（实测并发 6 只就有失败）。自选�
 |---|---|---|
 | 股指期货实时 | `http://www.cffex.com.cn/quote_{IF,IC,IH,IM}.txt` | 盘中 60 秒 |
 | 股指期权实时 | `http://www.cffex.com.cn/quote_{IO,MO,HO}.txt` | 盘中 60 秒 |
-| 现货指数 | 东财 `ulist.np`（000300/000905/000016/000852） | 同上 |
+| 现货指数（页面） | 东财 `ulist.np`（000300/000905/000016/000852） | 同上 |
 | 沪深 ETF 期权 | 东财 `slist/get?spt=9/10`，secid 用标的 ETF | main 120 秒 / rest 300 秒 |
 | 日行情 + 会员持仓 | 中金所 `sj/hqsj/rtj/…/index.xml`、`sj/ccpm/…/{IF,IC,IH,IM}.xml` | Actions 每天 16:35 |
+| 现货指数（日档） | 新浪 `getKLineData` → 新浪 `hisdata_klc2` → 东财 `push2his` | Actions 每天 16:35 |
 
 中金所**只有 http 明文**，Cloudflare 出口能不能连是上线前必须验的事——所以第一步只上
 `/api/futprobe`（逐个打一遍，回状态码/耗时/字节数/首行）。2026-11-09 实测 10/11 通，
 只有 https 变体不通（本来就没有）。**换机房/换账号时先跑一次它。**
+
+现货日档为什么要三个源：2026-11-10 那次回补 250 天，GitHub Runner（Azure 海外 IP）打
+`push2his.eastmoney.com` 全部 502 / `fetch failed`，同一份工作流里的 `gen_mkt_hist`
+也挂在这上面，结果 250 天全被判成「现货收盘缺」跳过，校验报 0 天。而 `data/import_etf.mjs`
+走新浪一直很稳。现在改成新浪优先（`money.finance.sina.com.cn` 的 `getKLineData`，
+失败再退同域的 `finance.sina.com.cn` + `sina_klc_decode.js`），东财只补新浪缺的品种。
+新浪给三位小数、东财两位，统一 `toFixed(2)`；两源同日对比 231 天里有 10~18 天差
+0.01 点（纯舍入），对 bp 的影响是 0.0002%。
 
 ### 口径（写在代码里，前端不重算）
 
@@ -366,8 +375,13 @@ ann   = bp × 365 / dte     自然日；dte < 3 返回 null，页面显示「—
 ### 存储与额度
 
 - 实时**不写 KV**（一天 1000 次写额度，现有链路已用掉约 500），只走 55 秒边缘缓存。
-- 日频落两个文件：`dist/fut_daily.json`（250 天历史，约 79KB）、`dist/fut_last.json`
-  （最新一天，约 6KB，供实时降级用）。都在 `update-data.yml` 的 cp 白名单里。
+- 日频落两个文件：`dist/fut_daily.json`（250 天历史 + 内嵌 `_last` 快照，约 85KB）、
+  `dist/fut_last.json`（最新一天，约 6KB，供实时降级用）。都在 `update-data.yml` 的 cp 白名单里。
+- `_last` 同时留在 `fut_daily.json` 里：data 分支 force push，下次开工只能取回上一版发布的
+  那两个文件，如果快照只写 `fut_last.json`、而某天没新数据（凌晨跑，当天行情还没出），
+  取回来就只剩历史、快照丢了。脚本收尾时若发现 `_last` 缺失或落后于历史最后一天，
+  会按最后一天重抓一次重建（只重建快照、不动 hist 数组，免得同一天写两遍串位）。
+- **一天都没落地时会 `exit 2` 不写盘**：宁可这条链报红，也不要拿空表盖掉已攒的 200 多天。
 - data 分支是 force push，所以生成前要先 `git fetch --depth=1 origin data` 把上一版
   取回来再 upsert，否则每天发布出去的都只有当天一天。
 - **不在 Worker 里解析 539KB 的 index.xml**：免费版 10ms CPU，必超。
