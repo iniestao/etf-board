@@ -3190,31 +3190,39 @@ async function emJson(u, ms) {
  *  而接口本身是 200、diff 有 49 条，看起来像「东财不给数据」，其实是自己掐断的。 */
 async function fetchOptChain(secid, spt) {
   const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
-    + '&fltt=2&invt=2&fields=f2,f5,f12,f14,f108,f152,f161,f162'
+    + '&fltt=2&invt=2&fields=f2,f5,f12,f14,f18,f108,f152,f161,f162'
     + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
   const j = await emJson(u, 8000);
   const diff = (j && j.data && j.data.diff) || [];
+  const arr = Array.isArray(diff) ? diff : Object.values(diff);
   const out = [];
-  for (const x of diff) {
-    const px = +x.f2;
+  let live = 0;
+  for (const x of arr) {
     const k = +x.f161;
     const dte = +x.f162;
+    // f2 是最新价、f18 是昨收。2026-11-10 实测：从 Cloudflare 出口拉这条链，
+    // 49 条里最新价一条都不是数字（全是 '-'），昨收却有 47 条有值——
+    // 东财对海外出口只给昨收。这时候整张卡只能按昨收算，硬用 f2 就是空白。
+    const p2 = +x.f2;
+    const px = p2 > 0 ? p2 : +x.f18;
     if (!(k > 0) || !(px > 0) || !(dte >= 0)) continue;
+    if (p2 > 0) live++;
     out.push({ k, px, dte, vol: +x.f5 || 0, oi: +x.f108 || 0 });
   }
-  return out;
+  return { rows: out, live };
 }
 
 async function fetchEtfSpot(secids) {
   const u = 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids='
-    + secids.join(',') + '&fields=f2,f3,f12,f14';
+    + secids.join(',') + '&fields=f2,f3,f12,f14,f18';
   // 同样给 8 秒：/api/optprobe 里这条实测 3.9 秒，默认 3.5 秒会直接超时，
   // 结果四只标的全部栽在「没有现价」上（call/put 都拿到了却配不出基差）
   const j = await emJson(u, 8000);
   const out = {};
   for (const x of ((j && j.data && j.data.diff) || [])) {
     const p = +x.f2;
-    if (p > 0) out[String(x.f12)] = { p, chg: +(+x.f3 || 0).toFixed(2) };
+    const p0 = +x.f18;
+    if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
   }
   return out;
 }
@@ -3302,19 +3310,33 @@ async function serveFutOpt(url, env, ctx) {
     const s = spot && spot[code];
     if (!c || !p || !s) {
       partial.push(code);
-      if (!diag[code]) diag[code] = [c ? 'call ok' : 'call empty', p ? 'put ok' : 'put empty', s ? 'spot ok' : 'spot missing'];
+      if (!diag[code]) diag[code] = [c ? 'call ' + c.rows.length + ' 行' : 'call 失败',
+        p ? 'put ' + p.rows.length + ' 行' : 'put 失败', s ? 'spot ok' : 'spot missing'];
       continue;
     }
+    // 期权侧一条最新价都没拿到 → 整张卡退到昨收口径，现价也必须换成昨收。
+    // 一边用今天的现货、一边用昨天的合成期货，等于把当日涨跌全算进基差了。
+    const live = (c.live || 0) + (p.live || 0);
+    const prevOnly = live === 0;
+    const S = prevOnly ? (s.p0 > 0 ? s.p0 : s.p) : s.p;
+    if (!(S > 0)) { partial.push(code); diag[code] = ['价全缺']; continue; }
     const rows = [];
-    for (const x of c) rows.push({ ...x, side: 'C' });
-    for (const x of p) rows.push({ ...x, side: 'P' });
-    const months = calcEtfMonths(rows, s.p);
-    if (!months.length) { partial.push(code); diag[code] = ['rows ' + rows.length + ' 配不出月份']; continue; }
+    for (const x of c.rows) rows.push({ ...x, side: 'C' });
+    for (const x of p.rows) rows.push({ ...x, side: 'P' });
+    const months = calcEtfMonths(rows, S);
+    if (!months.length) {
+      partial.push(code);
+      diag[code] = ['rows ' + rows.length + ' 配不出月份'];
+      continue;
+    }
     const name = (list.find((x) => x[1] === code) || [])[2] || code;
-    items.push({ c: code, n: name, S: s.p, chg: s.chg, months });
+    items.push({ c: code, n: name, S, chg: prevOnly ? 0 : s.chg, months, on: prevOnly ? 'prev' : 'live' });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial };
+  // prev = 整块都按上一交易日收盘价算的；前端据此在卡片底部标一句，
+  // 免得把「昨天的基差」当成盘中实时数字看
+  out.mode = items.some((x) => x.on === 'live') ? 'live' : 'prev';
   // 一条都没配对出来时把原因一并带上：这种时候最需要知道是「东财不通」还是
   // 「配不出月份」，而线上又没法 attach 调试器
   if (DBG || !items.length) out.diag = diag;

@@ -7495,6 +7495,11 @@ function renderFutOptEtf(){
   }
   h += '</tbody></table>';
   if (rest.length < 4) h += '<div class="futfoot">另外 ' + (4 - rest.length) + ' 个标的还在读…</div>';
+  // 东财对海外出口的期权链接口只回昨收（最新价全是「-」），这时整块按昨收算，
+  // 现价那一列也是昨收——不说明的话会被当成盘中实时数字
+  var onPrev = (FUTOPT.main && FUTOPT.main.mode === 'prev')
+    || (FUTOPT.rest && FUTOPT.rest.mode === 'prev');
+  if (onPrev) h += '<div class="futfoot">拿不到期权最新价，本表按<b>上一交易日收盘价</b>计算（现价列同为昨收），盘中有价时自动切回实时</div>';
   box.innerHTML = h;
 }
 
