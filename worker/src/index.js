@@ -3354,15 +3354,18 @@ async function serveOptProbe(url) {
         signal: AbortSignal.timeout(6000),
       });
       const txt = await r.text();
-      let diff = null, rc = null, first = null;
+      let diff = null, rc = null, first = null, sample = null;
       try {
         const j = JSON.parse(txt);
         rc = j && j.rc;
         const d = j && j.data;
         if (d && Array.isArray(d.diff)) { diff = d.diff.length; first = d.diff[0]; }
-        else if (d && d.diff && typeof d.diff === 'object') { diff = Object.keys(d.diff).length; }
+        else if (d && d.diff && typeof d.diff === 'object') { diff = Object.keys(d.diff).length; first = d.diff['0']; }
+        // 条数够不代表能用：f161 行权价 / f162 剩余日 缺一个就整条被过滤掉，
+        // 最后「diff 49 条、rows 0 行」看起来像接口没数据
+        if (first) sample = { f12: first.f12, f2: first.f2, f161: first.f161, f162: first.f162, f108: first.f108 };
       } catch (e) { /* 不是 JSON */ }
-      return { n, s: r.status, ms: Date.now() - t0, bytes: txt.length, rc, diff,
+      return { n, s: r.status, ms: Date.now() - t0, bytes: txt.length, rc, diff, sample,
         head: txt.slice(0, 120) };
     } catch (e) {
       return { n, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e) };
