@@ -16,6 +16,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import decodeKlc from '../data/sina_klc_decode.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -163,37 +164,97 @@ function parsePosXml(xml, prod, date) {
 }
 
 // ---------------------------------------------------------------- 现货收盘
-async function fetchSpotClose() {
+// 主源新浪、备源东财。2026-11-10 教训：GitHub Runner（Azure 海外 IP）打
+// push2his.eastmoney.com 直接 502 / fetch failed，同一份工作流里 gen_mkt_hist
+// 也挂在这里；而 data/import_etf.mjs 走新浪一直很稳。基差全依赖现货收盘，
+// 单一源挂了就是「250 天全部跳过」，所以两个源都得在。
+const SPOT_SINA = { '000300': 'sh000300', '000905': 'sh000905', '000016': 'sh000016', '000852': 'sh000852' };
+
+async function fetchSinaSpot() {
   const out = {};
-  for (const [code, secid] of Object.entries(SPOT_SECID)) {
-    const u = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=' + secid
-      + '&klt=101&fqt=1&lmt=320&end=20500101'
-      + '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f53';
-    let map = {};
-    // 少一个现货指数，对应品种（IF/IH/IC/IM）当天的基差全成 null，而且
-    // 期权合成基差也会跟着整块消失——一次抖动不值得毁掉一天的数据，重试三次
-    for (let k = 0; k < 3; k++) {
+  for (const [code, sym] of Object.entries(SPOT_SINA)) {
+    const u = 'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData'
+      + '?symbol=' + sym + '&scale=240&ma=no&datalen=400';
+    let map = null;
+    for (let k = 0; k < 3 && !map; k++) {
       try {
         const r = await fetch(u, {
-          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn' },
           signal: AbortSignal.timeout(15000),
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
-        const kl = (j && j.data && j.data.klines) || [];
         const m = {};
-        for (const s of kl) {
-          const a = s.split(',');
-          m[a[0]] = +a[1];
+        for (const x of (Array.isArray(j) ? j : [])) {
+          // 新浪给三位小数（4056.108），中金所/东财口径是两位，先统一掉，
+          // 免得同一个点位在两条链路间差出 0.008 让基差看着像抖动
+          if (x && x.day && +x.close > 0) m[x.day] = +(+x.close).toFixed(2);
         }
-        if (Object.keys(m).length) { map = m; break; }
-        throw new Error('空数据');
+        if (Object.keys(m).length) map = m;
+        else throw new Error('空数据');
       } catch (e) {
-        if (k === 2) log('  现货 ' + code + ' 拉取失败（重试 3 次）：' + e.message);
-        else await sleep(800 * (k + 1));
+        if (k === 2) log('  现货 ' + code + ' 新浪 getKLineData 失败：' + e.message);
+        else await sleep(600 * (k + 1));
       }
     }
-    out[code] = map;
+    // 同在新浪、换个子域再试一次：money.* 和 finance.* 的解析路径不同，
+    // 海外出口经常一个通一个不通，多这一跳比多等一天强
+    if (!map) {
+      try {
+        const t = await fetchText('https://finance.sina.com.cn/realstock/company/' + sym + '/hisdata_klc2/klc_kl.js', 2, 20000);
+        const b64 = t.split('=').slice(1).join('=').split(';')[0].replace(/"/g, '').trim();
+        const m = {};
+        for (const x of decodeKlc(b64) || []) {
+          const d = String(x.date instanceof Date ? x.date.toISOString().slice(0, 10) : x.date).slice(0, 10);
+          if (d && +x.close > 0) m[d] = +(+x.close).toFixed(2);
+        }
+        if (Object.keys(m).length) map = m;
+      } catch (e) {
+        log('  现货 ' + code + ' 新浪 hisdata 失败：' + e.message);
+      }
+    }
+    if (map) out[code] = map;
+    await sleep(120);
+  }
+  return out;
+}
+
+async function fetchEmSpot(code, secid) {
+  const u = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=' + secid
+    + '&klt=101&fqt=1&lmt=320&end=20500101'
+    + '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f53';
+  // 少一个现货指数，对应品种（IF/IH/IC/IM）当天的基差全成 null，而且
+  // 期权合成基差也会跟着整块消失——一次抖动不值得毁掉一天的数据，重试三次
+  for (let k = 0; k < 3; k++) {
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const kl = (j && j.data && j.data.klines) || [];
+      const m = {};
+      for (const s of kl) {
+        const a = s.split(',');
+        if (a[0] && +a[1] > 0) m[a[0]] = +(+a[1]).toFixed(2);
+      }
+      if (Object.keys(m).length) return m;
+      throw new Error('空数据');
+    } catch (e) {
+      if (k === 2) log('  现货 ' + code + ' 东财拉取失败（重试 3 次）：' + e.message);
+      else await sleep(800 * (k + 1));
+    }
+  }
+  return {};
+}
+
+async function fetchSpotClose() {
+  const out = await fetchSinaSpot();
+  const miss = Object.keys(SPOT_SECID).filter((c) => !out[c]);
+  if (miss.length) log('  新浪缺 ' + miss.join(',') + '，转东财补');
+  for (const code of miss) {
+    out[code] = await fetchEmSpot(code, SPOT_SECID[code]);
     await sleep(150);
   }
   return out;
@@ -448,6 +509,14 @@ async function main() {
       for (const k of Object.keys(hist[grp][p])) hist[grp][p][k] = hist[grp][p][k].slice(cut);
     }
     for (const c of Object.keys(hist.spot)) hist.spot[c] = hist.spot[c].slice(cut);
+  }
+
+  // 一天都没落地就别写盘：宁可让这条链报错，也不要拿空表覆盖掉 data 分支上
+  // 已经攒好的 200 多天——一次上游全挂（2026-11-10 东财从 Runner 全 502）
+  // 就会把历史清零，而历史分位是这个模块的全部价值
+  if (!hist.d.length) {
+    console.error('没有任何一天落地（现货源和日行情都拿不到），不写盘，退出');
+    process.exit(2);
   }
 
   // 兜底：存量日档里没有 _last（早期版本把它删掉了），或快照落后于历史最后一天，
