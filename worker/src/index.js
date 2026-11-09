@@ -3255,7 +3255,10 @@ function calcEtfMonths(rows, S) {
 async function serveFutOpt(url, env, ctx) {
   const g = url.searchParams.get('g') === 'rest' ? 'rest' : 'main';
   const ttl = g === 'rest' ? 300 : 120;
-  const cache = await getCache();
+  // ?dbg=1：把每条期权链的失败原因带回来。东财对 Cloudflare 出口和家宽出口
+  // 的态度可能不一样，沙箱里复现不了线上，只能让接口自己说哪里断了
+  const DBG = url.searchParams.get('dbg') === '1';
+  const cache = DBG ? null : await getCache();
   const key = new Request('https://etf.internal/futopt/v1/' + g, { method: 'GET' });
   if (cache) {
     try {
@@ -3265,11 +3268,18 @@ async function serveFutOpt(url, env, ctx) {
   }
 
   const list = ETF_OPT[g];
-  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch(() => null);
+  const diag = {};
+  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch((e) => {
+    diag.spot = String((e && e.message) || e);
+    return null;
+  });
   // 每个标的 2 个请求（购/沽），4 个标的 8 个，加上现货 1 个 = 9 个
+  const grab = (sid, code, spt) => fetchOptChain(sid, spt).catch((e) => {
+    (diag[code] = diag[code] || []).push('spt' + spt + ' ' + String((e && e.message) || e));
+    return null;
+  });
   const chainP = Promise.all(list.map(([sid, code]) => Promise.all([
-    fetchOptChain(sid, 9).catch(() => null),
-    fetchOptChain(sid, 10).catch(() => null),
+    grab(sid, code, 9), grab(sid, code, 10),
   ]).then(([c, p]) => ({ code, c, p }))));
 
   const [spot, chains] = await Promise.all([spotP, chainP]);
@@ -3279,17 +3289,22 @@ async function serveFutOpt(url, env, ctx) {
   const items = [];
   for (const { code, c, p } of chains) {
     const s = spot && spot[code];
-    if (!c || !p || !s) { partial.push(code); continue; }
+    if (!c || !p || !s) {
+      partial.push(code);
+      if (!diag[code]) diag[code] = [c ? 'call ok' : 'call empty', p ? 'put ok' : 'put empty', s ? 'spot ok' : 'spot missing'];
+      continue;
+    }
     const rows = [];
     for (const x of c) rows.push({ ...x, side: 'C' });
     for (const x of p) rows.push({ ...x, side: 'P' });
     const months = calcEtfMonths(rows, s.p);
-    if (!months.length) { partial.push(code); continue; }
+    if (!months.length) { partial.push(code); diag[code] = ['rows ' + rows.length + ' 配不出月份']; continue; }
     const name = (list.find((x) => x[1] === code) || [])[2] || code;
     items.push({ c: code, n: name, S: s.p, chg: s.chg, months });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial };
+  if (DBG) out.diag = diag;
   const res = json(out, ttl);
   if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
