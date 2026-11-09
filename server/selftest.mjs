@@ -234,7 +234,9 @@ async function runContracts(base, pass) {
     r = await rawRequest(base, '/api/min?code=510300', { cookie });
     jm = r.json();
   }
-  if (jm && jm.ok && Array.isArray(jm.pts) && jm.pts.length > 30) {
+  // 门槛只用来确认「不是一个空壳」，不能写死 30：开盘前半小时本来就只有二十来个点，
+  // 写死 30 会让 9:30–10:00 之间每次自检都误报失败。
+  if (jm && jm.ok && Array.isArray(jm.pts) && jm.pts.length >= 2) {
     const p0 = jm.pts[0], pl = jm.pts[jm.pts.length - 1];
     ok('/api/min 510300 → ' + jm.pts.length + ' 点，' + p0[0] + '–' + pl[0] + '，' + r.body.length + ' 字节');
     const badPt = jm.pts.find((x) => !Array.isArray(x) || !/^\d\d:\d\d$/.test(x[0]) || !(x[1] > 0));

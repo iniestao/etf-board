@@ -47,7 +47,12 @@ const WAIT_TOTAL = 6000;    // 先到者不完整时，等另一个源的上限
 // 出口打过去实测要 43 秒（沙箱侧只要 2 秒），任何「一次请求内拉完」的写法都
 // 必然撞超时，页面就整块空白。现在改成：只用缓存回答，刷新放后台。
 const ALL_TTL = 60;                 // 边缘缓存有效期（秒）
-const ALL_FRESH_MS = 12 * 60000;     // KV 快照多久算「新鲜」（见 ALL_KV_GAP）
+/* 「多久算新鲜」只该用来判断**兜底快照**还能不能直接端出去，不能拿来当主数据源。
+   曾经设成 12 分钟（想跟 10 分钟的写盘间隔对齐），结果 09:49 写过快照之后，
+   直到 10:01 每次缓存 miss 都把这份 12 分钟前的数据当新鲜货返回——盘中看到的是
+   十几分钟前的价格，这是致命的。
+   现在 90 秒：只要快照超过一个边缘缓存周期（60 秒），就一定会去抢一次上游。 */
+const ALL_FRESH_MS = 90 * 1000;
 // 为什么是 3 分钟而不是 60 秒：16:00 那次线上自检，新浪 20 页 6 秒内就回来了；
 // 17:50 再测要 43 秒。中间唯一的变量就是新加的 60 秒轮询把请求量放大了一个量级，
 // 撞上游限流。既然自选已经走腾讯 5 秒实时，全市场 3 分钟够用，先把压力降下来。
@@ -3194,6 +3199,8 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
 .sechd{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;color:var(--txt2)}
 .sechd b{color:var(--txt);font-size:13.5px;font-weight:600;white-space:nowrap;flex:0 0 auto}
 .sechd .n{color:var(--txt3);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* 模块时间标记：「数据时点」是数据本身的时刻，「算于」是本地算完的时刻，两者常差几十秒 */
+.sechd .n .tsm{white-space:nowrap;font-variant-numeric:tabular-nums}
 /* overflow 用 clip 不用 hidden：hidden 会把 .tbl 变成滚动容器，theadd 的
    sticky 就地失效（表头吸顶不出来）；clip 同样裁掉圆角外的内容但不建立滚动盒。 */
 .tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:clip}
@@ -3854,6 +3861,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div id="secBody"><div class="empty">正在读取行情…</div></div>
 </div>
 
+<div class="sechd"><b>今日概况</b><span class="n" id="cardsN"></span></div>
 <div class="cards">
   <div class="card"><div class="k">全市场 ETF</div><div class="v" id="cTotal">-</div><div class="s" id="cUni">-</div></div>
   <div class="card"><div class="k">涨 / 跌</div><div class="v" id="cUD">-</div><div class="s" id="cUDs">-</div></div>
@@ -4103,6 +4111,7 @@ var watch = loadWatch();
 var DATA = [];                 // 全市场归一化数据
 var STATS = null;
 var LIVE = {};                 // 自选高频覆盖 {code: item}
+var LIVE_TS = 0;               // 自选行情最近一次到的时刻（腾讯直连）
 var g = 'all', sortKey = 'amt', limit = 100, kw = '';
 var DATA_SRC = '', DATA_TS = 0;
 var lastP = {}, timerSlow = null, timerFast = null, timerSpd = null, timerT3 = null, retryTimer = null;
@@ -4345,8 +4354,8 @@ function normalize(src, raw){
       pc = +x.settlement || 0;
       p = +x.trade || pc;
       if (!p) continue;
-      out.push({ c:x.code, n:x.name, p:p, pc:pc, chg:+x.changepercent,
-        amt:+x.amount, tr:+x.turnoverratio, hi:+x.high, lo:+x.low, op:+x.open,
+      out.push({ c:x.code, n:x.name, p:p, pc:pc, chg:(+x.changepercent || 0),
+        amt:(+x.amount || 0), tr:(+x.turnoverratio || 0), hi:+x.high, lo:+x.low, op:+x.open,
         pre: !(+x.trade), mc: (+x.nmc || 0) * 1e4,
         iopv:null, pm:null, g:group(x.name), ix: IX_OF[x.code] || null });
     }
@@ -4358,7 +4367,7 @@ function normalize(src, raw){
       p = +x.f2 || pc;
       if (!p) continue;
       iopv = +x.f441 || 0;
-      out.push({ c:x.f12, n:x.f14, p:p, pc:pc, chg:+x.f3, amt:+x.f6, tr:+x.f8,
+      out.push({ c:x.f12, n:x.f14, p:p, pc:pc, chg:(+x.f3 || 0), amt:(+x.f6 || 0), tr:(+x.f8 || 0),
         hi:+x.f15, lo:+x.f16, op:+x.f17,
         pre: !(+x.f2), mc: 0,
         iopv: iopv>0?iopv:null,
@@ -5390,6 +5399,7 @@ function renderSectors(){
   }
   body.innerHTML = h;
   maybeSaveSecDaily();
+  stampN('secN', DATA_TS);
 
   // 明细：只显示当前点开的那一格，放在它所属组的格子里。
   // 全部指数都列出来（原先截前 8 个，新能源这种十几条线的板块，
@@ -5473,6 +5483,7 @@ function renderCards(){
     var el = document.getElementById('n-'+k);
     if (el) el.textContent = gc[k] || '';
   });
+  stampN('cardsN', DATA_TS);
 }
 
 /* ================= 自选「主要贡献」 =================
@@ -5582,6 +5593,8 @@ function renderWatch(){
   ensureTop3();
   paintTop3();     // tbody 刚被整块重写，单元格是新的，得重画一遍
   diagSync();
+  // 自选走腾讯直连（5 秒/30 秒），比全市场快照新，时点要用它自己的
+  stampN('watchN', LIVE_TS || DATA_TS);
 }
 
 /* ================= 位置诊断 =================
@@ -5762,6 +5775,7 @@ function renderEvents(){
   }
   var ev = buildEvents();
   if (nEl) nEl.textContent = ev.length ? (ev.length + ' 只有动作') : '无';
+  stampN('evtN', DATA_TS);
   var elSig = document.getElementById('cSig'), elSigs = document.getElementById('cSigs');
   if (elSig){
     elSig.innerHTML = ev.length + '<small>只</small>';
@@ -6039,6 +6053,7 @@ function renderMkt(){
   mktBar(); mktTabs(); mktList();
   if (nEl){
     nEl.textContent = MKT.n + ' 个指数 · ' + MKT.date + ' 收盘';
+    stampN('mktN', null);
   }
 }
 
@@ -6146,6 +6161,8 @@ function renderDiag(){
     if (cnt.d1) p.push(cnt.d1 + ' 只低位缩量');
     nEl.textContent = have + '/' + watch.length + ' 只已诊断'
       + (p.length ? ' · ' + p.join(' · ') : '');
+    // 诊断读的是日线历史（最后一天是上一交易日），行情部分是今天的快照
+    stampN('diagN', DATA_TS);
   }
 }
 
@@ -6251,6 +6268,7 @@ function renderList(){
       : '<tr><td colspan="11" class="empty">该指数暂无行情</td></tr>';
     document.getElementById('listN').textContent =
       '跟踪「' + IXF + '」的 ' + arr.length + ' 只 · 按成交额排序 · 再点一次标签返回全部';
+    stampN('listN', DATA_TS);
     return;
   }
   if (g !== 'all') arr = arr.filter(function(x){ return x.g === g; });
@@ -6291,6 +6309,7 @@ function renderList(){
   else if (kw && DEDUP) note = '（搜索时显示全部，未去重）';
   document.getElementById('listN').textContent =
     '显示 ' + arr.length + ' / 可用 ' + matched + ' 只' + note;
+  stampN('listN', DATA_TS);
 }
 
 /* ================= 急涨急跌 =================
@@ -8648,6 +8667,34 @@ window.addEventListener('resize', function(){
 });
 
 /* ---------- 数据加载 ---------- */
+/* ---------- 模块时间标记 ----------
+   每个模块右上角标两个时刻：
+     数据时点 = 这批数据本身是什么时候的（快照 ts / 美股收盘 / 分时最后一根）
+     算于     = 浏览器把这批数据算完的时刻
+   分开写是因为它们经常差几十秒：清单快照 09:52 到，位置诊断要串行读几十只历史，
+   算完可能 09:52:40。只写「更新 09:52:40」会让人以为行情是 40 秒前的。
+   重复渲染先删再插，刷一百次也只有一组。手机竖屏只留「数据时点」，其余 hide-sm。 */
+function _p2(n){ return (n < 10 ? '0' : '') + n; }
+function _hms(t){
+  var d = new Date(t || Date.now());
+  return _p2(d.getHours()) + ':' + _p2(d.getMinutes()) + ':' + _p2(d.getSeconds());
+}
+function _hm(t){
+  var d = new Date(t || Date.now());
+  return _p2(d.getHours()) + ':' + _p2(d.getMinutes());
+}
+function stampN(id, pointTs){
+  var el = typeof id === 'string' ? document.getElementById(id) : id;
+  if (!el) return;
+  var old = el.querySelector('.tsm');
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+  var base = String(el.textContent || '').trim();
+  if (base === '-' || base === '—') el.textContent = '';
+  el.insertAdjacentHTML('beforeend',
+    '<span class="tsm">' + (pointTs ? ' · 数据时点 ' + _hm(pointTs) : '')
+    + '<span class="hide-sm"> · 算于 ' + _hms() + '</span></span>');
+}
+
 function setStale(msg, bad){
   var el = document.getElementById('staleBar');
   if (!msg){ el.style.display = 'none'; el.textContent = ''; el.className = 'stalebar'; return; }
@@ -8695,6 +8742,9 @@ function loadFull(){
     void hasPm;
 
     renderCards(); renderList(); renderWatch(); renderSectors();
+    // 这几块共用同一份快照，数据时点一致；各模块自己也可能再打一次（重算按钮），幂等
+    stampN('secN', DATA_TS);
+    stampN('listN', DATA_TS);
     // 全市场提醒跟着全量快照走（60 秒一刷），不能挂在 5 秒的自选行情上——
     // 那个只有自选那几十只，扫出来的「全市场」是假的
     alertScanAll();
@@ -9223,13 +9273,13 @@ function loadTXQuotes(){
     }
     if (Object.keys(out).length){
       LIVE = out;
+      LIVE_TS = Date.now();
       renderWatch();
       alertScan(out);
       trigScan(out);
       hRefresh();                    // 自选 5 秒一刷，弹窗里那只也一起动
       var tip = document.getElementById('quoteTip');
-      if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒')
-        + '刷新 · ' + new Date().toLocaleTimeString('zh-CN');
+      if (tip) tip.textContent = '自选经浏览器直连腾讯 · ' + (isOpen()?'5 秒':'30 秒') + '刷新';
     }
     finish();
   };
@@ -9474,7 +9524,8 @@ function renderOvernight(){
   var d = '';
   for (var k in ON.us){ d = (ON.us[k].d || '').slice(5, 10); break; }
   var h = '<div class="onhd"><b>隔夜</b>'
-    + (d ? '<span class="n">美东 ' + esc(d) + ' 收盘 · 点赛道看映射</span>' : '<span class="n">点赛道看映射</span>')
+    + (d ? '<span class="n" id="onN">美东 ' + esc(d) + ' 收盘 · 点赛道看映射</span>'
+         : '<span class="n" id="onN">点赛道看映射</span>')
     + '<span class="ofold" id="onFold">' + (ON_FOLD ? '展开' : '收起') + '</span></div>';
 
   var fut = '', i, q;
@@ -9524,6 +9575,9 @@ function renderOvernight(){
   }
   el.innerHTML = h;
   el.style.display = '';
+  // 美股是最近一个完整交易日，期货/亚太是实时——统一按「这次抓取的时刻」标，
+  // 别再让人猜这张卡是五分钟前还是半小时前的
+  stampN('onN', ON.ts);
 
   // 亚太卡：独立一块，排在隔夜下面。今天已经在交易（或刚收盘）的市场，
   // 和隔夜（昨晚美股）正好互补；点条目看最近一个完整时段的分时。
@@ -9535,9 +9589,10 @@ function renderOvernight(){
       q = ON.asia[i];
       ap += ovChip(q.n, q.chg, q.sid);
     }
-    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n">今日实时 · 点看分时</span></div>'
+    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">今日实时 · 点看分时</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
+    stampN('asN', ON.ts);
   } else {
     ac.style.display = 'none';
   }
