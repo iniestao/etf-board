@@ -3182,12 +3182,17 @@ async function emJson(u, ms) {
 }
 
 /** 一条期权链（单边）。spt 9=购 10=沽，字段：f2 最新价 f5 成交量
- *  f12 代码 f14 名称 f108 持仓量 f152 购沽标记 f161 行权价 f162 剩余自然日 */
+ *  f12 代码 f14 名称 f108 持仓量 f152 购沽标记 f161 行权价 f162 剩余自然日
+ *
+ *  超时给到 8 秒：/api/optprobe 实测，同样这几个 URL 从 Cloudflare 出口要
+ *  1.5~5.6 秒才回（延迟子域最快 1.5s，push2 主域 2.7~3.0s，82 子域 5.6s）。
+ *  原先 3.5 秒，赶上慢的那次就整批 abort，八条链全 null，卡片一片空白——
+ *  而接口本身是 200、diff 有 49 条，看起来像「东财不给数据」，其实是自己掐断的。 */
 async function fetchOptChain(secid, spt) {
   const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
     + '&fltt=2&invt=2&fields=f2,f5,f12,f14,f108,f152,f161,f162'
     + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
-  const j = await emJson(u);
+  const j = await emJson(u, 8000);
   const diff = (j && j.data && j.data.diff) || [];
   const out = [];
   for (const x of diff) {
@@ -3269,20 +3274,24 @@ async function serveFutOpt(url, env, ctx) {
 
   const list = ETF_OPT[g];
   const diag = {};
-  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch((e) => {
-    diag.spot = String((e && e.message) || e);
-    return null;
-  });
-  // 每个标的 2 个请求（购/沽），4 个标的 8 个，加上现货 1 个 = 9 个
   const grab = (sid, code, spt) => fetchOptChain(sid, spt).catch((e) => {
     (diag[code] = diag[code] || []).push('spt' + spt + ' ' + String((e && e.message) || e));
     return null;
   });
-  const chainP = Promise.all(list.map(([sid, code]) => Promise.all([
-    grab(sid, code, 9), grab(sid, code, 10),
-  ]).then(([c, p]) => ({ code, c, p }))));
+  // 分两批发：4 个标的的购 + 现货 = 5 个并发，回完再发 4 个沽。
+  // 9 个一起发会撞 Cloudflare 对同 host 的连接数上限，后面的排队，
+  // 单个请求的墙钟时间被顶到 5 秒以上（探针里 8 个并发最快那条也要 2.7s）
+  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch((e) => {
+    diag.spot = String((e && e.message) || e);
+    return null;
+  });
+  const [spot, calls] = await Promise.all([
+    spotP,
+    Promise.all(list.map(([sid, code]) => grab(sid, code, 9))),
+  ]);
+  const puts = await Promise.all(list.map(([sid, code]) => grab(sid, code, 10)));
+  const chains = list.map(([, code], i) => ({ code, c: calls[i], p: puts[i] }));
 
-  const [spot, chains] = await Promise.all([spotP, chainP]);
   const partial = [];
   if (!spot) partial.push('spot');
 
