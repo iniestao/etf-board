@@ -22,7 +22,12 @@ jobs:
           P: ${{ inputs.path }}
         run: |
           echo "GET $BASE$P"
-          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 30 "$BASE$P" 2>/tmp/err) || true
+          # 有些 runner 的 DNS 解析不了 *.workers.dev，退回 DoH 再试一次
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' --max-time 20 "$BASE$P" 2>/tmp/err) || true
+          if [ "$code" = "000" ]; then
+            echo "直连没解析出来，换 DoH 再试"
+            code=$(curl -sS --doh-url https://cloudflare-dns.com/dns-query -o /tmp/body -w '%{http_code}' --max-time 25 "$BASE$P" 2>/tmp/err) || true
+          fi
           echo "HTTP [$code]"
           echo "--- curl 诊断 ---"
           cat /tmp/err || true
