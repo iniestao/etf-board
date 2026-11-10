@@ -3201,6 +3201,8 @@ const ETF_OPT = {
     ['1.510500', '510500', '500ETF'],
     ['0.159922', '159922', '500ETF深'],
     ['1.588080', '588080', '科创板50ETF'],
+    // 深交所 2022-09-19 那批三个（创业板 / 中证500 / 深100）里漏了一个，补上
+    ['0.159901', '159901', '深100ETF'],
   ],
 };
 
@@ -5081,7 +5083,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     </div>
 
     <div class="mkbox">
-      <div class="futttl"><b>ETF 期权合成基差</b><span id="futOptEtfSub">沪深 8 个标的</span></div>
+      <div class="futttl"><b>ETF 期权合成基差</b><span id="futOptEtfSub">沪深 9 个标的</span></div>
       <div class="tbl" id="futOptEtf"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
     </div>
 

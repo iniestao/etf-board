@@ -1183,7 +1183,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     </div>
 
     <div class="mkbox">
-      <div class="futttl"><b>ETF 期权合成基差</b><span id="futOptEtfSub">沪深 8 个标的</span></div>
+      <div class="futttl"><b>ETF 期权合成基差</b><span id="futOptEtfSub">沪深 9 个标的</span></div>
       <div class="tbl" id="futOptEtf"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
     </div>
 
