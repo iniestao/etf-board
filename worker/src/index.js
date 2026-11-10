@@ -2875,6 +2875,51 @@ async function fetchCffex(path) {
   throw lastErr;
 }
 
+/** 新浪股指期货报价：秒级快照，一次请求拿全部合约。
+ *
+ *  为什么要它当地主源：中金所的 quote_*.txt 是分钟级才刷一次的。
+ *  2026-11-10 盘中实测 —— 14:35:40 之后四个品种的 Last-Modified 一起停住，
+ *  到 14:39 都没再动；而同一时刻新浪的 IF2611 已经走到 4055.60、成交量比
+ *  中金所文件里的多 1000 多手。期货价停着、现货价（东财）一直在动，两者相减
+ *  出来的基差率就会「自己漂」——看着像贴水在修复，其实只是沪深 300 在走，
+ *  期货那半截根本没跟上。Δ基差率要能读，这一头必须是秒级的。
+ *
+ *  字段（nf_ 前缀，GBK 编码，但我们只用 ASCII 数字）按 0 基取：
+ *    3 最新价 · 4 成交量 · 6 持仓量 · 13 昨收盘 · 14 昨结算
+ *  涨跌基准取昨结算，和中金所 CSV 里 updown 的口径一致，换源前后「涨跌」
+ *  这一列可直接对比。校验办法：涨停价 ÷ 1.1 = 昨结算
+ *  （IF2612 4432.6 / 1.1 = 4029.8，正好是 a[14]；a[13] 的 4023.6 是昨收盘）。
+ *
+ *  持仓量同为中金所原值（双边合计），所以四象限的阈值不用改。
+ */
+async function fetchSinaFut(codes) {
+  if (!codes || !codes.length) return {};
+  const r = await fetch('https://hq.sinajs.cn/list=' + codes.map((x) => 'nf_' + x).join(','), {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('sina HTTP ' + r.status);
+  const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const out = {};
+  const re = /var hq_str_nf_([A-Z]{2}\d{4})="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const a = m[2].split(',');
+    if (a.length < 16) continue;                      // 空串 = 该合约没在交易
+    const px = +a[3];
+    if (!(px > 0)) continue;
+    const pc = +a[14];                                // 昨结算
+    out[m[1]] = {
+      px,
+      chg: pc > 0 ? +((px - pc) / pc * 100).toFixed(2) : 0,
+      vol: +a[4] || 0,
+      oi: +a[6] || 0,
+      t: a[37] || '',                                 // 报价时间 HH:MM:SS
+    };
+  }
+  return out;
+}
+
 /** 东财 ulist.np 批量报价。主域偶发 502（2026-11-10 线上撞了两次，一次把指数
  *  现货整批打空、期指四张表的基差全成 null），所以主域/延迟子域各试两次再放弃。 */
 async function emUlist(secids, fields) {
@@ -3054,7 +3099,8 @@ async function serveFut(env, ctx) {
   if (FUT_L1.body && now - FUT_L1.ts < FUT_TTL * 1000) return json(FUT_L1.body, 45);
 
   const cache = await getCache();
-  const key = new Request('https://etf.internal/fut/v2/live', { method: 'GET' });
+  // v3：期货价从中金所换到新浪，旧缓存里的 px 是中金所那份分钟级的，别让它再活一次
+  const key = new Request('https://etf.internal/fut/v3/live', { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
@@ -3067,8 +3113,8 @@ async function serveFut(env, ctx) {
   }
 
   const partial = [];
-  // 三路并发：现货是东财、期货和期权都是中金所。串起来等会多一个 RTT，
-  // 而这三者互不依赖。
+  // 三路并发：现货是东财，期货是中金所清单 + 新浪价，期权仍是中金所。
+  // 串起来等会多一个 RTT，而这三者互不依赖。
   const spotP = fetchSpotIdx().catch(() => null);
   const futP = Promise.all(FUT_PRODS.map((p) => fetchCffex('quote_' + p + '.txt')
     .then((t) => ({ p, rows: parseFutCsv(t, p) }))
@@ -3080,10 +3126,27 @@ async function serveFut(env, ctx) {
   const [spot, futRes, optRes] = await Promise.all([spotP, futP, optP]);
   const spotOk = spot && Object.keys(spot).length >= 3;
 
-  const futList = futRes.filter((x) => x.rows && x.rows.length);
-  if (!futList.length) {
-    // 期货一条都没拿到 → 收盘日档兜底
-    const last = await loadFutLast(env);
+  /* 中金所的四个 quote 文件降级成「合约清单 + 兜底价」，价格一律改用新浪。
+     理由见 fetchSinaFut 上面那段：中金所那份 txt 分钟级才刷一次，拿它配实时的
+     现货指数，基差率会自己漂。中金所四个文件全挂时也不慌——用收盘日档里的
+     合约清单去问新浪，照样出得了秒级价。 */
+  const last = await loadFutLast(env);
+  const slim = [];
+  for (const { p, rows } of futRes) {
+    if (rows) for (const r of rows) slim.push({ p, ...r });
+  }
+  // 单个品种挂掉（中金所偶尔只丢一个文件）时，用日档里该品种的合约清单补上，
+  // 价格等会儿由新浪给。只有清单也补不出来才整块退回日档。
+  const miss = FUT_PRODS.filter((p) => !slim.some((r) => r.p === p));
+  if (miss.length && last && Array.isArray(last.fut)) {
+    for (const f of last.fut) {
+      if (miss.indexOf(f.p) < 0 || !f.c) continue;
+      slim.push({ p: f.p, c: f.c, ym: String(f.c).slice(2, 6),
+        px: f.px, chg: f.chg, vol: f.vol, oi: f.oi, fromDaily: 1 });
+    }
+  }
+  if (!slim.length) {
+    // 连清单都没有 → 整块退回收盘日档，标 stale 和日期，别装作是实时的
     if (last) {
       const out = { ...last, ok: true, src: 'daily', stale: 1, ts: now, asof: last.ts || now,
         age: Math.round((now - (last.ts || now)) / 1000), partial: ['fut'] };
@@ -3093,11 +3156,23 @@ async function serveFut(env, ctx) {
     return json({ ok: false, error: 'cffex_unreachable', ts: now, partial: ['fut'] }, 15);
   }
 
+  let sina = {};
+  try { sina = await fetchSinaFut(slim.map((r) => r.c)); } catch (e) { sina = {}; }
+  let nSina = 0;
+  const fresh = {};
+  for (const r of slim) {
+    const s = sina[r.c];
+    if (!s) continue;
+    r.px = s.px; r.chg = s.chg; r.vol = s.vol; r.oi = s.oi;
+    fresh[r.c] = 1;
+    nSina++;
+  }
+  const src = nSina ? 'sina' : 'cffex';
+
   /* 昨收基准：持仓量变化要它、基差率变化也要它。
      原先只在 last.td !== td 时用 last.fut，于是日档一追平今天（16:35 之后）
      就整表没有增减仓——恰恰是收盘后最该看完整一天变化的时候。
      现在快照里多带一份 prev（上一交易日的 code→{oi,bp}），两种情况都能接上。 */
-  const last = await loadFutLast(env);
   const td = futDataDate(last);
   const prev = {};
   if (last && last.td) {
@@ -3113,20 +3188,24 @@ async function serveFut(env, ctx) {
 
   const futOut = [];
   const futPxByProd = {};
-  for (const { p, rows } of futRes) {
-    if (!rows) { partial.push(p); continue; }
+  for (const p of FUT_PRODS) {
+    const rows = slim.filter((r) => r.p === p);
+    if (!rows.length) { partial.push(p); continue; }
     const S = FUT_MAP[p];
     const sp = spotOk ? spot[S] : null;
     futPxByProd[p] = {};
     const tmp = [];
     for (const r of rows) {
+      // 从日档补进来的合约，如果新浪也没报价，宁可这一行不显示——把昨天的价
+      // 当今天的盘中价摆上去，比缺一行难查得多
+      if (r.fromDaily && !fresh[r.c]) continue;
       futPxByProd[p][r.ym] = r.px;
       const basis = sp ? r.px - sp.p : null;
       const bp = sp ? basis / sp.p * 100 : null;
       const dte = dteOf(r.ym);
       const pv = prev[r.c] || {};
       const oiD = pv.oi != null ? r.oi - pv.oi : null;
-      // 基差率变化：单位是百分点，和 bp 同量纲。盘中每 45 秒刷一次，
+      // 基差率变化：单位是百分点，和 bp 同量纲。盘中每分钟刷一次，
       // 盯着这列能看出贴水是在扩大还是修复，比看绝对值直接。
       const bpc = (pv.bp != null && bp != null) ? +(bp - pv.bp).toFixed(3) : null;
       tmp.push({
@@ -3138,6 +3217,7 @@ async function serveFut(env, ctx) {
         q: quadOf(oiD, r.chg, r.oi),
       });
     }
+    if (!tmp.length) { partial.push(p); continue; }
     for (const x of tmp) futOut.push(x);
   }
 
@@ -3163,7 +3243,7 @@ async function serveFut(env, ctx) {
   if (spotOk) for (const k of Object.keys(spot)) spot[k].n = FUT_SPOT_NAME[k] || k;
 
   const out = {
-    ok: true, ts: now, td, src: 'cffex', stale: 0,
+    ok: true, ts: now, td, src, stale: 0,
     asof: now, age: 0, partial,
     spot: spotOk ? spot : {},
     fut: futOut,
