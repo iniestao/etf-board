@@ -177,7 +177,7 @@ jobs:
         continue-on-error: true
         run: |
           if git fetch -q --depth=1 origin data 2>/dev/null; then
-            for f in fut_daily.json fut_last.json; do
+            for f in fut_daily.json fut_last.json etfopt_hist.json; do
               if git show FETCH_HEAD:$f > /tmp/$f 2>/dev/null; then
                 mv /tmp/$f dist/$f
                 echo "取回 $f（$(wc -c < dist/$f) 字节）"
@@ -192,6 +192,16 @@ jobs:
       - name: 生成期指期权日档（滚动 250 天）
         continue-on-error: true
         run: node pipeline/gen_fut_daily.mjs --backfill 250
+
+      # ---------- 3b. ETF 期权历史 ----------
+      # 中金所那份 XML 只覆盖股指期货/期权。ETF 期权在上交所/深交所，没有对应的
+      # 免费归档：合约一到期就从所有源里消失（东财连 secid 都删了）。所以这里不是
+      # 「按日期取历史」，而是「用今天仍在市的合约倒推」——上市早的合约自己活得很久。
+      # 上面那步已经把上一版取回来了，脚本会做合并：老日期用老值，新日期才写新的。
+      # 不合并的话，11 月合约到期消失后它贡献的那 28 天会被削掉，越跑越少。
+      - name: 重建 ETF 期权历史
+        continue-on-error: true
+        run: node pipeline/etfopt_backfill.mjs
 
       - name: 期指日档校验
         run: |
@@ -216,6 +226,30 @@ jobs:
           for v in valid:
               assert -15 < v < 15, f'基差率 {v} 超出合理区间，多半是日期或现货对错了'
           assert n >= 60, f'历史只有 {n} 天，历史分位会失真'
+          PY
+
+      - name: ETF 期权历史校验
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path('dist/etfopt_hist.json')
+          if not p.exists():
+              print('::warning::etfopt_hist.json 没生成，页面 ETF 组会显示「还没发布」')
+              sys.exit(0)
+          h = json.loads(p.read_text())
+          n = len(h['d'])
+          print(f"ETF 期权历史 {n} 天，{h['d'][0]} ~ {h['d'][-1]}")
+          for code, o in h['s'].items():
+              lens = {k: len(v) for k, v in o.items()}
+              assert len(set(lens.values())) == 1, f'{code} 各列长度不一致 {lens}'
+              assert lens['fa'] == n, f'{code} 长度 {lens["fa"]} != {n}'
+              got = [x for x in o['fa'] if x is not None]
+              print(f"  {code}  隔季年化 {len(got)} 天  区间 {min(got):.2f}% ~ {max(got):.2f}%")
+              # 年化基差正常在 ±20% 内。超出说明行权价单位或 dte 推错了
+              for v in got:
+                  assert -25 < v < 25, f'{code} 年化 {v}% 超出合理区间'
+          assert n >= 20, f'只有 {n} 天，画不出像样的曲线'
           PY
 
       # ---------- 4. 发布历史数据 ----------

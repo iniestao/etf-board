@@ -3755,10 +3755,14 @@ async function serveOptProbe(url) {
 }
 
 /** 250 天基线：原样透传 Actions 生成的 fut_daily.json。
- *  Worker 这边一个字段都不重算——历史序列一旦两边各算一遍，迟早会不一致。 */
+ *  Worker 这边一个字段都不重算——历史序列一旦两边各算一遍，迟早会不一致。
+ *
+ *  eh 是 ETF 期权那段单独的历史（etfopt_hist.json），一起捎回去：前端只有在
+ *  切到 ETF 组时才用它，多 22KB 换掉一次额外往返。它是「用今天仍在市的合约
+ *  倒推」出来的，和中金所那份 XML 不是一回事，所以单独放一个字段，不混进 opt。 */
 async function serveFutHist(env) {
   const cache = await getCache();
-  const key = new Request('https://etf.internal/futhist/v1', { method: 'GET' });
+  const key = new Request('https://etf.internal/futhist/v2', { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
@@ -3767,11 +3771,16 @@ async function serveFutHist(env) {
   }
   let out;
   try {
-    const a = await readAsset(env, 'fut_daily.json');
+    const [a, b] = await Promise.all([
+      readAsset(env, 'fut_daily.json'),
+      readAsset(env, 'etfopt_hist.json').catch(() => null),
+    ]);
     if (!a) out = { ok: false, error: 'hist_not_ready', ts: Date.now() };
     else {
       const j = JSON.parse(await a.text());
-      out = { ...j, ok: true, ts: Date.now() };
+      let eh = null;
+      if (b) { try { eh = JSON.parse(await b.text()); } catch (e) { eh = null; } }
+      out = { ...j, ok: true, eh, ts: Date.now() };
     }
   } catch (e) {
     out = { ok: false, error: 'hist_read_failed', msg: String((e && e.message) || e), ts: Date.now() };

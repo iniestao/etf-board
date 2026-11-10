@@ -153,6 +153,9 @@ background:var(--bg3)}
 /* 分组间距 + 窄屏强制断行：桌面靠 margin 分出「股指 / ETF期权 / 口径」三段，
    手机上 11 个标签挤成随机三行读不出分组，改用 mbrk 主动换行 */
 .mtab.grp{margin-left:10px}
+/* ETF 期权组没有「30 天恒定 / 主力近月」可选——那两个口径都要历史上已到期的近月
+   合约，全网没有价格。藏掉两个按不动的按钮，比留着让人反复点强。 */
+.mtabs.etf .mtab[data-m]{display:none}
 .mbrk{flex:0 0 0;height:0}
 @media(max-width:820px){.mbrk{flex:0 0 100%}.mtab.grp{margin-left:0}}
 
@@ -7715,15 +7718,18 @@ function renderFutHist(){
     return;
   }
 
+  var isEtf = ETF_HP.indexOf(FUT_HP) >= 0;
+  // ETF 组没有「30 天恒定 / 主力近月」可切——那两个口径都要历史上已到期的近月合约，
+  // 全网没有价格。这里固定用隔季合约的年化，所以把两个口径 tab 藏起来。
+  if (tabs.classList) tabs.classList.toggle('etf', isEtf);
+  if (isEtf){ renderFutHistEtf(box); return; }
+
   var isOpt = FUT_HP !== 'IF' && FUT_HP !== 'IH' && FUT_HP !== 'IC' && FUT_HP !== 'IM';
   var src = ((isOpt ? FUTHIST.opt : FUTHIST.fut) || {})[FUT_HP] || {};
   var vals = src[FUT_HM] || [];
   var dates = FUTHIST.d || [];
-  var isEtf = ETF_HP.indexOf(FUT_HP) >= 0;
   if (!vals.length){
-    box.innerHTML = isEtf
-      ? '<div class="empty">ETF 期权基差从上线那天起逐日记录<br><span class="code">已到期合约没有可回查的历史，前面补不出来</span></div>'
-      : '<div class="empty">这个品种还没有历史</div>';
+    box.innerHTML = '<div class="empty">这个品种还没有历史</div>';
     return;
   }
 
@@ -7776,11 +7782,87 @@ function renderFutHist(){
   }
 }
 
+/* ETF 期权历史：单独一条数据源（etfopt_hist.json → FUTHIST.eh）。
+ *
+ * 和上面那七个品种的根本区别：中金所把每天的 XML 永久留档，所以能回补 250 天；
+ * 上交所/深交所只给「当前状态」接口，合约一到期就从所有免费源里消失——东财连
+ * secid 都删了，2026-11-10 扫过 10010000~10012440 共 2441 个号，命中的全是在市
+ * 合约。所以「当时的近月合约价格」这条数据根本不存在，不是抓失败。
+ *
+ * 能做的只有一件事：今天还在市的合约里，上市早的自己就活得很久。510050 的 12 月
+ * 合约从 2026-04-23 就有日线，那时它是隔季。把「每天最长可用的那组合约」挑出来
+ * 连成一条线，就得到 130 多天的真实历史——只是口径是隔季，不是近月。
+ *
+ * 隔季和近月的基差绝对值不能直接比（远月贴水天然更深），所以画**年化**
+ * （bp×365/dte）。这个量剔除了期限效应，跨 dte、跨日期都可比。
+ */
+function renderFutHistEtf(box){
+  var sub = document.getElementById('futHistSub');
+  var eh = FUTHIST && FUTHIST.eh;
+  var o = eh && eh.s && eh.s[FUT_HP];
+  if (!eh || !eh.d || !o){
+    if (sub) sub.textContent = '';
+    box.innerHTML = '<div class="empty">ETF 期权历史还没发布<br>'
+      + '<span class="code">etfopt_hist.json 不在 data 分支上，等下次收盘后的任务生成</span></div>';
+    return;
+  }
+
+  var nd = o.nd || [];
+  var vals = (o.fa || []).slice(), dates = eh.d.slice();
+  var i0 = 0, t;
+  while (i0 < vals.length && (vals[i0] == null || !isFinite(vals[i0]))) i0++;
+  if (i0 >= vals.length){
+    if (sub) sub.textContent = '';
+    box.innerHTML = '<div class="empty">' + (ETF_HP_NAME[FUT_HP] || FUT_HP)
+      + ' 还没有可还原的历史<br><span class="code">它的合约挂牌都太新，等下次换月之后会变长</span></div>';
+    return;
+  }
+  vals = vals.slice(i0); dates = dates.slice(i0);
+
+  var clean = [];
+  for (t = 0; t < vals.length; t++) if (vals[t] != null && isFinite(vals[t])) clean.push(vals[t]);
+  clean.sort(function(a, b){ return a - b; });
+  var cur = null;
+  for (t = vals.length - 1; t >= 0; t--) if (vals[t] != null){ cur = vals[t]; break; }
+
+  if (clean.length < 3){
+    if (sub) sub.innerHTML = '隔季合约年化 · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 2) + '</b>'
+      + ' · 已记 ' + clean.length + ' 个交易日';
+    box.innerHTML = '<div class="empty">还画不出曲线：目前只还原了 ' + clean.length + ' 个交易日</div>';
+    return;
+  }
+
+  var p10 = fQuant(clean, 0.1), p50 = fQuant(clean, 0.5), p90 = fQuant(clean, 0.9);
+  var rank = 0;
+  for (t = 0; t < clean.length; t++) if (clean[t] <= cur) rank++;
+  var pctile = Math.round(rank / clean.length * 100);
+
+  if (sub){
+    sub.innerHTML = '隔季合约年化 · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 2) + '</b>'
+      + ' · 分位 ' + pctile + '%（' + clean.length + ' 天样本）'
+      + ' · p10 ' + fPct(p10, 2) + ' / 中位 ' + fPct(p50, 2) + ' / p90 ' + fPct(p90, 2);
+  }
+  box.innerHTML = futHistSvg(vals, dates, { p10: p10, p50: p50, p90: p90, cur: cur });
+
+  /* 最近这一段最短合约已经转成当月，那才是真近月。说清从哪天开始——
+     不然看的人会以为整条线都是近月。 */
+  var nearFrom = null;
+  for (t = 0; t < nd.length; t++){
+    if (nd[t] != null && nd[t] <= 45){ nearFrom = eh.d[t]; break; }
+  }
+  box.insertAdjacentHTML('beforeend', '<div class="futfoot">'
+    + '用今天仍在市的合约倒推：历史上的当月/下月已经到期，全网没有价格，所以这条线是'
+    + '<b>隔季</b>而不是近月。纵轴年化＝基差率×365/剩余天数，远月贴水更深，年化后才和近月可比。'
+    + (nearFrom ? '<br>' + nearFrom.slice(5) + ' 起最短合约已转为当月，那段是真近月。' : '')
+    + '</div>');
+}
+
+
+var FH_GEO = null;   // 当前这张图的几何与数据，hover 时按它反查下标
+
 /* 基差率曲线的纵轴是百分比、0 就是平水。这里没有复用 ovChartSvg：
    那个函数的语义是「相对某个基准的涨跌幅」，标题文案、右侧价格标牌都不适用，
    硬套会把「较本时段开盘」这种话印在基差图上。 */
-var FH_GEO = null;   // 当前这张图的几何与数据，hover 时按它反查下标
-
 function futHistSvg(vals, dates, st){
   /* 宽度跟容器走。原来写死 880 再 width:100%，手机上（约 350px）会被等比缩到
      2/5，字和点糊成一团、图形只占中间一小块。现在按实际像素 1:1 出图，
