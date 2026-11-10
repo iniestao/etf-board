@@ -3174,11 +3174,15 @@ async function serveFut(env, ctx) {
      现在快照里多带一份 prev（上一交易日的 code→{oi,bp}），两种情况都能接上。 */
   const td = futDataDate(last);
   const prev = {};
+  let prevTd = null;
   if (last && last.td) {
     if (last.td !== td && Array.isArray(last.fut)) {
       for (const f of last.fut) prev[f.c] = { oi: f.oi, bp: f.bp };
+      prevTd = last.td;
     } else if (last.prev && typeof last.prev === 'object') {
       Object.assign(prev, last.prev);
+      // 老快照没这个字段，拿不到就不显示——总比瞎猜一个日期强
+      prevTd = last.prevTd || null;
     }
   }
   // 昨收持仓只对「昨天那份」有意义；但会员多空是收盘结算值，当天那份就是最新的，
@@ -3244,6 +3248,11 @@ async function serveFut(env, ctx) {
   const out = {
     ok: true, ts: now, td, src, stale: 0,
     asof: now, age: 0, partial,
+    // 昨收基准到底是哪天的。td 是「当前交易日」，prevTd 是「拿来做 Δ 的那天的收盘」。
+    // 两者之间隔了几个交易日，就等于 Δ基差率跨了几天——任务被排到次日凌晨、
+    // 日档慢一天时，这里会自己显示成两天，不用等用户觉得数字不对再回头查。
+    prevTd,
+    lastTd: (last && last.td) || null,
     spot: spotOk ? spot : {},
     fut: futOut,
     opt: optOut,
@@ -4170,6 +4179,9 @@ background:var(--bg3)}
 .futttl{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:7px}
 .futttl b{font-size:12.5px;font-weight:600;color:var(--txt);white-space:nowrap}
 .futttl span{font-size:10.5px;color:var(--txt3)}
+/* 昨收基准掉了队时的强调色。只换颜色不换文案——「隔 2 个交易日」本身已经把事说清了，
+   再加个感叹号反而像是页面坏了 */
+.futttl span.lag{color:#a9660a}
 .futgrp td{background:var(--bg3);font-size:11px;color:var(--txt2);font-weight:600;
 padding:5px 9px!important;border-bottom:1px solid var(--line)}
 .futgrp b{font-family:var(--mono);font-weight:600}
@@ -11389,6 +11401,35 @@ function futStatus(){
   return isOpen() ? '盘中' : '收盘 ' + String(FUT.td || '').slice(5);
 }
 
+/** p 到 t 之间隔了几个交易日（含 t，不含 p）。用来判「昨收基准是不是掉了队」 */
+function wdGap(p, t){
+  var a = Date.parse(p + 'T00:00:00Z'), b = Date.parse(t + 'T00:00:00Z');
+  if (!(a < b)) return 0;
+  var n = 0;
+  for (var x = a + 86400000; x <= b; x += 86400000){
+    var d = new Date(x).getUTCDay();
+    if (d !== 0 && d !== 6) n++;
+  }
+  return n;
+}
+
+/* 昨收基准是哪一天。Δ基差率和四象限都建在它上面，跨几天就等于「变化」跨了几天。
+   任务被 GitHub 排到次日凌晨是常态，日档会慢一天——那时数字本身看不出错，
+   只有把基准日期摆出来才会露馅，所以这行不能省。 */
+function futBaseNote(){
+  if (!FUT) return { txt: '', lag: false };
+  if (!FUT.prevTd){
+    // 连基准日期都拿不到（快照还是旧格式，或 prev 没落盘）。这时整表的 Δ 和
+    // 四象限要么空着、要么是错的，不能当成正常状态混过去
+    return { txt: '昨收基准未知 · 增减仓与 Δ基差率可能为空', lag: true };
+  }
+  var g = wdGap(FUT.prevTd, FUT.td);
+  return {
+    txt: '昨收基准 ' + String(FUT.prevTd).slice(5) + (g >= 2 ? ' · 隔 ' + g + ' 个交易日' : ''),
+    lag: g >= 2,
+  };
+}
+
 function futFail(msg){
   var box = document.getElementById('futBasis');
   if (box){
@@ -11440,6 +11481,12 @@ function renderFutAll(){
   renderFutBasis();
   renderFutOptIdx();
   renderFutPos();
+  var sub = document.getElementById('futBasisSub');
+  if (sub){
+    var nb = futBaseNote();
+    sub.textContent = nb.txt;
+    sub.className = nb.lag ? 'lag' : '';
+  }
   var n = document.getElementById('futN');
   if (n){
     var bad = (FUT.partial || []).length;

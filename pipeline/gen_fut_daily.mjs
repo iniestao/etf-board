@@ -83,8 +83,24 @@ async function fetchText(url, tries = 3, timeout = 20000) {
   throw last;
 }
 
-/** 第三个周五。中金所股指期货/期权交割日，遇法定假日顺延一天（这里不查表）。 */
-function thirdFriday(ym) {
+function dailyXmlUrl(date) {
+  const ymd = date.replace(/-/g, '');
+  return 'http://www.cffex.com.cn/sj/hqsj/rtj/' + ymd.slice(0, 6) + '/' + ymd.slice(6, 8) + '/index.xml';
+}
+
+/** 那天的日行情归档了没有。中金所这个静态文件是收盘后才生成的，所以
+ *  「文件在」等价于「那天是交易日、且已定稿」。比按日历推算准——后者不知道
+ *  哪天放假，长假期间会天天算出一个不存在的「上一交易日」。 */
+async function hasDailyXml(date) {
+  try {
+    const t = await fetchText(dailyXmlUrl(date), 2, 15000);
+    return t.length > 500;   // 正常 500KB+，404 壳页只有几百字节
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 第三个周五。中金所股指期货/期权交割日，遇法定假日顺延一天（这里不查表）。 */function thirdFriday(ym) {
   const y = 2000 + parseInt(ym.slice(0, 2), 10);
   const m = parseInt(ym.slice(2, 4), 10);
   const wd = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
@@ -491,13 +507,17 @@ function buildDay(rows, spotMap, posObj) {
 // Worker 平时靠 last.td !== td 判断「这是昨天那份」，可日档一生成，last.td 就等于
 // 今天了，16:35 之后到次日 9:15 这十七个小时整表没有增减仓——偏偏那是收盘后
 // 最该看完整一天变化的时候。存一份 prev，两种情况就都能接上。
-function mkSnap(date, day, posObj, spotMap, prev) {
+function mkSnap(date, day, posObj, spotMap, prev, prevDate) {
   return {
     ok: true, td: date, ts: Date.now(),
     spot: Object.fromEntries(Object.entries(spotMap).map(([k, v]) => [k, { p: v }])),
     fut: day.fut.map((x) => ({ c: x.c, p: x.p, u: FUT_MAP[x.p], px: x.px, chg: x.chg,
       vol: x.vol, oi: x.oi, oiD: x.oiD, dte: x.dte, basis: x.basis, bp: x.bp, ann: x.ann })),
     prev: prev || null,
+    // prev 是哪一天的。没有它，Worker 只知道「有份上一日的数据」，不知道是哪天——
+    // 而这个日期正是页面用来判断「昨收基准是不是掉了队」的唯一依据。
+    // 任务被 GitHub 排到次日凌晨是常态，日档会慢一天，慢多少得说得出具体日期。
+    prevTd: prev ? (prevDate || null) : null,
     opt: day.opt,
     pos: posObj,
   };
@@ -553,7 +573,20 @@ async function main() {
   }
   const have = new Set(hist.d || []);
 
-  const today = shToday();
+  /* 「今天」先探一下再定。中金所的日行情是收盘后才归档的静态文件，而 GitHub 的
+     定时任务常被排到次日凌晨（实测 00:10~03:00）。那时 shToday() 已经是新的一天、
+     文件还不存在：若直接拿它收尾，末尾那天必然 404 跳过，ETF 期权那段
+     （判据 date === today）就永远走不到——自上线起一直如此，证据是
+     fut_daily.json 的 opt 里只有 IO/MO/HO，零 ETF 品种。
+     退到最近一个「确实归档了」的交易日，dates 才会以真实可取的日期收尾，
+     顺便少掉几次注定 404 的请求。长假期间也能靠文件本身判断，不用查日历。 */
+  let today = shToday();
+  for (let k = 0; k < 5; k++) {
+    if (await hasDailyXml(today)) break;
+    const back = prevWeekdays(today, 1)[0];
+    log(`  ${today} 的日行情还没归档（尚未收盘 / 非交易日），本次以 ${back} 收尾`);
+    today = back;
+  }
   // 升序、以今天收尾：fut_last.json 要的是「最新一天」，所以今天必须最后处理；
   // 反过来的话 _last 会停在中间某天，oiD 基准和 pos 都跟着错位
   const prev = prevWeekdays(today, BACKFILL);
@@ -568,9 +601,11 @@ async function main() {
      初始化只在「旧快照正好是本次第一天的前一个工作日」时做——否则补的是很久以前
      的日期，拿今天的持仓去当它的昨收，算出来的增减仓全是错的，不如留空。 */
   let prevOiBp = null;
+  let prevDate = null;
   if (todo.length && hist._last && hist._last.td && Array.isArray(hist._last.fut)
       && hist._last.td === prevWeekdays(todo[0], 1)[0]) {
     prevOiBp = oiBpMap(hist._last.fut);
+    prevDate = hist._last.td;
   }
 
   let added = 0;
@@ -609,8 +644,17 @@ async function main() {
 
     // ETF 期权只有「今天」抓得到（历史源见文件头注释），补最近几天时老日期不碰它
     if (date === today) {
+      /* ETF 的收盘价要单独并进来，不能直接塞 spotMap：
+         spotMap 每一行都会 push 进 hist.spot，多 9 列 ETF 之后，只要某天某个标的
+         停牌或缺价，那列长度就和 hist.d 对不上，工作流的「等长」校验会整个炸掉。
+         合成基差只需要当天的收盘价，用完就丢。 */
+      const etfSpot = Object.assign({}, spotMap);
+      for (const [, code] of ETF_OPT) {
+        const v = (spotHist[code] || {})[date];
+        if (v > 0) etfSpot[code] = v;
+      }
       try {
-        const etfRows = await buildEtfOptDay(spotMap);
+        const etfRows = await buildEtfOptDay(etfSpot);
         if (etfRows.length){
           day.opt = day.opt.concat(etfRows);
           const agg = {};
@@ -665,9 +709,9 @@ async function main() {
     hist.d.push(date);
 
     // 最新那份快照单独存：Worker 冷启动时只读 6KB，不必 parse 79KB 历史
-    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap, prevOiBp);
+    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap, prevOiBp, prevDate);
     // 本日收成下一天的「昨收」。空行不覆盖，免得某天数据不全把基准清空
-    if (day.fut.length) prevOiBp = oiBpMap(day.fut);
+    if (day.fut.length) { prevOiBp = oiBpMap(day.fut); prevDate = date; }
     added++;
     log(`  ${date} 期货 ${day.fut.length} 行 / 期权 ${day.opt.length} 行` + (posObj ? ` / 持仓 ${posObj.rows.length} 行` : ''));
     await sleep(150);

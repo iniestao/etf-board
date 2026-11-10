@@ -454,6 +454,11 @@ async function runContracts(base, pass) {
     if (fl.length < 12) bad('/api/fut 期货合约过少（' + fl.length + '），至少应覆盖 4 品种 × 3 个月');
     if (ol.length < 9) bad('/api/fut 期权合成行过少（' + ol.length + '）');
     if (Object.keys(fu.spot || {}).length < 4) bad('/api/fut 现货指数不足 4 个');
+    // 昨收基准是哪天，页面要把它印出来。丢了或格式不对，那行字会直接空掉，
+    // 而「基准慢一天」恰恰是最难靠肉眼发现的那种错
+    if (!fu.prevTd) ok('/api/fut 没有 prevTd（快照是旧格式，Δ基差率与增减仓会空着）');
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(fu.prevTd)) bad('/api/fut prevTd 格式不对：' + fu.prevTd);
+    else if (fu.prevTd > fu.td) bad('/api/fut prevTd(' + fu.prevTd + ') 晚于 td(' + fu.td + ')');
 
     let basisBad = 0, annBad = 0, rangeBad = 0;
     for (const x of fl) {

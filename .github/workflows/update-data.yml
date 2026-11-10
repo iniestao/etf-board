@@ -189,8 +189,11 @@ jobs:
             echo "data 分支不存在，当首次建库"
           fi
 
+      # 不吞异常了。脚本内部对「单日拿不到」已经 continue 容错，能走到 exit≠0 的只有
+      # 真崩了或一天都没落地——那两种情况本来就该让这条链红。
+      # 2026-11-09 那次就是被 continue-on-error 吞掉的：日志写着「本次补 20 天」，
+      # 实际 fut_daily.json 一天没写，流水线照样成功、照样发布，页面只是悄悄退回旧档。
       - name: 生成期指期权日档（滚动 250 天）
-        continue-on-error: true
         run: node pipeline/gen_fut_daily.mjs --backfill 250
 
       # ---------- 3b. ETF 期权历史 ----------
@@ -206,11 +209,13 @@ jobs:
       - name: 期指日档校验
         run: |
           python3 - <<'PY'
-          import json, pathlib, sys
+          import json, pathlib, sys, urllib.request
+          from datetime import date, datetime, timedelta
+
           p = pathlib.Path('dist/fut_daily.json')
           if not p.exists():
-              print('::warning::fut_daily.json 没生成，页面的期指区块会退回实时值')
-              sys.exit(0)
+              print('::error::fut_daily.json 没生成，期指的历史、分位、四象限全退回旧值')
+              sys.exit(1)
           h = json.loads(p.read_text())
           n = len(h['d'])
           print(f"期指日档 {n} 天，最新 {h.get('last_trade_date')}")
@@ -226,6 +231,44 @@ jobs:
           for v in valid:
               assert -15 < v < 15, f'基差率 {v} 超出合理区间，多半是日期或现货对错了'
           assert n >= 60, f'历史只有 {n} 天，历史分位会失真'
+
+          # ---- 时效：日档必须追到「最近一个已归档的交易日」 ----
+          # 不按日历推：那样不知道哪天放假，长假期间会天天算出一个不存在的日子。
+          # 直接问中金所——那份 XML 是收盘后生成的静态文件，「文件在」就等于
+          # 「那天开市且已定稿」。探测失败（网络）只警告，不冤枉这条链。
+          def has_xml(d):
+              u = ('http://www.cffex.com.cn/sj/hqsj/rtj/%s/%s/index.xml'
+                   % (d.strftime('%Y%m'), d.strftime('%d')))
+              try:
+                  req = urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
+                  return len(urllib.request.urlopen(req, timeout=20).read()) > 500
+              except Exception:
+                  return None
+
+          today = (datetime.utcnow() + timedelta(hours=8)).date()
+          expect, unknown, d = None, False, today
+          for _ in range(8):
+              if d.weekday() >= 5:
+                  d -= timedelta(days=1)
+                  continue
+              got = has_xml(d)
+              if got is None:
+                  unknown = True
+                  break
+              if got:
+                  expect = d
+                  break
+              d -= timedelta(days=1)
+
+          last = date.fromisoformat(h['d'][-1])
+          if unknown:
+              print(f'::warning::探测不到最近交易日（中金所没应答），跳过时效校验，日档最新 {last}')
+          elif expect and last < expect:
+              print(f'::error::日档最新 {last}，但 {expect} 的日行情已经归档——这条链没补上')
+              print('  Δ基差率和四象限会跨多日，页面看着正常但基准是错的')
+              sys.exit(1)
+          else:
+              print(f'时效 OK：日档最新 {last}，最近交易日 {expect}')
           PY
 
       - name: ETF 期权历史校验

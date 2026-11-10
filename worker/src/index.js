@@ -3175,11 +3175,15 @@ async function serveFut(env, ctx) {
      现在快照里多带一份 prev（上一交易日的 code→{oi,bp}），两种情况都能接上。 */
   const td = futDataDate(last);
   const prev = {};
+  let prevTd = null;
   if (last && last.td) {
     if (last.td !== td && Array.isArray(last.fut)) {
       for (const f of last.fut) prev[f.c] = { oi: f.oi, bp: f.bp };
+      prevTd = last.td;
     } else if (last.prev && typeof last.prev === 'object') {
       Object.assign(prev, last.prev);
+      // 老快照没这个字段，拿不到就不显示——总比瞎猜一个日期强
+      prevTd = last.prevTd || null;
     }
   }
   // 昨收持仓只对「昨天那份」有意义；但会员多空是收盘结算值，当天那份就是最新的，
@@ -3245,6 +3249,11 @@ async function serveFut(env, ctx) {
   const out = {
     ok: true, ts: now, td, src, stale: 0,
     asof: now, age: 0, partial,
+    // 昨收基准到底是哪天的。td 是「当前交易日」，prevTd 是「拿来做 Δ 的那天的收盘」。
+    // 两者之间隔了几个交易日，就等于 Δ基差率跨了几天——任务被排到次日凌晨、
+    // 日档慢一天时，这里会自己显示成两天，不用等用户觉得数字不对再回头查。
+    prevTd,
+    lastTd: (last && last.td) || null,
     spot: spotOk ? spot : {},
     fut: futOut,
     opt: optOut,
