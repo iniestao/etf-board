@@ -155,8 +155,12 @@ export async function syncData(opts = {}) {
   const local = await readState();
   const histDir = path.join(dist, 'hist');
   const haveHist = fs.existsSync(histDir);
+  // 期指日档单独判一次存在性：它曾经不在下面那份清单里，沙箱就永远停在
+  // 部署那天的快照上。缺文件时即便 mark 相同也要走一遍，否则补不回来。
+  const haveFut = fs.existsSync(path.join(dist, 'fut_last.json'));
 
-  if (!opts.force && haveHist && local && (local.mark === man.mark || local.sha === man.mark)) {
+  if (!opts.force && haveHist && haveFut && local
+      && (local.mark === man.mark || local.sha === man.mark)) {
     log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），跳过');
     return { changed: false, mark: man.mark, skipped: 'up-to-date' };
   }
@@ -191,8 +195,14 @@ export async function syncData(opts = {}) {
   // sec_daily.json / mkt_hist.json 是板块地图的两份历史（资金箭头的基准、
   // 四象限的散点云），由 Actions 每天回算后一起发布。漏同步的话，
   // 沙箱会一直用本地下次回算的那份，跟线上对不上。
+  //
+  // fut_last.json / fut_daily.json 同理，但后果更难看：Cloudflare 版读 data 分支，
+  // 每天 16:35 自动换成新档；沙箱版只读本地磁盘，这两份不进清单就一直停在
+  // 沙箱里最后一次手动跑 pipeline 的日期。表现是收盘后四象限的增减仓拿错了
+  // 昨收——差一天，而且没人会怀疑到数据头上（页面看起来一切正常）。
   for (const f of ['manifest.json', 'research.json', 'hist/events.json',
-                   'sec_daily.json', 'mkt_hist.json']) {
+                   'sec_daily.json', 'mkt_hist.json',
+                   'fut_last.json', 'fut_daily.json']) {
     try {
       const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
       if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));

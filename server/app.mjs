@@ -167,14 +167,18 @@ if (isMain) {
 
   // 数据保鲜：Cloudflare 版每次回源读 data 分支，天然是新的；沙箱版读本地磁盘，
   // 得自己追。这里不设「定点跑批」——沙箱休眠时定点任务根本不会执行，
-  // 改成「进程活着就每 6 小时比一次 commit，变了才在后台拉」。
+  // 改成「进程活着就每小时比一次 commit，变了才在后台拉」。
   // 拉取全程异步，不挡任何请求；失败只打日志，页面继续用旧数据。
+  //
+  // 为什么是 1 小时而不是 6 小时：期指日档 16:35 生成，收盘后四象限的增减仓
+  // 全靠它算昨收持仓。6 小时的窗口意味着可能一直用昨天的档到深夜——档是对的就
+  // 没事，档差一天就整列错，而页面看起来毫无异常。
   if (process.env.AUTO_SYNC !== '0') {
     const tick = () => import('./sync-data.mjs')
       .then((m) => m.syncInBackground((s) => console.log('[sync] ' + s)))
       .catch(() => {});
     setTimeout(tick, 15000).unref();
-    setInterval(tick, 6 * 3600 * 1000).unref();
+    setInterval(tick, 3600 * 1000).unref();
   }
 
   // PCF 预热：Cloudflare 版靠 Cron Trigger，沙箱版没有 Cron，用进程内的定时器

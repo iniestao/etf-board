@@ -556,6 +556,18 @@ PORT=3000 node server/app.mjs   # 起服务；口令在 server/.env 的 ACCESS_P
 node server/sync-data.mjs       # 手动同步最新 hist（--check 只看状态）
 ```
 
+**沙箱版的数据要自己追**：Cloudflare 版每次回源读 `data` 分支，天生是新的；
+沙箱版只读本地 `dist/`。进程活着时每小时比一次 commit，变了才后台拉（`AUTO_SYNC=0` 可关）。
+
+同步清单里除了 `hist/*.bin`，还有 5 份顶层文件——`manifest.json`、`research.json`、
+`hist/events.json`、`sec_daily.json`、`mkt_hist.json`——以及 **`fut_last.json` /
+`fut_daily.json`**。最后这两份是 2026-11-10 才补进去的：它们原先不在清单里，
+沙箱的期指日档就一直停在「最后一次手动跑 pipeline」的那天。后果不是报错，而是
+**收盘后四象限的增减仓拿错了昨收**——档差一天，徽章颜色照常显示，没人会怀疑到
+数据头上。同一天还发现「收盘后十几小时全表无徽章」的根因在 `last.td !== td`
+这条判据（日档生成后 `last.td` 追平 `td`，被当成没有昨收），已改成快照内嵌
+`prev` 取上一交易日的 `{oi,bp}`。
+
 **改口令**要两步，少一步不生效：
 
 ```bash
