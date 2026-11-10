@@ -37,6 +37,19 @@ const FUT_MAP = { IF: '000300', IH: '000016', IC: '000905', IM: '000852' };
 const OPT_MAP = { IO: 'IF', HO: 'IH', MO: 'IM' };
 const SPOT_SECID = { '000300': '1.000300', '000905': '1.000905', '000016': '1.000016', '000852': '1.000852' };
 
+/* ETF 期权（上交所 510xxx / 深交所 159xxx）不在中金所那份 XML 里，也没有能回溯的历史源：
+   东财 push2his 对已到期合约一律返回 rc:100（2026-11-10 实测，连着抽 8 个已下架代码全是空），
+   深交所 ShowReport 只给「当前在市」的合约清单、不支持按日期回查，上交所 commonQuery
+   的历史行情 sqlId 段也没有公开可用参数。所以这 4 个品种只能从上线那天起逐日记录，
+   之前的日子一律推 null 占位——图上前半段会是空的，那是真的没有，不是抓失败了。 */
+const ETF_OPT = [
+  ['1.510050', '510050', 'sh510050', '50ETF'],
+  ['1.510300', '510300', 'sh510300', '300ETF'],
+  ['0.159919', '159919', 'sz159919', '300ETF深'],
+  ['1.588000', '588000', 'sh588000', '科创50'],
+];
+const ETF_CODES = ETF_OPT.map((x) => x[1]);
+
 function log(...a) { console.log(...a); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -169,6 +182,8 @@ function parsePosXml(xml, prod, date) {
 // 也挂在这里；而 data/import_etf.mjs 走新浪一直很稳。基差全依赖现货收盘，
 // 单一源挂了就是「250 天全部跳过」，所以两个源都得在。
 const SPOT_SINA = { '000300': 'sh000300', '000905': 'sh000905', '000016': 'sh000016', '000852': 'sh000852' };
+// ETF 期权合成基差要用 ETF 自己的收盘价，顺手挂在同一份日线 map 里（同一源、同一口径）
+for (const [, code, sym] of ETF_OPT) SPOT_SINA[code] = sym;
 
 async function fetchSinaSpot() {
   const out = {};
@@ -258,6 +273,120 @@ async function fetchSpotClose() {
     await sleep(150);
   }
   return out;
+}
+
+// ---------------------------------------------------------------- ETF 期权（只有当天抓得到）
+async function fetchJson(url, tries = 3, timeout = 15000) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) {
+      last = e;
+      await sleep(400 * (i + 1));
+    }
+  }
+  throw last;
+}
+
+/** 合约清单只问东财要代码。行权价、剩余天数、认购/认沽一律取新浪那份——
+ *  两个源混着用会算出 1.5% 的假贴水（东财对部分出口只给昨收，另一半是实时）。 */
+async function fetchEtfOptCodes(secid) {
+  const codes = [];
+  for (const spt of [9, 10]) {
+    const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
+      + '&fltt=2&invt=2&fields=f12&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
+    const j = await fetchJson(u, 2);
+    const d = (j && j.data && j.data.diff) || [];
+    for (const x of (Array.isArray(d) ? d : Object.values(d))) {
+      if (x && x.f12) codes.push(String(x.f12));
+    }
+    await sleep(120);
+  }
+  return [...new Set(codes)];
+}
+
+async function fetchSinaOpts(codes) {
+  const out = new Map();
+  if (!codes.length) return out;
+  for (let i = 0; i < codes.length; i += 100) {
+    const seg = codes.slice(i, i + 100);
+    const u = 'https://hq.sinajs.cn/list=' + seg.map((c) => 'CON_OP_' + c).join(',');
+    const r = await fetch(u, {
+      headers: { 'User-Agent': UA, Referer: 'https://stock.finance.sina.com.cn/' },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const txt = await r.text();
+    for (const line of txt.split('\n')) {
+      const m = line.match(/hq_str_CON_OP_(\d+)="([^"]*)"/);
+      if (!m || !m[2]) continue;
+      const f = m[2].split(',');
+      const px = +f[1], k = +f[7], dte = +f[47];
+      if (!(px > 0) || !(k > 0) || !(dte >= 0)) continue;
+      out.set(m[1], { px, k, dte, side: f[45] === 'P' ? 'P' : 'C', vol: +f[5] || 0, oi: +f[41] || 0 });
+    }
+    await sleep(150);
+  }
+  return out;
+}
+
+/** 和 buildDay 里股指期权那段同一套口径：按到期日分组 → 同行权价配对 →
+ *  ATM±3% 取最多 5 档 → 中位数。ETF 期权没有对应期货，所以 futC/fb 一律 null。 */
+async function buildEtfOptDay(spotMap) {
+  const rows = [];
+  for (const [secid, code] of ETF_OPT.map((x) => [x[0], x[1]])) {
+    const S = spotMap[code];
+    if (!(S > 0)) { log('  ' + code + ' 现货收盘缺，跳过 ETF 期权'); continue; }
+    let px;
+    try {
+      px = await fetchSinaOpts(await fetchEtfOptCodes(secid));
+    } catch (e) {
+      log('  ' + code + ' 期权链抓取失败：' + e.message);
+      continue;
+    }
+    if (!px.size) { log('  ' + code + ' 期权链为空'); continue; }
+    const byDte = new Map();
+    for (const r of px.values()) {
+      let g = byDte.get(r.dte);
+      if (!g) { g = { c: [], p: [] }; byDte.set(r.dte, g); }
+      (r.side === 'C' ? g.c : g.p).push(r);
+    }
+    for (const [dte, g] of byDte) {
+      const pm = new Map();
+      for (const x of g.p) pm.set(x.k, x);
+      const pairs = [];
+      for (const x of g.c) {
+        const p = pm.get(x.k);
+        if (p) pairs.push({ k: x.k, c: x.px, p: p.px });
+      }
+      const near = atmWindow(pairs, S);
+      if (!near.length) continue;
+      const syn = median(near.map((x) => x.k + x.c - x.p));
+      const basis = syn - S;
+      const bp = basis / S * 100;
+      const volC = g.c.reduce((a, x) => a + x.vol, 0);
+      const volP = g.p.reduce((a, x) => a + x.vol, 0);
+      const oiC = g.c.reduce((a, x) => a + x.oi, 0);
+      const oiP = g.p.reduce((a, x) => a + x.oi, 0);
+      rows.push({
+        p: code, u: code, m: 'D' + dte, dte,
+        syn: +syn.toFixed(3), basis: +basis.toFixed(3), bp: +bp.toFixed(3),
+        ann: dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+        atm: near[0].k, n: near.length,
+        pcr: volC > 0 ? +(volP / volC).toFixed(2) : (oiC > 0 ? +(oiP / oiC).toFixed(2) : null),
+        futC: null, fb: null,
+      });
+    }
+    await sleep(200);
+  }
+  rows.sort((a, b) => (a.p === b.p ? a.dte - b.dte : (a.p < b.p ? -1 : 1)));
+  return rows;
 }
 
 // ---------------------------------------------------------------- 单日计算
@@ -444,6 +573,21 @@ async function main() {
     }
     const day = buildDay(rows, spotMap, posObj);
 
+    // ETF 期权只有「今天」抓得到（历史源见文件头注释），补最近几天时老日期不碰它
+    if (date === today) {
+      try {
+        const etfRows = await buildEtfOptDay(spotMap);
+        if (etfRows.length){
+          day.opt = day.opt.concat(etfRows);
+          const agg = {};
+          for (const x of etfRows) (agg[x.p] = agg[x.p] || []).push(x.dte);
+          log('  ETF 期权 ' + Object.entries(agg).map(([k, v]) => k + '×' + v.length).join(' '));
+        }
+      } catch (e) {
+        log('  ETF 期权整块失败：' + e.message);
+      }
+    }
+
     const front = {};   // 每个品种的主力（最近月）
     for (const p of FUT_PRODS) {
       const l = day.fut.filter((x) => x.p === p && x.dte >= 0).sort((a, b) => a.dte - b.dte);
@@ -459,7 +603,8 @@ async function main() {
       f.cmp.push(cmValue(day.fut.filter((y) => y.p === p)));
       f.oi.push(x.oi == null ? null : x.oi);
     }
-    for (const p of OPT_PRODS) {
+    // ETF 期权老日期没有数据，接口按同一批键推 null 占位，数组长度才和 hist.d 对得上
+    for (const p of OPT_PRODS.concat(ETF_CODES)) {
       const o = hist.opt[p] = hist.opt[p] || { b: [], bp: [], ann: [], cmp: [], pcr: [] };
       const l = day.opt.filter((x) => x.p === p && x.dte >= 0).sort((a, b) => a.dte - b.dte);
       const x = l[0] || {};

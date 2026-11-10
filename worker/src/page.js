@@ -150,6 +150,11 @@ background:var(--bg3)}
 .mtab:hover{border-color:#c9d6ef}
 .mtab.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8;font-weight:600}
 .mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10.5px;opacity:.7}
+/* 分组间距 + 窄屏强制断行：桌面靠 margin 分出「股指 / ETF期权 / 口径」三段，
+   手机上 11 个标签挤成随机三行读不出分组，改用 mbrk 主动换行 */
+.mtab.grp{margin-left:10px}
+.mbrk{flex:0 0 0;height:0}
+@media(max-width:820px){.mbrk{flex:0 0 100%}.mtab.grp{margin-left:0}}
 
 /* 期指期权区块：五张卡，桌面两列、手机一列。
    「基差历史」占整行——曲线要横向空间，塞进半列会把 250 个点压成一团。 */
@@ -188,6 +193,10 @@ padding:5px 9px!important;border-bottom:1px solid var(--line)}
   #futSec .tbl .code{font-size:10px}
 }
 .futfoot{margin-top:7px;font-size:10.5px;color:var(--txt3);line-height:1.7}
+/* 基差图悬停：十字线要压住折线但不挡命中，光标给个 crosshair 提示「这里能读点」。
+   touch-action:pan-y 让手机竖着滑还能滚页面，横着划才交给读点。 */
+#futHistChart svg.fh{cursor:crosshair;touch-action:pan-y}
+#futHistChart .fh-hov line{shape-rendering:crispEdges}
 .quad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .qcell{border:1px solid var(--line);border-radius:7px;padding:8px 10px;background:var(--bg)}
 .qcell b{display:block;font-size:11px;color:var(--txt2);font-weight:500;margin-bottom:3px}
@@ -7323,6 +7332,10 @@ function clock(){ document.getElementById('clock').textContent = new Date().toLo
 var FUT = null, FUTOPT = {}, FUTHIST = null;
 var FUT_BUSY = false, FUT_OPT_BUSY = false;
 var FUT_TAB = 'live', FUT_HP = 'IF', FUT_HM = 'cmp';
+/* 基差历史的 ETF 期权组。历史上限受数据源限制（见 pipeline/gen_fut_daily.mjs 注释）：
+   已到期合约没有可回查的行情，只能从上线那天起一天记一条，所以这组的曲线会短很多。 */
+var ETF_HP = ['510050', '510300', '159919', '588000'];
+var ETF_HP_NAME = { '510050': '50ETF', '510300': '300ETF', '159919': '300ETF深', '588000': '科创50' };
 
 function fNum(v, d){
   if (v == null || v === '' || !isFinite(v)) return '—';
@@ -7657,7 +7670,15 @@ function renderFutHist(){
     for (var i = 0; i < prods.length; i++){
       s += '<span class="mtab' + (prods[i] === FUT_HP ? ' on' : '') + '" data-h="' + prods[i] + '">' + prods[i] + '</span>';
     }
-    s += '<span class="mtab' + (FUT_HM === 'cmp' ? ' on' : '') + '" data-m="cmp" style="margin-left:10px">30 天恒定</span>'
+    // ETF 期权单独一组：它们的历史只有上线之后那几天，和股指那七个不是一回事。
+    // mbrk 是个只占位不显示的断行符，窄屏把三组拆成三行，否则标签会挤成随机三行
+    s += '<span class="mbrk"></span>';
+    for (var e = 0; e < ETF_HP.length; e++){
+      s += '<span class="mtab' + (e === 0 ? ' grp' : '') + (ETF_HP[e] === FUT_HP ? ' on' : '')
+        + '" data-h="' + ETF_HP[e] + '">' + (ETF_HP_NAME[ETF_HP[e]] || ETF_HP[e]) + '</span>';
+    }
+    s += '<span class="mbrk"></span>'
+      + '<span class="mtab grp' + (FUT_HM === 'cmp' ? ' on' : '') + '" data-m="cmp">30 天恒定</span>'
       + '<span class="mtab' + (FUT_HM === 'bp' ? ' on' : '') + '" data-m="bp">主力近月</span>';
     tabs.innerHTML = s;
     tabs.setAttribute('data-built', '1');
@@ -7675,21 +7696,52 @@ function renderFutHist(){
     return;
   }
 
-  var isOpt = FUT_HP === 'IO' || FUT_HP === 'HO' || FUT_HP === 'MO';
+  var isOpt = FUT_HP !== 'IF' && FUT_HP !== 'IH' && FUT_HP !== 'IC' && FUT_HP !== 'IM';
   var src = ((isOpt ? FUTHIST.opt : FUTHIST.fut) || {})[FUT_HP] || {};
   var vals = src[FUT_HM] || [];
   var dates = FUTHIST.d || [];
-  if (!vals.length){ box.innerHTML = '<div class="empty">这个品种还没有历史</div>'; return; }
+  var isEtf = ETF_HP.indexOf(FUT_HP) >= 0;
+  if (!vals.length){
+    box.innerHTML = isEtf
+      ? '<div class="empty">ETF 期权基差从上线那天起逐日记录<br><span class="code">已到期合约没有可回查的历史，前面补不出来</span></div>'
+      : '<div class="empty">这个品种还没有历史</div>';
+    return;
+  }
 
   var clean = [];
   for (var t = 0; t < vals.length; t++) if (vals[t] != null && isFinite(vals[t])) clean.push(vals[t]);
   clean.sort(function(a, b){ return a - b; });
+  /* 前面一长串 null 要裁掉。ETF 期权是从上线那天才开始记的，x 轴却还是 231 天，
+     不裁的话曲线会挤在右边一小撮、左边一大片空白，看着像图坏了。 */
+  var i0 = 0;
+  while (i0 < vals.length && (vals[i0] == null || !isFinite(vals[i0]))) i0++;
+  if (i0 > 0 && i0 < vals.length){
+    vals = vals.slice(i0);
+    dates = dates.slice(i0);
+  }
   var cur = null;
   for (var t2 = vals.length - 1; t2 >= 0; t2--) if (vals[t2] != null){ cur = vals[t2]; break; }
   var p10 = fQuant(clean, 0.1), p50 = fQuant(clean, 0.5), p90 = fQuant(clean, 0.9);
   var rank = 0;
   for (var t3 = 0; t3 < clean.length; t3++) if (clean[t3] <= cur) rank++;
   var pctile = clean.length ? Math.round(rank / clean.length * 100) : 0;
+
+  /* 只有一两天数据时画不出曲线，p10/p50/p90 还会退化成同一个数，图上是一条没有
+     意义的横线。不如把当前值和「还要等几天」直接写出来——ETF 期权这一组上线头几天
+     就是这个状态。 */
+  if (clean.length < 3){
+    var sub0 = document.getElementById('futHistSub');
+    if (sub0){
+      sub0.innerHTML = (FUT_HM === 'cmp' ? '30 天恒定到期' : '主力近月')
+        + ' · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 3) + '</b>'
+        + ' · 已记 ' + clean.length + ' 个交易日';
+    }
+    box.innerHTML = '<div class="empty">还画不出曲线：目前只记了 ' + clean.length + ' 个交易日'
+      + '<br><span class="code">'
+      + (isEtf ? 'ETF 期权基差从上线那天起逐日累积，满 3 天后这里自动出图' : '等数据补齐')
+      + '</span></div>';
+    return;
+  }
 
   var sub = document.getElementById('futHistSub');
   if (sub){
@@ -7708,8 +7760,15 @@ function renderFutHist(){
 /* 基差率曲线的纵轴是百分比、0 就是平水。这里没有复用 ovChartSvg：
    那个函数的语义是「相对某个基准的涨跌幅」，标题文案、右侧价格标牌都不适用，
    硬套会把「较本时段开盘」这种话印在基差图上。 */
+var FH_GEO = null;   // 当前这张图的几何与数据，hover 时按它反查下标
+
 function futHistSvg(vals, dates, st){
-  var W = 880, H = 190, ml = 46, mr = 12, mt = 12, mb = 20;
+  /* 宽度跟容器走。原来写死 880 再 width:100%，手机上（约 350px）会被等比缩到
+     2/5，字和点糊成一团、图形只占中间一小块。现在按实际像素 1:1 出图，
+     窄屏的区别只是点更密。 */
+  var host = document.getElementById('futHistChart');
+  var W = Math.max(300, Math.round((host && host.clientWidth) || 880));
+  var H = 190, ml = 46, mr = 12, mt = 12, mb = 20;
   var n = vals.length;
   var mn = Infinity, mx = -Infinity, i;
   for (i = 0; i < n; i++){
@@ -7735,7 +7794,7 @@ function futHistSvg(vals, dates, st){
   }
 
   var y0 = yOf(0);
-  var g = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '" xmlns="http://www.w3.org/2000/svg">';
+  var g = '<svg class="fh" viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '" xmlns="http://www.w3.org/2000/svg">';
   // 0 轴：基差率过 0 就是平水，这条线是整张图的分界
   if (y0 > mt && y0 < H - mb){
     g += '<line x1="' + ml + '" y1="' + y0.toFixed(1) + '" x2="' + (W - mr) + '" y2="' + y0.toFixed(1)
@@ -7750,8 +7809,11 @@ function futHistSvg(vals, dates, st){
     if (by < mt || by > H - mb) continue;
     g += '<line x1="' + ml + '" y1="' + by.toFixed(1) + '" x2="' + (W - mr) + '" y2="' + by.toFixed(1)
       + '" stroke="' + bands[i][1] + '" stroke-width="1" stroke-dasharray="4 4"/>';
-    g += '<text x="' + (W - mr - 2) + '" y="' + (by - 3).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">'
-      + (i === 0 ? 'p90 ' : 'p10 ') + (+bands[i][0]).toFixed(2) + '%</text>';
+    // 窄屏不印 p10/p90 的数字：350px 宽里这两串会把线盖住，副标题里本来就有
+    if (W >= 520){
+      g += '<text x="' + (W - mr - 2) + '" y="' + (by - 3).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">'
+        + (i === 0 ? 'p90 ' : 'p10 ') + (+bands[i][0]).toFixed(2) + '%</text>';
+    }
   }
   g += '<path d="' + d + '" fill="none" stroke="#2563eb" stroke-width="1.4" stroke-linejoin="round"/>';
   g += '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.8" fill="#2563eb"/>';
@@ -7759,8 +7821,72 @@ function futHistSvg(vals, dates, st){
   g += '<text x="' + (W - mr) + '" y="' + (H - 5) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + esc(String(dates[n - 1] || '').slice(2)) + '</text>';
   g += '<text x="' + (ml - 6) + '" y="' + (yOf(hi) + 10).toFixed(1) + '" font-size="10" fill="var(--txt2)" text-anchor="end">' + hi.toFixed(2) + '%</text>';
   g += '<text x="' + (ml - 6) + '" y="' + (yOf(lo) - 2).toFixed(1) + '" font-size="10" fill="var(--txt2)" text-anchor="end">' + lo.toFixed(2) + '%</text>';
+  /* 悬停层：250 个点铺在 880 宽的折线上，相邻两天只差 3.5px——折线只有形状，
+     具体哪天多少必须能读出来。竖线 + 圆点 + 一个小气泡，全部走 SVG 坐标，
+     由 pointermove 反算下标。pointer-events:none，别挡住命中区。 */
+  g += '<g class="fh-hov" style="display:none;pointer-events:none">'
+    + '<line class="fh-ln" y1="' + mt + '" y2="' + (H - mb) + '" stroke="#9aa4b2" stroke-width="1" stroke-dasharray="3 3"/>'
+    + '<circle class="fh-dot" r="3.4" fill="#2563eb" stroke="#fff" stroke-width="1.5"/>'
+    + '<g class="fh-tip"><rect class="fh-bg" rx="4" width="94" height="34" fill="#15181d" opacity="0.9"/>'
+    + '<text class="fh-d" font-size="9.5" fill="#cbd5e1"></text>'
+    + '<text class="fh-v" font-size="12" font-weight="600" fill="#fff"></text></g></g>';
   g += '</svg>';
+  FH_GEO = { vals: vals, dates: dates, n: n, ml: ml, mr: mr, W: W, H: H, mt: mt, mb: mb, lo: lo, hi: hi };
   return g;
+}
+
+/* 把 client 坐标换成 viewBox 坐标：图宽是 100% 自适应，用像素算会随窗口漂。
+   getScreenCTM 把缩放和 padding 一起吃掉，比手算比例稳。 */
+function futHoverAt(e){
+  var geo = FH_GEO;
+  var box = document.getElementById('futHistChart');
+  var svg = box && box.querySelector('svg.fh');
+  if (!geo || !svg) return;
+  var ctm = svg.getScreenCTM();
+  if (!ctm) return;
+  var pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  var vx = pt.matrixTransform(ctm.inverse()).x;
+  var span = geo.W - geo.ml - geo.mr;
+  var idx = Math.round((vx - geo.ml) / span * (geo.n - 1));
+  if (idx < 0) idx = 0;
+  if (idx > geo.n - 1) idx = geo.n - 1;
+  // 缺口附近往两边各找 5 个点：停在没有数据的那天上时，提示不该整个消失
+  var at = idx, step = 1;
+  while ((geo.vals[at] == null || !isFinite(geo.vals[at])) && step <= 5){
+    if (idx - step >= 0 && geo.vals[idx - step] != null && isFinite(geo.vals[idx - step])){ at = idx - step; break; }
+    if (idx + step < geo.n && geo.vals[idx + step] != null && isFinite(geo.vals[idx + step])){ at = idx + step; break; }
+    step++;
+  }
+  var val = geo.vals[at];
+  if (val == null || !isFinite(val)){ futHoverOff(); return; }
+
+  var px = geo.ml + (geo.n <= 1 ? 0 : at / (geo.n - 1)) * span;
+  var py = geo.mt + (1 - (val - geo.lo) / (geo.hi - geo.lo)) * (geo.H - geo.mt - geo.mb);
+  var ln = svg.querySelector('.fh-ln'), dot = svg.querySelector('.fh-dot');
+  var layer = svg.querySelector('.fh-hov'), bg = svg.querySelector('.fh-bg');
+  var td = svg.querySelector('.fh-d'), tv = svg.querySelector('.fh-v');
+  ln.setAttribute('x1', px.toFixed(1)); ln.setAttribute('x2', px.toFixed(1));
+  dot.setAttribute('cx', px.toFixed(1)); dot.setAttribute('cy', py.toFixed(1));
+  td.textContent = String(geo.dates[at] || '').slice(5);
+  tv.textContent = fPct(val, 3);
+  var tw = 94, th = 34;
+  var tx = px + 10, ty = py - th - 8;
+  if (tx + tw > geo.W - 2) tx = px - tw - 10;      // 贴右边就翻到左侧
+  if (ty < 2) ty = py + 10;                        // 贴顶就翻到下方
+  if (tx < 2) tx = 2;
+  bg.setAttribute('x', tx.toFixed(1)); bg.setAttribute('y', ty.toFixed(1));
+  td.setAttribute('x', (tx + 8).toFixed(1)); td.setAttribute('y', (ty + 13).toFixed(1));
+  tv.setAttribute('x', (tx + 8).toFixed(1)); tv.setAttribute('y', (ty + 28).toFixed(1));
+  // 气泡底色是深色，用浅一档的红/绿，别拿 --up/--down 那两个（深色在白底上才够）
+  tv.setAttribute('fill', val > 0 ? '#fca5a5' : (val < 0 ? '#86efac' : '#ffffff'));
+  layer.style.display = '';
+}
+
+function futHoverOff(){
+  var box = document.getElementById('futHistChart');
+  var layer = box && box.querySelector('svg.fh .fh-hov');
+  if (layer) layer.style.display = 'none';
 }
 
 function futInit(){
@@ -7782,6 +7908,22 @@ function futInit(){
     if (m) FUT_HM = m;
     renderFutHist();
   });
+  // hover 绑在容器上而不是 svg 上：图表每次重绘都换一个 svg 节点，绑在图里会随 node 一起消失
+  var hc = document.getElementById('futHistChart');
+  if (hc && !hc.getAttribute('data-hover')){
+    hc.setAttribute('data-hover', '1');
+    hc.addEventListener('pointermove', futHoverAt);
+    hc.addEventListener('pointerdown', futHoverAt);
+    hc.addEventListener('pointerleave', futHoverOff);
+    hc.addEventListener('pointercancel', futHoverOff);
+    // 图宽是按容器像素算的，横竖屏切换/窗口拉伸后必须重画一次，否则点距和命中区错位
+    var rz;
+    window.addEventListener('resize', function(){
+      if (!FUTHIST || !FUTHIST.ok) return;
+      clearTimeout(rz);
+      rz = setTimeout(renderFutHist, 180);
+    });
+  }
   loadFut();
   loadFutOpt('main');
   loadFutHist();
