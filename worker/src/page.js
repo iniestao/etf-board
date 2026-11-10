@@ -7481,7 +7481,7 @@ function renderFutOptEtf(){
     }
     var none = (FUTOPT.main && FUTOPT.main.mode === 'none') || (FUTOPT.rest && FUTOPT.rest.mode === 'none');
     box.innerHTML = '<div class="empty">' + (none
-      ? '此时拿不到期权最新价，合成基差算出来不自洽，先不显示（盘中会自动重试）'
+      ? '期权链或标的现价暂时取不到，合成基差先不显示（下一轮自动重试）'
       : '没有可用的期权链') + '</div>';
     return;
   }
@@ -7508,7 +7508,14 @@ function renderFutOptEtf(){
   // 现价那一列也是昨收——不说明的话会被当成盘中实时数字
   var onPrev = (FUTOPT.main && FUTOPT.main.mode === 'prev')
     || (FUTOPT.rest && FUTOPT.rest.mode === 'prev');
-  if (onPrev) h += '<div class="futfoot">拿不到期权最新价，本表用的是东财的<b>滞后收盘价</b>（比最新交易日再早一天，现价列同理），只能看个大概；有最新价时自动切回实时</div>';
+  var td = (FUTOPT.main && FUTOPT.main.td) || (FUTOPT.rest && FUTOPT.rest.td) || '';
+  if (onPrev) {
+    h += '<div class="futfoot">拿不到期权最新价，本表用的是东财的<b>滞后收盘价</b>（比最新交易日再早一天，现价列同理），只能看个大概；有最新价时自动切回实时</div>';
+  } else if (td) {
+    // 新浪给的是「最新一笔成交价」：盘中就是实时，盘前/收盘后就是那个交易日的收盘。
+    // 标出来免得把上周五的收盘当成今天盘中的数
+    h += '<div class="futfoot">行情日期 ' + td + ' 收盘（新浪期权快照），盘中自动跟随</div>';
+  }
   box.innerHTML = h;
 }
 

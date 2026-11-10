@@ -430,7 +430,10 @@ async function runContracts(base, pass) {
   const ovm = r.json();
   if (ovm && ovm.ok) {
     ok('/api/ovmin 日经分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）· 昨收 ' + ovm.pre);
-    if (!ovm.pts || ovm.pts.length < 50) bad('/api/ovmin 日经分时点数过少');
+    // 阈值不能写死 50：日经 9:00（东京）开盘，早八点半跑自检只有个位数点，
+    // 每天早上都会红一次，红的还不是真问题。10 点 = 已交易满 50 分钟，够区分
+    // 「接口坏了」和「刚开盘」
+    if (!ovm.pts || ovm.pts.length < 10) bad('/api/ovmin 日经分时点数过少');
     // 左轴涨跌幅要靠这个数当 0 轴，缺了就只能退回开盘价，和卡片上的涨跌幅对不上
     if (!(ovm.pre > 0)) bad('/api/ovmin 没带 pre（昨收），纵轴涨跌幅会退回「本时段开盘」口径');
     else {
@@ -480,10 +483,16 @@ async function runContracts(base, pass) {
     const it = fo.items || [];
     ok('/api/futopt?g=main ' + it.length + ' 个标的 · 近月档数 ' + it.map((x) => ((x.months || [])[0] || {}).n).join('/'));
     if (it.length < 3) bad('/api/futopt 主标的不足 3 个（' + it.length + '）');
+    // 换源后应当走新浪且带回行情日期；退回东财时 src 是 'em'，那是降级不是常态，
+    // 一旦常驻说明新浪又断了
+    if (fo.src !== 'sina') bad('/api/futopt 没走新浪（src=' + fo.src + '），可能已降级');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fo.td || ''))) bad('/api/futopt 缺行情日期 td');
     for (const x of it) {
       const m = (x.months || [])[0];
       if (!m || !(m.n >= 2)) bad('/api/futopt ' + x.c + ' 近月配对档数不足');
       if (!(x.S > 0)) bad('/api/futopt ' + x.c + ' 缺标的现价');
+      // 一档行权价在低价标的上就占 2~4%，配错档会算出这个量级的假贴水
+      if (m && Math.abs(m.bp) > 5) bad('/api/futopt ' + x.c + ' 近月基差率 ' + m.bp + '% 离群');
     }
   } else bad('/api/futopt 失败：' + r.text.slice(0, 200));
   r = await rawRequest(base, '/api/futopt?g=%E4%B9%B1%E5%86%99', { cookie });

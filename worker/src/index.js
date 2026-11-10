@@ -3215,6 +3215,111 @@ async function emJson(u, ms) {
   }));
 }
 
+/** 新浪批量期权快照。一批 100 个代码（再长 URL 会超），返回 Map<code, 行>。
+ *  新浪这一条是 GBK，而 Workers 的 TextDecoder 只有 utf-8——中文字节会解成替换字符，
+ *  但价格/行权价/到期日全是 ASCII，按逗号切分的下标不受影响，名称本来也不用（用东财的）。
+ *  字段位：1 最新价 5 成交量 7 行权价 10 IV 41 持仓量 45 购沽 46 到期日 47 剩余自然日 */
+async function fetchSinaOpts(codes) {
+  const out = new Map();
+  if (!codes.length) return out;
+  const BATCH = 100;
+  const jobs = [];
+  for (let i = 0; i < codes.length; i += BATCH) jobs.push(codes.slice(i, i + BATCH));
+  await Promise.all(jobs.map(async (seg) => {
+    const u = 'https://hq.sinajs.cn/list=' + seg.map((c) => 'CON_OP_' + c).join(',');
+    const r = await fetch(u, {
+      headers: { 'User-Agent': UA, Referer: 'https://stock.finance.sina.com.cn/' },
+      signal: AbortSignal.timeout(9000),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const txt = await r.text();
+    for (const line of txt.split('\n')) {
+      const m = line.match(/hq_str_CON_OP_(\d+)="([^"]*)"/);
+      if (!m || !m[2]) continue;
+      const f = m[2].split(',');
+      const px = +f[1];
+      const k = +f[7];
+      const dte = +f[47];
+      if (!(px > 0) || !(k > 0) || !(dte >= 0)) continue;
+      out.set(m[1], {
+        px, k, dte,
+        side: f[45] === 'P' ? 'P' : 'C',
+        exp: f[46] || '',
+        vol: +f[5] || 0,
+        oi: +f[41] || 0,
+        iv: +f[10] || 0,
+      });
+    }
+  }));
+  return out;
+}
+
+/** 新浪现货快照。完整版格式：名称,今开,昨收,最新,最高,最低,…,日期,时间
+ *  不用 s_ 简版：简版只有最新价和涨跌幅，没有行情日期，判不出这份价是哪天的 */
+async function fetchSinaSpot(secids) {
+  const syms = secids.map((s) => (s.slice(0, 1) === '1' ? 'sh' : 'sz') + s.slice(2));
+  const r = await fetch('https://hq.sinajs.cn/list=' + syms.join(','), {
+    headers: { 'User-Agent': UA, Referer: 'https://stock.finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const txt = await r.text();
+  const out = {};
+  for (let i = 0; i < syms.length; i++) {
+    const m = txt.match(new RegExp('hq_str_' + syms[i] + '="([^"]*)"'));
+    if (!m || !m[1]) continue;
+    const f = m[1].split(',');
+    const p = +f[3];
+    const p0 = +f[2];
+    if (!(p > 0)) continue;
+    out[secids[i].slice(2)] = {
+      p, p0: p0 > 0 ? p0 : p,
+      chg: p0 > 0 ? +(((p / p0) - 1) * 100).toFixed(2) : 0,
+      d: f[30] || '',
+    };
+  }
+  return out;
+}
+
+/** 合约清单（代码/行权价/剩余日）。只有东财给这份东西，但它的价不用。
+ *  合约一天只变一次（新挂/摘牌/换月），缓存 6 小时——稳态下每次请求就只剩新浪那几批。 */
+async function fetchOptList(secid) {
+  const ck = new Request('https://etf.internal/optlist/v1/' + secid, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(ck);
+      if (hit) {
+        const a = await hit.json();
+        if (Array.isArray(a) && a.length) return a;
+      }
+    } catch (e) { /* 缓存读失败就回源 */ }
+  }
+  const out = [];
+  for (const spt of [9, 10]) {
+    const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
+      + '&fltt=2&invt=2&fields=f12,f161,f162'
+      + '&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
+    const j = await emJson(u, 8000);
+    const d = (j && j.data && j.data.diff) || [];
+    for (const x of (Array.isArray(d) ? d : Object.values(d))) {
+      const code = String(x.f12 || '');
+      const k = +x.f161;
+      const dte = +x.f162;
+      if (!code || !(k > 0) || !(dte >= 0)) continue;
+      out.push({ code, k, dte });
+    }
+  }
+  if (cache && out.length) {
+    try {
+      await cache.put(ck, new Response(JSON.stringify(out), {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=21600' },
+      }));
+    } catch (e) { /* 写缓存失败不影响本次 */ }
+  }
+  return out;
+}
+
 /** 一条期权链（单边）。spt 9=购 10=沽，字段：f2 最新价 f5 成交量
  *  f12 代码 f14 名称 f108 持仓量 f152 购沽标记 f161 行权价 f162 剩余自然日
  *
@@ -3304,7 +3409,93 @@ function calcEtfMonths(rows, S) {
   return res;
 }
 
+/** ETF 期权合成基差：清单走东财（缓存 6 小时），价格走新浪。
+ *
+ *  为什么换源（2026-11-10）：东财对 Cloudflare 出口的期权链只回 f18（昨收），
+ *  f2（最新价）49 条全是 '-'，现货接口的 f2 却正常——于是整张卡只能按昨收算，
+ *  凌晨拿到的 f18 还会比最新交易日早一天。新浪 CON_OP 快照同一出口实测 200、
+ *  有最新价、一批能带 100 个合约，还直接给到期日和剩余自然日（省得自己推第三个周五）。
+ *  新浪整批不通时退回老链路（serveFutOptEm），那边只有昨收但至少自洽。 */
 async function serveFutOpt(url, env, ctx) {
+  const g = url.searchParams.get('g') === 'rest' ? 'rest' : 'main';
+  const ttl = g === 'rest' ? 300 : 120;
+  const DBG = url.searchParams.get('dbg') === '1';
+  const cache = DBG ? null : await getCache();
+  const key = new Request('https://etf.internal/futopt/v2/' + g, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败回源 */ }
+  }
+
+  const list = ETF_OPT[g];
+  const diag = {};
+  const partial = [];
+
+  const spotP = fetchSinaSpot(list.map((x) => x[0])).catch((e) => {
+    diag.spot = String((e && e.message) || e);
+    return null;
+  });
+  const listP = Promise.all(list.map(([sid, code]) => fetchOptList(sid).catch((e) => {
+    (diag[code] = diag[code] || []).push('清单 ' + String((e && e.message) || e));
+    return null;
+  })));
+  const [spot, lists] = await Promise.all([spotP, listP]);
+
+  const codes = [];
+  for (const l of lists) if (l) for (const x of l) codes.push(x.code);
+  let quotes = new Map();
+  if (codes.length) {
+    try {
+      quotes = await fetchSinaOpts(codes);
+    } catch (e) {
+      diag.quotes = String((e && e.message) || e);
+    }
+  }
+
+  // 新浪那边一个价都没拿到（整批 4xx/超时），退老链路；东财好歹给昨收
+  if (!quotes.size) return serveFutOptEm(url, env, ctx);
+
+  if (!spot) partial.push('spot');
+  const items = [];
+  let td = '';
+  for (let i = 0; i < list.length; i++) {
+    const [, code, name] = list[i];
+    const l = lists[i];
+    const s = spot && spot[code];
+    if (!l || !l.length || !s) {
+      partial.push(code);
+      if (!diag[code]) diag[code] = [l ? l.length + ' 个合约' : '清单失败', s ? '现货 ok' : '现货缺'];
+      continue;
+    }
+    const rows = [];
+    for (const x of l) {
+      const q = quotes.get(x.code);
+      if (!q || !(q.px > 0)) continue;
+      rows.push({ k: q.k, px: q.px, dte: q.dte, vol: q.vol, oi: q.oi, side: q.side });
+    }
+    const months = calcEtfMonths(rows, s.p);
+    if (!months.length) {
+      partial.push(code);
+      diag[code] = ['报价 ' + rows.length + '/' + l.length + '，配不出月份'];
+      continue;
+    }
+    if (!td && s.d) td = s.d;
+    items.push({ c: code, n: name, S: s.p, chg: s.chg, months, on: 'live' });
+  }
+
+  const out = { ok: true, g, ts: Date.now(), items, partial, td, src: 'sina' };
+  out.mode = !items.length ? 'none' : 'live';
+  if (DBG || partial.length) out.diag = diag;
+  const res = json(out, ttl);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
+}
+
+async function serveFutOptEm(url, env, ctx) {
   const g = url.searchParams.get('g') === 'rest' ? 'rest' : 'main';
   const ttl = g === 'rest' ? 300 : 120;
   // ?dbg=1：把每条期权链的失败原因带回来。东财对 Cloudflare 出口和家宽出口
@@ -3378,7 +3569,7 @@ async function serveFutOpt(url, env, ctx) {
     items.push({ c: code, n: name, S, chg: useLive ? s.chg : 0, months, on: useLive ? 'live' : 'prev' });
   }
 
-  const out = { ok: true, g, ts: Date.now(), items, partial };
+  const out = { ok: true, g, ts: Date.now(), items, partial, src: 'em' };
   // live = 期权用当日最新价；prev = 只能拿到昨收，整块按昨收算；
   // none = 连昨收都不自洽（平价校验全挂），这时候不显示比显示错数好
   out.mode = !items.length ? 'none' : (items.some((x) => x.on === 'live') ? 'live' : 'prev');
