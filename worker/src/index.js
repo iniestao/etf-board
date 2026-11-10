@@ -3410,15 +3410,33 @@ async function serveOptProbe(url) {
     ['delay', q('push2delay.eastmoney.com', '&ut=' + EM_UT)],
     ['ut', q('push2.eastmoney.com', '&ut=' + EM_UT)],
     ['ulist-spot', 'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&secids=' + secid + '&fields=f2,f3,f12,f14'],
+    // 备选源：新浪的期权快照。东财对境外出口只给昨收，新浪如果给最新价就直接换
+    ['sina-batch', 'https://hq.sinajs.cn/list=CON_OP_10012442,CON_OP_10012444,CON_OP_10011430', 'sina'],
+    ['sina-etf', 'https://hq.sinajs.cn/list=s_sh510050', 'sina'],
   ];
-  const one = async ([n, u]) => {
+  const one = async ([n, u, kind]) => {
     const t0 = Date.now();
     try {
       const r = await fetch(u, {
-        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        headers: {
+          'User-Agent': UA,
+          Referer: kind === 'sina' ? 'https://stock.finance.sina.com.cn/' : 'https://quote.eastmoney.com/',
+        },
         signal: AbortSignal.timeout(9000),
       });
+      // 新浪是 GBK，Workers 的 TextDecoder 只有 utf-8。中文字节会变成替换字符，
+      // 但我们只取价格/行权价/到期日这些 ASCII 字段，按逗号切分的下标不变
       const txt = await r.text();
+      if (kind === 'sina') {
+        const lines = txt.split('\n').filter((x) => x.indexOf('hq_str_') >= 0);
+        const nonEmpty = lines.filter((x) => !/=""\s*;?\s*$/.test(x.trim()));
+        const f = nonEmpty.length ? nonEmpty[0].split('"')[1].split(',') : [];
+        return {
+          n, s: r.status, ms: Date.now() - t0, bytes: txt.length,
+          lines: lines.length, nonEmpty: nonEmpty.length,
+          sample: f.length ? { px: f[1], k: f[7], side: f[45], exp: f[46], dte: f[47], oi: f[41], flds: f.length } : null,
+        };
+      }
       let diff = null, rc = null, sample = null, numF2 = 0, numF18 = 0;
       try {
         const j = JSON.parse(txt);
@@ -3444,7 +3462,7 @@ async function serveOptProbe(url) {
     }
   };
   const list = await Promise.all(cases.map(one));
-  const best = list.reduce((a, x) => Math.max(a, x.numF2 || 0, x.numF18 || 0), 0);
+  const best = list.reduce((a, x) => Math.max(a, x.numF2 || 0, x.numF18 || 0, x.nonEmpty || 0), 0);
   return json({
     ok: true, secid, best, total: list.length,
     hint: best ? '有 ' + best + ' 条能拿到价' : '所有变体都只有结构没有价，得换数据源',
