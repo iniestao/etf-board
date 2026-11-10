@@ -271,9 +271,12 @@ jobs:
           cp -r dist/hist "$PUB/"
           cp dist/manifest.json "$PUB/"
           cp dist/research.json "$PUB/"
-          # 首次跑或回算失败时这几个文件可能不存在，别让 cp 把发布带崩
-          cp dist/sec_daily.json dist/mkt_hist.json "$PUB/" 2>/dev/null || true
-          cp dist/fut_daily.json dist/fut_last.json "$PUB/" 2>/dev/null || true
+          # 首次跑或回算失败时这几个文件可能不存在，别让 cp 把发布带崩。
+          # etfopt_hist.json 千万别漏：这个分支是每次 force push 重建的，
+          # 少拷一个文件等于把它从线上删掉，页面 ETF 组会直接退回「还没发布」。
+          for f in sec_daily.json mkt_hist.json fut_daily.json fut_last.json etfopt_hist.json; do
+            if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; else echo "::warning::dist/$f 不存在，这轮不发布它"; fi
+          done
           cd "$PUB"
           git init -q
           git config user.name "etf-board-bot"
