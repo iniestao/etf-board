@@ -108,11 +108,19 @@ function median(a) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-/** 和 buildEtfOptDay 同一套 ATM 口径：|K/S−1|≤3%，按距离取最多 5 档，中位数 */
-function atmWindow(pairs, S, band = 0.03, cap = 5) {
-  return pairs.filter((p) => S > 0 && Math.abs(p.k / S - 1) <= band)
-    .sort((a, b) => Math.abs(a.k - S) - Math.abs(b.k - S))
-    .slice(0, cap);
+/** 和 gen_fut_daily.mjs 的 atmWindow 逐字一致：|K/S−1|≤3% 起，凑不满 3 档就一路放宽
+ *  到 5%/8%/12%，还不行就取最近的 3 档。
+ *
+ *  不能写死 3%：科创50 的档距是 0.05，标的 1.36 时 0.05/1.36＝3.7%，±3% 里只装得下
+ *  一档。2026-11-05 就是这样——S=1.358、窗口 [1.317,1.399]，只有 1.35 落在里面，
+ *  1.40 差 0.001 被挡在外面，于是那天算不出合成价、图上直接缺一格。 */
+function atmWindow(pairs, S) {
+  const byDist = pairs.slice().sort((a, b) => Math.abs(a.k - S) - Math.abs(b.k - S));
+  for (const w of [0.03, 0.05, 0.08, 0.12]) {
+    const near = byDist.filter((x) => S > 0 && Math.abs(x.k / S - 1) <= w).slice(0, 5);
+    if (near.length >= 3) return near;
+  }
+  return byDist.slice(0, Math.min(3, byDist.length));
 }
 
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
@@ -194,7 +202,9 @@ async function one(secid, code, tag) {
     const groups = [];
     for (const [mth, arr] of g) {
       const w = atmWindow(arr, S);
-      if (w.length < 2) continue;
+      // 放宽到 12% 还凑不出，说明这个月当天确实没有可配的档（停牌/新挂），
+      // 那天就空着——和「宁可缺着」一致，不拿别的月份顶。
+      if (!w.length) continue;
       const syn = median(w.map((x) => x.k + x.c - x.p));
       groups.push({ mth, n: w.length, syn, bp: (syn - S) / S * 100 });
     }
