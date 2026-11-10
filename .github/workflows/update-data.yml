@@ -238,18 +238,23 @@ jobs:
               print('::warning::etfopt_hist.json 没生成，页面 ETF 组会显示「还没发布」')
               sys.exit(0)
           h = json.loads(p.read_text())
+          assert h.get('v') == 2, f"口径不是 v:2（真近月），拿到的是 {h.get('v')}"
           n = len(h['d'])
-          print(f"ETF 期权历史 {n} 天，{h['d'][0]} ~ {h['d'][-1]}")
+          print(f"ETF 期权近月 {n} 天，{h['d'][0]} ~ {h['d'][-1]}")
           for code, o in h['s'].items():
               lens = {k: len(v) for k, v in o.items()}
               assert len(set(lens.values())) == 1, f'{code} 各列长度不一致 {lens}'
-              assert lens['fa'] == n, f'{code} 长度 {lens["fa"]} != {n}'
-              got = [x for x in o['fa'] if x is not None]
-              print(f"  {code}  隔季年化 {len(got)} 天  区间 {min(got):.2f}% ~ {max(got):.2f}%")
-              # 年化基差正常在 ±20% 内。超出说明行权价单位或 dte 推错了
+              assert lens['nb'] == n, f'{code} 长度 {lens["nb"]} != {n}'
+              got = [x for x in o['nb'] if x is not None]
+              dts = [x for x in o['nd'] if x is not None]
+              print(f"  {code}  近月 {len(got)} 天  基差率 {min(got):.2f}% ~ {max(got):.2f}%  dte {min(dts)}~{max(dts)}")
+              # 当月合约的剩余天数不会超过 40 天，超了说明挑到了下月/隔季
+              assert max(dts) <= 40, f'{code} dte 最大 {max(dts)} 天，不像当月合约'
+              # 近月基差率贴着零收敛，正常在 ±5% 内
               for v in got:
-                  assert -25 < v < 25, f'{code} 年化 {v}% 超出合理区间'
-          assert n >= 20, f'只有 {n} 天，画不出像样的曲线'
+                  assert -6 < v < 6, f'{code} 基差率 {v}% 超出合理区间'
+          # 只从「今天仍在市」的当月合约倒推，天数注定不多；3 天是能出图的下限
+          assert n >= 3, f'只有 {n} 天，画不出曲线'
           PY
 
       # ---------- 4. 发布历史数据 ----------

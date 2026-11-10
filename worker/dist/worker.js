@@ -4153,8 +4153,9 @@ background:var(--bg3)}
 /* 分组间距 + 窄屏强制断行：桌面靠 margin 分出「股指 / ETF期权 / 口径」三段，
    手机上 11 个标签挤成随机三行读不出分组，改用 mbrk 主动换行 */
 .mtab.grp{margin-left:10px}
-/* ETF 期权组没有「30 天恒定 / 主力近月」可选——那两个口径都要历史上已到期的近月
-   合约，全网没有价格。藏掉两个按不动的按钮，比留着让人反复点强。 */
+/* ETF 期权组固定画当月（= 股指那边的「主力近月」），所以两个口径按钮都按不动：
+   「30 天恒定」要同一天有两个到期月才能插值，历史上凑不齐；口径只有一个，藏掉按钮
+   比留着让人反复点强。 */
 .mtabs.etf .mtab[data-m]{display:none}
 .mbrk{flex:0 0 0;height:0}
 @media(max-width:820px){.mbrk{flex:0 0 100%}.mtab.grp{margin-left:0}}
@@ -11719,8 +11720,7 @@ function renderFutHist(){
   }
 
   var isEtf = ETF_HP.indexOf(FUT_HP) >= 0;
-  // ETF 组没有「30 天恒定 / 主力近月」可切——那两个口径都要历史上已到期的近月合约，
-  // 全网没有价格。这里固定用隔季合约的年化，所以把两个口径 tab 藏起来。
+  // ETF 组只有一个口径：当月（等同股指那边的「主力近月」）。所以把两个口径 tab 藏掉。
   if (tabs.classList) tabs.classList.toggle('etf', isEtf);
   if (isEtf){ renderFutHistEtf(box); return; }
 
@@ -11787,14 +11787,12 @@ function renderFutHist(){
  * 和上面那七个品种的根本区别：中金所把每天的 XML 永久留档，所以能回补 250 天；
  * 上交所/深交所只给「当前状态」接口，合约一到期就从所有免费源里消失——东财连
  * secid 都删了，2026-11-10 扫过 10010000~10012440 共 2441 个号，命中的全是在市
- * 合约。所以「当时的近月合约价格」这条数据根本不存在，不是抓失败。
+ * 合约。所以「当时的当月合约价格」这条数据根本不存在，不是抓失败。
  *
- * 能做的只有一件事：今天还在市的合约里，上市早的自己就活得很久。510050 的 12 月
- * 合约从 2026-04-23 就有日线，那时它是隔季。把「每天最长可用的那组合约」挑出来
- * 连成一条线，就得到 130 多天的真实历史——只是口径是隔季，不是近月。
- *
- * 隔季和近月的基差绝对值不能直接比（远月贴水天然更深），所以画**年化**
- * （bp×365/dte）。这个量剔除了期限效应，跨 dte、跨日期都可比。
+ * 只能从「今天还在市的合约」里挑：某天它恰好是当月，那天就有真近月；否则宁可不画。
+ * 2026-10-29 起 11 月合约成为当月、且它今天仍在市，所以这条线从那天开始，只有
+ * 九个交易日——再往前补不出来。这和股指期权那七个品种的「主力近月」是同一口径
+ * （同一个到期月、画基差率本身，不年化），因此可以直接横向比。
  */
 function renderFutHistEtf(box){
   var sub = document.getElementById('futHistSub');
@@ -11807,14 +11805,13 @@ function renderFutHistEtf(box){
     return;
   }
 
-  var nd = o.nd || [];
-  var vals = (o.fa || []).slice(), dates = eh.d.slice();
+  var vals = (o.nb || []).slice(), dates = eh.d.slice();
   var i0 = 0, t;
   while (i0 < vals.length && (vals[i0] == null || !isFinite(vals[i0]))) i0++;
   if (i0 >= vals.length){
     if (sub) sub.textContent = '';
     box.innerHTML = '<div class="empty">' + (ETF_HP_NAME[FUT_HP] || FUT_HP)
-      + ' 还没有可还原的历史<br><span class="code">它的合约挂牌都太新，等下次换月之后会变长</span></div>';
+      + ' 还没有可还原的近月<br><span class="code">当月合约一到期就从所有免费源消失，只能从「今天还在市的合约」里挑</span></div>';
     return;
   }
   vals = vals.slice(i0); dates = dates.slice(i0);
@@ -11826,7 +11823,7 @@ function renderFutHistEtf(box){
   for (t = vals.length - 1; t >= 0; t--) if (vals[t] != null){ cur = vals[t]; break; }
 
   if (clean.length < 3){
-    if (sub) sub.innerHTML = '隔季合约年化 · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 2) + '</b>'
+    if (sub) sub.innerHTML = '当月合约基差率 · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 3) + '</b>'
       + ' · 已记 ' + clean.length + ' 个交易日';
     box.innerHTML = '<div class="empty">还画不出曲线：目前只还原了 ' + clean.length + ' 个交易日</div>';
     return;
@@ -11838,22 +11835,19 @@ function renderFutHistEtf(box){
   var pctile = Math.round(rank / clean.length * 100);
 
   if (sub){
-    sub.innerHTML = '隔季合约年化 · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 2) + '</b>'
+    sub.innerHTML = '当月合约 · 当前 <b class="' + fSign(cur) + '">' + fPct(cur, 3) + '</b>'
       + ' · 分位 ' + pctile + '%（' + clean.length + ' 天样本）'
       + ' · p10 ' + fPct(p10, 2) + ' / 中位 ' + fPct(p50, 2) + ' / p90 ' + fPct(p90, 2);
   }
   box.innerHTML = futHistSvg(vals, dates, { p10: p10, p50: p50, p90: p90, cur: cur });
 
-  /* 最近这一段最短合约已经转成当月，那才是真近月。说清从哪天开始——
-     不然看的人会以为整条线都是近月。 */
-  var nearFrom = null;
-  for (t = 0; t < nd.length; t++){
-    if (nd[t] != null && nd[t] <= 45){ nearFrom = eh.d[t]; break; }
-  }
+  /* 只画真近月（当月合约）。历史上的当月合约一到期就从所有免费源消失，
+     那天宁可空着，也不拿隔季顶替——隔季贴水天然更深，跟股指期权近月不可比。 */
   box.insertAdjacentHTML('beforeend', '<div class="futfoot">'
-    + '用今天仍在市的合约倒推：历史上的当月/下月已经到期，全网没有价格，所以这条线是'
-    + '<b>隔季</b>而不是近月。纵轴年化＝基差率×365/剩余天数，远月贴水更深，年化后才和近月可比。'
-    + (nearFrom ? '<br>' + nearFrom.slice(5) + ' 起最短合约已转为当月，那段是真近月。' : '')
+    + '只画<b>当月合约</b>：和上面七个品种的「主力近月」同一口径，可以横向比。'
+    + '当月合约一到期就从所有免费源消失，所以只能从「今天仍在市」的合约里倒推，'
+    + '能还原的起点是 ' + dates[0] + '（那天 11 月合约刚好成为当月）。'
+    + '更早的日子没有当月合约的价格，空着而不是拿隔季顶上。'
     + '</div>');
 }
 

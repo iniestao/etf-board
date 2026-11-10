@@ -2,26 +2,24 @@
  *
  * 背景（2026-11-10 逐个源验过，结论写在 gen_fut_daily.mjs 文件头）：
  * 已到期合约在上交所/深交所/东财/新浪全部即焚，secid 直接从索引里消失，
- * 扫 10010000~10012440 共 2441 个号命中的全是在市合约。所以「当时的近月合约
+ * 扫 10010000~10012440 共 2441 个号命中的全是在市合约。所以「当时的当月合约
  * 价格」这条数据在免费源里根本不存在，补不回来。
  *
- * 但换个方向就通了：今天在市的合约里，**上市早的那几个自己就活了很久**。
- * 510050 的 12 月合约从 2026-04-23 就有日线（134 个交易日），那时它是隔季；
- * 一路走到今天变成下月。只要按天把「当天还活着、且今天仍能取到」的合约
- * 挑出来算合成基差，就能把这段历史重建出来。
+ * 只能反过来做：今天在市的合约里，某天它恰好是当月，那天就有真近月；否则不画。
+ * 11 月合约 2026-10-29 起成为当月（10 月合约 10-28 到期），而它今天仍在市，
+ * 所以能还原的就是这九个交易日；更早的日子只有当月合约消失后的下月/隔季，
+ * **不拿来顶替**——隔季贴水天然更深，跟股指期权的「主力近月」不可比。
  *
- * 能重建什么、不能重建什么，必须说清楚：
- *   能：当天「最短可用合约」和「最长可用合约」的基差。前者在近期就是真近月
- *       （11 月合约 10-28 起转为当月）；后者是隔季，dte 225~244 稳定。
- *   不能：历史上的当月/下月合约（已到期，全网无价格）。所以 2026-04~09 这段
- *       拿不到当时的近月，只有隔季。
+ * 口径：只用真近月（当月合约），画基差率本身（bp），和 gen_fut_daily.mjs 里
+ * 期权部分的 `l[0]`（dte 最小的那一档）完全一致，跨品种可以直接比。
  *
- * 隔季合约的基差绝对值不能和近月直接比（远月贴水天然更深），所以主线用
- * **年化**（bp×365/dte）——这个量剔除了期限效应，跨 dte 可比。
+ * 为什么要和上一版合并：11 月合约 11-25 到期后连 kline 一起消失，它贡献的
+ * 那九个点只有落盘的那份还留着。每天全量重算再覆盖 = 每天削一层，越跑越少。
  *
  * 用法：
  *   node pipeline/etfopt_backfill.mjs            # 全量重建，写 dist/etfopt_hist.json
  *   node pipeline/etfopt_backfill.mjs --dry      # 只打印统计，不写文件
+ *   node pipeline/etfopt_backfill.mjs --recalc   # 强制用新值覆盖（正常不用）
  */
 import fs from 'fs';
 import path from 'path';
@@ -119,6 +117,24 @@ function atmWindow(pairs, S, band = 0.03, cap = 5) {
 
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 
+/** 某月的第四个星期三——ETF 期权的到期日。遇节假日交易所会顺延，
+ *  这里不查日历：顺延那一两天会被判成「已换月」而跳过，宁可缺着。 */
+function fourthWed(y, m) {
+  const dow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  const firstWed = 1 + ((3 - dow + 7) % 7);
+  return Date.UTC(y, m - 1, firstWed + 21);
+}
+
+/** d 那天的「当月合约」是哪个月份。ETF 期权每月都挂，所以这是个确定性判断：
+ *  本月第四个星期三没过就是本月，过了就是下个月。 */
+function frontMonth(dstr) {
+  const t = Date.parse(dstr + 'T00:00:00Z');
+  const dt = new Date(t);
+  const y = dt.getUTCFullYear(), m = dt.getUTCMonth() + 1;
+  if (t <= fourthWed(y, m)) return m;
+  return m === 12 ? 1 : m + 1;
+}
+
 async function one(secid, code, tag) {
   const ch = await chain(secid);
   if (!ch.length) { console.log('  ' + tag + ' 期权链为空'); return null; }
@@ -192,13 +208,16 @@ async function one(secid, code, tag) {
       gr.dte = base == null ? null : base + daysBetween(d, TODAY);
     }
     groups.sort((a, b) => a.dte - b.dte);
-    const near = groups[0], far = groups[groups.length - 1];
+    const near = groups[0];
+    if (near.dte == null) continue;
+    /* 只留真近月。判据不是「我手上最短的那组」（那可能是隔季），而是「按日历
+       当月该是哪个月」：2026-09-24 那天最短可用是 11 月合约，可当时的当月是
+       10 月（10-28 到期）、它的价格已经消失，11 月其实是下月。这种天宁可不画。 */
+    if (near.mth !== frontMonth(d)) continue;
     rows.push({
-      d, S: +S.toFixed(3),
+      d,
       near: { mth: near.mth, dte: near.dte, n: near.n, bp: +near.bp.toFixed(3),
               ann: near.dte >= 3 ? +(near.bp * 365 / near.dte).toFixed(2) : null },
-      far: { mth: far.mth, dte: far.dte, n: far.n, bp: +far.bp.toFixed(3),
-             ann: far.dte >= 3 ? +(far.bp * 365 / far.dte).toFixed(2) : null },
     });
   }
   return rows;
@@ -223,22 +242,26 @@ async function main() {
   }
 
   /* ---------------- 和上一版合并 ----------------
-   * 必须合并，不能覆盖。理由：某一天当时能取到的合约比今天多——今天只剩还在市的那几个。
-   * 11 月合约 2026-11-25 到期后从东财消失，它贡献的 28 天近月数据只有已经落盘的那份还留着。
+   * 必须合并，不能覆盖。理由：今天还在市的合约，下个月就没了——11 月合约 2026-11-25
+   * 到期后连 kline 都删掉，它贡献的那些近月点只有落盘的那份还留着。
    * 每天全量重算再整体覆盖，等于每天把历史削掉一层，越跑越少。
    *
-   * 规则：老日期用老值（更全），新日期用新值，两边都有时留老值。
-   * 万一老值是错的，加 --recalc 可强制用新值重算（代价是丢掉已到期合约那部分）。 */
-  const old = (() => { try { return JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch (e) { return null; } })();
+   * 规则：老日期用老值，新日期用新值，两边都有时留老值。
+   * 万一老值是错的，加 --recalc 可强制用新值重算。
+   *
+   * v:2 —— 2026-11-10 晚改过口径（隔季 → 真近月），旧文件里的 nb/na 装的其实是
+   * 远月，不能混进来当老值。读到没有 v:2 的旧文件整份丢弃，从现在重新攒。 */
+  const raw = (() => { try { return JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch (e) { return null; } })();
+  const old = raw && raw.v === 2 ? raw : null;
+  if (raw && !old) console.log('  旧文件口径是隔季（v≠2），整份丢弃，按真近月重新开始');
   const recalc = process.argv.includes('--recalc');
 
   const newDays = [...new Set(Object.values(res).flatMap((r) => r.map((x) => x.d)))];
   const oldDays = (old && old.d) || [];
   const allD = [...new Set([...oldDays, ...newDays])].sort();
   const idx = new Map(allD.map((d, i) => [d, i]));
-  const oIdx = new Map(oldDays.map((d, i) => [d, i]));
 
-  const KEYS = ['nb', 'na', 'nd', 'nm', 'fb', 'fa', 'fd', 'fm'];
+  const KEYS = ['nb', 'na', 'nd', 'nm'];
   const s = {};
   const codes = [...new Set([...Object.keys((old && old.s) || {}), ...Object.keys(res)])];
   for (const code of codes) {
@@ -264,17 +287,16 @@ async function main() {
       if (i == null) continue;
       const put = (k, v) => { if (recalc || o[k][i] == null) o[k][i] = v; };
       put('nb', r.near.bp); put('na', r.near.ann); put('nd', r.near.dte); put('nm', r.near.mth);
-      put('fb', r.far.bp); put('fa', r.far.ann); put('fd', r.far.dte); put('fm', r.far.mth);
     }
     s[code] = o;
-    void oIdx;
   }
 
   const out = {
+    v: 2,
     ok: 1,
     gen: new Date().toISOString(),
-    note: (old && old.note) ||
-      '用「今天仍在市」的合约日线倒推。near=当天最短可用合约（近期即真近月），far=当天最长可用合约（隔季）。历史上的当月/下月已到期，全网无价格，取不到。',
+    note: '只用真近月（当月合约）。历史上「当时那个当月合约」到期后全网无价格，那天就空着——'
+      + '宁可缺，也不拿隔季顶替（隔季贴水天然更深，和股指期权近月不可比）。',
     d: allD,
     s,
   };
@@ -288,9 +310,10 @@ async function main() {
   }
   console.log('日期轴 ' + allD.length + ' 天  ' + (allD[0] || '-') + ' ~ ' + (allD[allD.length - 1] || '-'));
   for (const [code, o] of Object.entries(s)) {
-    const nf = o.na.filter((x) => x != null).length;
-    const ff = o.fa.filter((x) => x != null).length;
-    console.log('  ' + code + '  近月年化 ' + nf + ' 天   隔季年化 ' + ff + ' 天');
+    const nf = o.nb.filter((x) => x != null).length;
+    const dts = o.nd.filter((x) => x != null);
+    console.log('  ' + code + '  近月 ' + nf + ' 天'
+      + (dts.length ? '  dte ' + Math.min(...dts) + '~' + Math.max(...dts) : ''));
   }
 }
 

@@ -519,6 +519,19 @@ async function runContracts(base, pass) {
     const last = cur[cur.length - 1];
     if (last == null) bad('/api/futhist IF 的 30 天恒定基差在最新一天是空的');
     else if (Math.abs(last) > 15) bad('/api/futhist IF 最新基差率 ' + last + '% 离群');
+    /* ETF 期权那一组：只允许真近月，所以 dte 不该超过 40 天——一旦有人把「当天
+       最短可用合约」改回去（历史上常常是隔季），这条会立刻炸。 */
+    const eh = fh.eh || {};
+    const etfCodes = Object.keys(eh.s || {});
+    if (!etfCodes.length) bad('/api/futhist 没带 ETF 期权历史（eh.s 为空）');
+    else {
+      const daysOf = etfCodes.map((c) => (eh.s[c].nb || []).filter((x) => x != null).length);
+      ok('/api/futhist ETF 期权近月 ' + etfCodes.length + ' 个标的 · 各 ' + daysOf.join('/') + ' 天');
+      for (const c of etfCodes) {
+        const dts = (eh.s[c].nd || []).filter((x) => x != null);
+        if (dts.length && Math.max(...dts) > 40) bad(c + ' 的 dte 到 ' + Math.max(...dts) + ' 天，不像当月合约');
+      }
+    }
   } else bad('/api/futhist 失败：' + r.text.slice(0, 200));
 
   // 状态
