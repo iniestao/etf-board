@@ -3757,11 +3757,13 @@ async function serveOptProbe(url) {
  *  Worker 这边一个字段都不重算——历史序列一旦两边各算一遍，迟早会不一致。
  *
  *  eh 是 ETF 期权那段单独的历史（etfopt_hist.json），一起捎回去：前端只有在
- *  切到 ETF 组时才用它，多 22KB 换掉一次额外往返。它是「用今天仍在市的合约
- *  倒推」出来的，和中金所那份 XML 不是一回事，所以单独放一个字段，不混进 opt。 */
+ *  切到 ETF 组时才用它，多 1KB 换掉一次额外往返。它是「用今天仍在市的合约
+ *  倒推」出来的，和中金所那份 XML 不是一回事，所以单独放一个字段，不混进 opt。
+ *  口径从「隔季」改成「真近月」时（v:2）缓存键必须跟着升，否则 30 分钟内
+ *  还会把旧口径那份发给新前端——旧文件里的 near 装的是远月。 */
 async function serveFutHist(env) {
   const cache = await getCache();
-  const key = new Request('https://etf.internal/futhist/v2', { method: 'GET' });
+  const key = new Request('https://etf.internal/futhist/v3', { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
