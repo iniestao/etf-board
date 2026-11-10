@@ -4265,6 +4265,48 @@ border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
 /* 表头吸顶：榜单 100 行、自选表滚过去之后列名还在。top 对齐锚点导航下缘，
    背景色要实（不能透），否则行文字会从表头底下透出来。 */
 .tbl thead th{position:sticky;top:var(--navH,42px);z-index:3}
+/* 窄屏横滑：自选表常显 10 列、清单 11 列，390px 屏上按比例压缩到每列 39px 会挤成
+   一条竖线，所以此前是裁掉——溢价率/IOPV/成交额/换手直接看不见，也没提示还有内容。
+   改成 overflow-x:auto 让整表左右滑动，信息一条不少。
+   代价：容器一旦成为滚动盒，thead 的 sticky top 就相对这个盒子而非视口，吸顶永久失效
+   （盒子高度等于内容高度，永远到不了触发位置）。所以这里顺手改回 static，别留无效声明。
+   隐藏列同时恢复：它们不再挤压常显宽度，而是躺在滑动方向的后半段。 */
+@media(max-width:820px){
+  .tbl{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+  /* top 必须一起清掉：只改 position 的话，下面冻结列把 position 改回 sticky 的瞬间
+     top:42px 会复活，整个表头被往下推一行——看起来像 thead 裂成了两行。 */
+  .tbl thead th{position:static;top:auto}
+  .tbl th.hide-sm,.tbl td.hide-sm{display:table-cell}
+  /* 移动端系统滚动条默认不出现，给一条 4px 的细条提示「右边还有」 */
+  .tbl::-webkit-scrollbar{height:4px}
+  .tbl::-webkit-scrollbar-track{background:transparent}
+  .tbl::-webkit-scrollbar-thumb{background:#c9ced8;border-radius:2px}
+  /* 名称整块冻结太占地方（175px 差不多是半屏），窄屏给它一个上限、超出用省略号。
+     包一层 span 才截得动：td 上的 max-width 在 table-layout:auto 下会被内容顶开。
+     96px 大致是「沪深300ETF」六个字的量——认标的够用，又不至于把右边可视区
+     压到只剩一列（冻结多宽，滑到底就有多宽的内容被自己挡住）。 */
+  .tbl.hs .nmx{display:block;max-width:96px;overflow:hidden;text-overflow:ellipsis}
+  /* 「×30 同指数」徽章让出位置：它挤在名称后面会被省略号吃掉，还白占 35px 冻结宽度。
+     点它还开同指数列表，露一半更糟，干脆收掉——手机上认标的靠名称+代码够了。 */
+  .tbl.hs .ixb{display:none}
+  .tbl.hs td:nth-child(1),.tbl.hs th:nth-child(1){padding-left:8px;padding-right:3px}
+  /* 滑到「成交额/换手」那一段，整屏都是裸数字，认不出是哪只。把「代码+名称」
+     钉在左边当锚点。第二列的 left 必须是第一列实宽，「代码」和「合约」宽度不同，
+     写死会错位，所以由 markHS() 逐表量。只对真溢出的表加 .hs——窄表不该平白
+     多一条投影。 */
+  .tbl.hs td:nth-child(1),.tbl.hs th:nth-child(1){position:sticky;left:0;z-index:2}
+  .tbl.hs td:nth-child(2),.tbl.hs th:nth-child(2){position:sticky;left:var(--w1,80px);z-index:2}
+  .tbl.hs td:nth-child(1),.tbl.hs td:nth-child(2){background:var(--bg2)}
+  .tbl.hs th:nth-child(1),.tbl.hs th:nth-child(2){background:var(--bg3);z-index:4}
+  .tbl.hs tr:hover td:nth-child(1),.tbl.hs tr:hover td:nth-child(2){background:#f7f9fd}
+  /* 分隔线只在滑出去之后出现（.shr 由 scroll 事件加）。首屏没滑动时多一条竖线，
+     整张表看着像多了个框，反而脏。有了它，被切一半的列名才读成「滚出去了」而不是
+     「字被裁坏了」。 */
+  .tbl.hs.shr td:nth-child(2),.tbl.hs.shr th:nth-child(2){border-right:1px solid var(--line);
+    box-shadow:8px 0 10px -8px rgba(16,24,40,.32)}
+  /* 提示条：没有它，横滑等于把「被裁掉」换成了「看不见还有」。只在真溢出时由 JS 插入 */
+  .hstip{margin:6px 0 0;font-size:11px;color:var(--txt3);text-align:right}
+}
 thead th:hover{color:var(--txt)}
 thead th.l{text-align:left}
 thead th.ctr{text-align:center}
@@ -6564,7 +6606,7 @@ function rowHtml(x, withDel){
     ? '<span class="act del" data-del="'+x.c+'" title="移除">×</span>'
     : '<span class="act" data-add="'+x.c+'" title="加自选">+</span>';
   return '<td class="l code">'+x.c+'</td>'
-    + '<td class="l nm">'+x.n+ixBadge(x)+'</td>'
+    + '<td class="l nm"><span class="nmx">'+x.n+'</span>'+ixBadge(x)+'</td>'
     + '<td class="'+cc(x.chg)+' '+fl+'">'+fp(x.p)+'</td>'
     + '<td class="'+cc(x.chg)+'">'+fpc(x.chg)+'</td>'
     + (withDel ? '<td class="hide-md t3cell" data-t3="'+x.c+'">'+top3Html(x.c)+'</td>' : '')
@@ -11111,8 +11153,10 @@ document.body.addEventListener('click', function(e){
   if (row){
     var rc = row.getAttribute('data-c');
     var nmEl = row.querySelector('td.nm');
-    var nm = (nmEl && nmEl.firstChild && nmEl.firstChild.nodeType === 3)
-      ? nmEl.firstChild.nodeValue : '';
+    // 名称外面包了一层 .nmx（窄屏截断用），所以不能再直接取 firstChild 文本节点
+    var nmSpan = nmEl && nmEl.querySelector('.nmx');
+    var nm = nmSpan ? nmSpan.textContent
+      : (nmEl && nmEl.firstChild && nmEl.firstChild.nodeType === 3) ? nmEl.firstChild.nodeValue : '';
     openHist(rc, nm || (findItem(rc) || {}).n || rc);
   }
 });
@@ -11681,6 +11725,57 @@ function navActive(){
   var as = nav.querySelectorAll('a');
   for (i = 0; i < as.length; i++) as[i].classList.toggle('on', as[i].getAttribute('data-t') === cur);
 }
+/* 窄屏横滑表的收尾工作：标 .hs、量第一列宽度、插提示条。
+   为什么要逐个量：冻结列的第二列 left 偏移得等于第一列实宽，而「代码」(510300)
+   和「合约」(IF2611) 差着十几像素，写死一个值总有一边对不齐。
+   触发的三种时机都要覆盖：首屏、表格内容重绘（数字每 5 秒在变、行数也会变）、
+   窗口尺寸变化。前两者用 MutationObserver 盯每张表，比在每个渲染函数里塞一行
+   可靠——渲染入口有七八个，漏一个就有一张表不带锚点。 */
+function markHS(){
+  var narrow = window.matchMedia('(max-width:820px)').matches;
+  var ts = document.querySelectorAll('.tbl');
+  for (var i = 0; i < ts.length; i++){
+    var t = ts[i];
+    var over = narrow && t.scrollWidth > t.clientWidth + 1;
+    // 冻结只给长表（自选 14 列、清单 11 列）。期指/期权表只有 7 列、滑 60 来像素就到头，
+    // 冻上「合约+现价」等于白占半屏——而且 #futSec 那条 thead{position:static} 带 ID，
+    // 权重压过 .tbl.hs th:nth-child(1)，冻了也不生效，不如按列数控住。
+    var ncol = t.querySelector('thead th') ? t.querySelectorAll('thead th').length : 0;
+    if (over && ncol >= 9){
+      var th = t.querySelector('thead th');
+      if (th) t.style.setProperty('--w1', th.offsetWidth + 'px');
+      t.classList.add('hs');
+    } else {
+      t.classList.remove('hs');
+    }
+    var next = t.nextElementSibling;
+    var hasTip = !!(next && next.classList && next.classList.contains('hstip'));
+    if (over && !hasTip){
+      // 放表格下方而不是上方：吸顶导航 42px，滚到表格时上方的提示正好被它压住
+      t.insertAdjacentHTML('afterend', '<div class="hstip">← 左右滑动看全部列 →</div>');
+    } else if (!over && hasTip){
+      next.parentNode.removeChild(next);
+    }
+  }
+}
+(function watchHS(){
+  var tm = 0;
+  function bump(){ if (tm) return; tm = setTimeout(function(){ tm = 0; markHS(); }, 80); }
+  var ts = document.querySelectorAll('.tbl');
+  for (var i = 0; i < ts.length; i++){
+    if (window.MutationObserver) new MutationObserver(bump).observe(ts[i], { childList: true, subtree: true, characterData: true });
+    (function(t){
+      t.addEventListener('scroll', function(){
+        if (t.scrollLeft > 2){ t.classList.add('shr'); }
+        else t.classList.remove('shr');
+      }, { passive: true });
+    })(ts[i]);
+  }
+  window.addEventListener('resize', bump, { passive: true });
+  window.addEventListener('orientationchange', bump, { passive: true });
+  markHS();
+})();
+
 (function initNav(){
   var nav = document.getElementById('secNav');
   if (!nav) return;
