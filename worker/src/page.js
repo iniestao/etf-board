@@ -169,7 +169,7 @@ padding:5px 9px!important;border-bottom:1px solid var(--line)}
 .futgrp b{font-family:var(--mono);font-weight:600}
 .futgh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;min-width:0}
 .futgh>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fq{font-size:10px;padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px}
+.fq{font-size:10px;padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px;white-space:nowrap}
 .tbl .nm + .code{margin-left:6px}
 /* 期指的表格列多（合约/价格/涨跌/基差/基差率/年化/持仓），375px 一定放不下。
    这里放开横滑而不是砍列：砍掉哪一列都会有人要，「剩 11 天」和基差率是连着看的。 */
@@ -180,8 +180,11 @@ padding:5px 9px!important;border-bottom:1px solid var(--line)}
   #futSec .futgrid>div{min-width:0}
   #futSec .tbl{overflow-x:auto;-webkit-overflow-scrolling:touch}
   /* 横向滚动容器里的表头 sticky 会跟内容叠出重影（表头粘在左上角，行从下面穿过去），
-     这几张表统共十几行，不需要吸顶 */
-  #futSec .tbl thead th{position:static}
+     这几张表统共十几行，不需要吸顶。
+     限定 :not(.hs)：加了 Δ基差率之后期指表变 8 列、手机上要滑 148px，得冻住
+     「合约」列当锚点；而这条带 ID 的规则权重高过 .tbl.hs th:nth-child(1)，
+     不排除掉就会冻了 td 冻不了 th，表头和内容错位。 */
+  #futSec .tbl:not(.hs) thead th{position:static}
   #futSec table{min-width:400px}
 }
 /* 390 屏一行要塞 5 列，400px 的保底会让「基差率」留在屏幕外要滑一下才看得到，
@@ -7357,12 +7360,21 @@ function fInt(v){
 }
 // 持仓量变化推出来的四种状态。名字已经说明它是推断：中金所的持仓量是双边合计，
 // 看不出是哪个方向在开、哪个在平，只能从「仓增还是仓减」+「价涨还是价跌」倒推。
+// 徽章只留「增仓/减仓」两字：价涨价跌左边那列已经写了，箭头是重复信息，
+// 而加了 Δ基差率之后 8 列塞不进 670px，一个箭头的宽度就能把最后一列挤到溢出。
+// 完整说法（谁在开、谁在平）在 title 里。
 var FQ = {
-  'up-open':  ['增仓上涨', '#c62f34'],
-  'dn-open':  ['增仓下跌', '#0b7d55'],
-  'up-close': ['减仓上涨', '#a9660a'],
-  'dn-close': ['减仓下跌', '#2563eb'],
-  'flat':     ['持仓持平', '#8b95a5'],
+  'up-open':  ['增仓', '#c62f34'],
+  'dn-open':  ['增仓', '#0b7d55'],
+  'up-close': ['减仓', '#a9660a'],
+  'dn-close': ['减仓', '#2563eb'],
+  'flat':     ['持平', '#8b95a5'],
+};
+var FQ_TIP = {
+  'up-open': '增仓上涨：有新资金进场做多，涨势有燃料',
+  'dn-open': '增仓下跌：有新资金进场做空，跌势有燃料',
+  'up-close': '减仓上涨：空头平仓回补推动，缺新多',
+  'dn-close': '减仓下跌：多头止损离场，卖压来自平仓',
 };
 
 function futStatus(){
@@ -7445,10 +7457,14 @@ function renderFutBasis(){
   // 昨收持仓还没生成时（收盘日档还没跑），这一列只会是一排「—」，不如整列撤掉
   var hasOi = false;
   for (var z = 0; z < list.length; z++) if (list[z].oiD != null){ hasOi = true; break; }
+  // 同理：老快照没有 prev，bpc 会全是 null，撤列而不是挂一排「—」
+  var hasBpc = false;
+  for (var z2 = 0; z2 < list.length; z2++) if (list[z2].bpc != null){ hasBpc = true; break; }
 
   var h = '<table><thead><tr><th class="l">合约</th><th>价格</th><th>涨跌</th>'
     + '<th title="期货 − 现货，点数。负数=贴水">基差</th>'
     + '<th title="基差 ÷ 现货 × 100%">基差率</th>'
+    + (hasBpc ? '<th title="相对上一交易日收盘的基差率变化，单位百分点。盘中盯这列看贴水是在扩大还是修复">Δ基差率</th>' : '')
     + '<th class="hide-sm" title="基差率 × 365 ÷ 剩余自然日">年化</th>'
     + (hasOi ? '<th class="hide-sm" title="持仓量双边合计的当日变化，只能推断谁在动">持仓变化</th>' : '')
     + '</tr></thead><tbody>';
@@ -7476,12 +7492,15 @@ function renderFutBasis(){
         + '<td class="' + fSign(r.chg) + '">' + fPct(r.chg, 2) + '</td>'
         + '<td class="' + fSign(r.basis) + '">' + fNum(r.basis, 2) + '</td>'
         + '<td class="' + fSign(r.bp) + '">' + fPct(r.bp, 3) + '</td>'
+        + (hasBpc ? '<td class="bpc ' + fSign(r.bpc) + '">' + fPct(r.bpc, 3) + '</td>' : '')
         + '<td class="hide-sm ' + fSign(r.ann) + '">' + fPct(r.ann, 2) + '</td>'
         + (hasOi ? '<td class="hide-sm">' + (r.oiD == null
             ? '<span class="code">—</span>'
             : '<span class="' + fSign(r.oiD) + '">' + (r.oiD > 0 ? '+' : '') + fInt(r.oiD) + '</span>'
               // 持仓没动就别挂徽章：16 行全写「持仓持平」比一排 0 还吵
-              + (q && r.q !== 'flat' ? ' <span class="fq" style="color:' + q[1] + '">' + q[0] + '</span>' : ''))
+              + (q && r.q !== 'flat'
+                  ? ' <span class="fq" style="color:' + q[1] + '" title="' + (FQ_TIP[r.q] || '') + '">' + q[0] + '</span>'
+                  : ''))
           + '</td>' : '')
         + '</tr>';
     }
@@ -7588,7 +7607,7 @@ function renderFutPos(){
     if (!sub) ;
     if (sub) sub.textContent = '持仓量双边合计 → 只能推断，不是交易所多空';
     if (!list.length){
-      box.innerHTML = '<div class="empty">今天还没有昨收持仓可比<br><span class="code">收盘日档生成后，下一次开盘就有四象限了</span></div>';
+      box.innerHTML = '<div class="empty">还没有上一交易日的持仓可比<br><span class="code">快照里没带上一天的基准时会出现，下一轮自动补上</span></div>';
       return;
     }
     var cnt = { 'up-open': [], 'dn-open': [], 'up-close': [], 'dn-close': [], 'flat': [] };
@@ -7981,11 +8000,11 @@ function markHS(){
   for (var i = 0; i < ts.length; i++){
     var t = ts[i];
     var over = narrow && t.scrollWidth > t.clientWidth + 1;
-    // 冻结只给长表（自选 14 列、清单 11 列）。期指/期权表只有 7 列、滑 60 来像素就到头，
-    // 冻上「合约+现价」等于白占半屏——而且 #futSec 那条 thead{position:static} 带 ID，
-    // 权重压过 .tbl.hs th:nth-child(1)，冻了也不生效，不如按列数控住。
+    // 冻结只给真的滑得远的表。原先卡在 9 列，加了 Δ基差率之后期指表变 8 列、
+    // 手机要滑 148px，滑过去就只剩数字认不出合约，所以门槛降到 8。
+    // 期权表 6 列、滑 60 来像素就到头，仍然不冻——冻「合约+现价」等于白占半屏。
     var ncol = t.querySelector('thead th') ? t.querySelectorAll('thead th').length : 0;
-    if (over && ncol >= 9){
+    if (over && ncol >= 8){
       var th = t.querySelector('thead th');
       if (th) t.style.setProperty('--w1', th.offsetWidth + 'px');
       t.classList.add('hs');

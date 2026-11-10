@@ -3093,12 +3093,19 @@ async function serveFut(env, ctx) {
     return json({ ok: false, error: 'cffex_unreachable', ts: now, partial: ['fut'] }, 15);
   }
 
-  // 昨收持仓：只有「昨天那份快照」才有意义，今天的不算
+  /* 昨收基准：持仓量变化要它、基差率变化也要它。
+     原先只在 last.td !== td 时用 last.fut，于是日档一追平今天（16:35 之后）
+     就整表没有增减仓——恰恰是收盘后最该看完整一天变化的时候。
+     现在快照里多带一份 prev（上一交易日的 code→{oi,bp}），两种情况都能接上。 */
   const last = await loadFutLast(env);
   const td = futDataDate(last);
-  const oiPrev = {};
-  if (last && last.td && last.td !== td && Array.isArray(last.fut)) {
-    for (const f of last.fut) oiPrev[f.c] = f.oi;
+  const prev = {};
+  if (last && last.td) {
+    if (last.td !== td && Array.isArray(last.fut)) {
+      for (const f of last.fut) prev[f.c] = { oi: f.oi, bp: f.bp };
+    } else if (last.prev && typeof last.prev === 'object') {
+      Object.assign(prev, last.prev);
+    }
   }
   // 昨收持仓只对「昨天那份」有意义；但会员多空是收盘结算值，当天那份就是最新的，
   // 不该因为「td 相同」而丢掉——否则收盘后整张多空表永远是空的
@@ -3117,9 +3124,13 @@ async function serveFut(env, ctx) {
       const basis = sp ? r.px - sp.p : null;
       const bp = sp ? basis / sp.p * 100 : null;
       const dte = dteOf(r.ym);
-      const oiD = oiPrev[r.c] != null ? r.oi - oiPrev[r.c] : null;
+      const pv = prev[r.c] || {};
+      const oiD = pv.oi != null ? r.oi - pv.oi : null;
+      // 基差率变化：单位是百分点，和 bp 同量纲。盘中每 45 秒刷一次，
+      // 盯着这列能看出贴水是在扩大还是修复，比看绝对值直接。
+      const bpc = (pv.bp != null && bp != null) ? +(bp - pv.bp).toFixed(3) : null;
       tmp.push({
-        c: r.c, p, u: S, px: r.px, chg: r.chg, vol: r.vol, oi: r.oi, oiD,
+        c: r.c, p, u: S, px: r.px, chg: r.chg, vol: r.vol, oi: r.oi, oiD, bpc,
         dte, exp: expOf(r.ym),
         basis: sp ? +basis.toFixed(2) : null,
         bp: sp ? +bp.toFixed(3) : null,

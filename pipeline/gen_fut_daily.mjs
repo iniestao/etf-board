@@ -486,15 +486,28 @@ function buildDay(rows, spotMap, posObj) {
 
 // ---------------------------------------------------------------- 单日快照
 // Worker 冷启动只读这一小块（~6KB），不必 parse 79KB 历史
-function mkSnap(date, day, posObj, spotMap) {
+//
+// prev 是「上一交易日」的 code→{oi,bp}。为什么要单独存：
+// Worker 平时靠 last.td !== td 判断「这是昨天那份」，可日档一生成，last.td 就等于
+// 今天了，16:35 之后到次日 9:15 这十七个小时整表没有增减仓——偏偏那是收盘后
+// 最该看完整一天变化的时候。存一份 prev，两种情况就都能接上。
+function mkSnap(date, day, posObj, spotMap, prev) {
   return {
     ok: true, td: date, ts: Date.now(),
     spot: Object.fromEntries(Object.entries(spotMap).map(([k, v]) => [k, { p: v }])),
     fut: day.fut.map((x) => ({ c: x.c, p: x.p, u: FUT_MAP[x.p], px: x.px, chg: x.chg,
       vol: x.vol, oi: x.oi, oiD: x.oiD, dte: x.dte, basis: x.basis, bp: x.bp, ann: x.ann })),
+    prev: prev || null,
     opt: day.opt,
     pos: posObj,
   };
+}
+
+/** 把一天的期货行收成 code→{oi,bp}，给下一天当基准用 */
+function oiBpMap(futRows) {
+  const m = {};
+  for (const x of futRows) m[x.c] = { oi: x.oi, bp: x.bp };
+  return m;
 }
 
 async function fetchPosFor(date, ymDir) {
@@ -550,6 +563,15 @@ async function main() {
 
   const spotHist = await fetchSpotClose();
   log('现货收盘拿到 ' + Object.entries(spotHist).map(([k, v]) => k + ':' + Object.keys(v).length).join(' '));
+
+  /* 上一交易日的 code→{oi,bp}，逐日滚动往前带，写进快照的 prev。
+     初始化只在「旧快照正好是本次第一天的前一个工作日」时做——否则补的是很久以前
+     的日期，拿今天的持仓去当它的昨收，算出来的增减仓全是错的，不如留空。 */
+  let prevOiBp = null;
+  if (todo.length && hist._last && hist._last.td && Array.isArray(hist._last.fut)
+      && hist._last.td === prevWeekdays(todo[0], 1)[0]) {
+    prevOiBp = oiBpMap(hist._last.fut);
+  }
 
   let added = 0;
   for (let i = 0; i < todo.length; i++) {
@@ -643,7 +665,9 @@ async function main() {
     hist.d.push(date);
 
     // 最新那份快照单独存：Worker 冷启动时只读 6KB，不必 parse 79KB 历史
-    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap);
+    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap, prevOiBp);
+    // 本日收成下一天的「昨收」。空行不覆盖，免得某天数据不全把基准清空
+    if (day.fut.length) prevOiBp = oiBpMap(day.fut);
     added++;
     log(`  ${date} 期货 ${day.fut.length} 行 / 期权 ${day.opt.length} 行` + (posObj ? ` / 持仓 ${posObj.rows.length} 行` : ''));
     await sleep(150);
