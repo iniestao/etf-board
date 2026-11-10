@@ -158,8 +158,11 @@ export async function syncData(opts = {}) {
   // 期指日档单独判一次存在性：它曾经不在下面那份清单里，沙箱就永远停在
   // 部署那天的快照上。缺文件时即便 mark 相同也要走一遍，否则补不回来。
   const haveFut = fs.existsSync(path.join(dist, 'fut_last.json'));
+  // ETF 期权历史同样单独判：它是后加的，先部署过沙箱的话本地就没有这份文件，
+  // 而当天 mark 又没变，不这么判就永远补不上。
+  const haveEh = fs.existsSync(path.join(dist, 'etfopt_hist.json'));
 
-  if (!opts.force && haveHist && haveFut && local
+  if (!opts.force && haveHist && haveFut && haveEh && local
       && (local.mark === man.mark || local.sha === man.mark)) {
     log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），跳过');
     return { changed: false, mark: man.mark, skipped: 'up-to-date' };
@@ -200,9 +203,12 @@ export async function syncData(opts = {}) {
   // 每天 16:35 自动换成新档；沙箱版只读本地磁盘，这两份不进清单就一直停在
   // 沙箱里最后一次手动跑 pipeline 的日期。表现是收盘后四象限的增减仓拿错了
   // 昨收——差一天，而且没人会怀疑到数据头上（页面看起来一切正常）。
+  //
+  // etfopt_hist.json 是 ETF 期权那段历史。它每天都在合并新一天，沙箱不跟着换
+  // 就是「线上 131 天、本地还停在发布那天」，越差越远。
   for (const f of ['manifest.json', 'research.json', 'hist/events.json',
                    'sec_daily.json', 'mkt_hist.json',
-                   'fut_last.json', 'fut_daily.json']) {
+                   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json']) {
     try {
       const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
       if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));
