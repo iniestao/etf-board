@@ -220,6 +220,20 @@ close * adj_factor / (SELECT adj_factor FROM etf_daily WHERE code='510300' ORDER
 | 复权后残留 >30% 跳空 | 0 条 |
 | 最近交易日覆盖 | 1717/1717 |
 
+## 份额历史（`shares/`）
+
+日线库之外还有一份**每日份额**：`shares/sz_hist.json`（772 只深市）+ `shares/sh_hist.json`（928 只沪市），各 265 个交易日，用来算「份额变化 / 净申购金额」。
+
+```bash
+python3 tools/xlsx2shares.py 深市ETF历史份额.xlsx -o data/shares/sz_hist.json --stats  # 深市（一次性，不再导）
+python3 tools/sse_hist.py --date 2026-11-11                                              # 沪市增量
+python3 tools/sse_hist.py --days 60                                                      # 沪市补最近 60 天
+```
+
+份额单位和日线不同：**这里存的是「份」**，不是手也不是元。净流入金额 = Δ份额 × 收盘价，在派生层算。格式、核对结果、已知坑都写在 [`shares/README.md`](shares/README.md)。
+
+一句话记住：**沪市可回溯、可重抓；深市只有这份历史，日常增量从上线当日起攒。**
+
 ## 每日更新
 
 收盘后（15:30 之后）重跑一次即可：
