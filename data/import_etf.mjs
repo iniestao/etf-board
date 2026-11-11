@@ -61,7 +61,8 @@ async function get(url, tries = RETRY + 1) {
    - 新浪 etf_hq_fund 给的是**短简称**（「科创债WJ」「信用债DC」这种只有它有），
      但节点口径会变：2026-11-11 它的 count 接口自报 938 只，而前一天还是 1719。
      靠它单独当名单，数据会静默腰斩（完整性断言才拦下来）。
-   - 东财 b:MK0021..MK0024 覆盖 1660 只、名称规范，但漏掉那 60 只债券 ETF。
+   - 东财 b:MK0021..MK0024 + MK0827 覆盖 1700+、名称规范；不带 MK0827 时会
+     漏掉三十多只债券 ETF（就是 2026-11-11 补上的那批）。
    所以两个源取并集：新浪的简称优先保留，东财补覆盖。 */
 const EM_HDR = { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' };
 // 东财对云 IP 会间歇性拒连（2026-11-11 Actions 上 25 页全失败，只拿到 1023 只）。
@@ -142,7 +143,10 @@ async function listETF() {
   }
 
   // 2) 东财：覆盖全，名称规范
-  const fss = 'b:MK0021,b:MK0022,b:MK0023,b:MK0024';
+  /* MK0827 必须带上：债券 ETF（511120 / 159111 这类）不在 MK0021~MK0024 里，
+     只查前四个板块会稳定漏掉三十多只——它们在 /api/all 里出现（那边一直带着
+     MK0827），却永远没有日线，点开 K 线是空的，份额汇总也缺成员。 */
+  const fss = 'b:MK0021,b:MK0022,b:MK0023,b:MK0024,b:MK0827';
   let emN = 0, emStreak = 0;
   for (let pn = 1; pn <= 25; pn++) {
     const u = '/api/qt/clist/get?pn=' + pn

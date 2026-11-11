@@ -180,9 +180,14 @@ async function fetchSH(day) {
         headers: { 'User-Agent': UA, Referer: 'http://www.sse.com.cn/', Accept: '*/*' },
       });
       const d = await r.json();
-      if (d.STAT_DATE && d.STAT_DATE !== day) return null;   // 该日还没发布
       const res = d.result || [];
       if (!res.length) { await sleep(1500 + k * 1000); continue; }
+      /* 日期不在顶层，在 result 的每一行上（顶层只有 pageHelp）。
+         早先读的是 d.STAT_DATE，永远是 undefined，于是「该日还没发布」这道闸门
+         从上线起就没生效过：请求一个还没发布的日期，上交所会把**上一日**的整张表
+         原样返回，写进轴里就成了「当日零申赎」，静默错一天。2026-11-11 复盘发现。 */
+      const dts = new Set(res.map((x) => String(x.STAT_DATE || '').slice(0, 10)));
+      if (dts.size !== 1 || !dts.has(day)) return null;      // 回显不是请求日 → 还没发布
       const out = {};
       for (const x of res) {
         const c = String(x.SEC_CODE || '').trim();

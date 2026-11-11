@@ -432,6 +432,13 @@ thead th:hover{color:var(--txt)}
 thead th.l{text-align:left}
 thead th.ctr{text-align:center}
 thead th.on{color:var(--accent)}
+/* 排序指示：箭头放在标题**前面**，用 ::before 而不是 ::after。
+   「申赎」表头里那句「11-11」是 display:block 的小字，::after 会掉到第三行去。 */
+thead th[data-sk].son{color:var(--accent)}
+thead th[data-sk].son::before{content:'▼';margin-right:0;font-size:8px;opacity:.8}
+thead th[data-sk].son.asc::before{content:'▲'}
+/* 展开某指数时，标出哪只是代表标的（成交额最大的那只） */
+tbody tr.rep td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 tbody td{padding:8px 9px;text-align:right;border-bottom:1px solid #e3e6eb;
 font-family:var(--mono);font-size:12.5px;white-space:nowrap}
 tbody tr:hover{background:#f7f9fd}
@@ -1261,13 +1268,6 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <span class="tag" data-g="commodity">商品<b id="n-commodity"></b></span>
     <span class="tag on" id="dedupTag" title="同一跟踪指数的多只 ETF 只保留成交额最大的一只。点击切换">同指数去重<b id="n-dedup"></b></span>
     <input id="q" placeholder="搜索代码/名称">
-    <select id="sortSel">
-      <option value="amt">按成交额</option>
-      <option value="chg">按涨幅</option>
-      <option value="chgA">按跌幅</option>
-      <option value="tr">按换手率</option>
-      <option value="pm">按溢价率</option>
-    </select>
     <select id="limitSel">
       <option value="50">前 50</option>
       <option value="100" selected>前 100</option>
@@ -1279,10 +1279,11 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </div>
   <div class="tbl"><table>
     <thead><tr>
-      <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th>
-      <th class="ctr">溢价率</th><th>成交额</th>
-      <th class="ctr" data-shd title="当日净申购金额（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。红=净申购，绿=净赎回。同指数去重时显示该指数全部成员的合计（数字后带「合」），点开看最近 250 个交易日的每日柱状图">申赎</th><th>换手</th>
-      <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
+      <th class="l" data-sk="c" title="点击按代码排序">代码</th><th class="l" data-sk="n" title="点击按名称排序">名称</th>
+      <th data-sk="p" title="点击按现价排序">现价</th><th data-sk="chg" title="点击按涨跌幅排序">涨跌%</th>
+      <th class="ctr" data-sk="pm" title="点击按溢价率排序">溢价率</th><th data-sk="amt" title="点击按成交额排序">成交额</th>
+      <th class="ctr" data-sk="sh" data-shd title="点击按当日申赎排序。当日净申购金额（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。红=净申购，绿=净赎回。同指数去重时显示该指数全部成员的合计（数字后带「合」），点开看最近 250 个交易日的每日柱状图">申赎</th><th data-sk="tr" title="点击按换手率排序">换手</th>
+      <th class="hide-sm" data-sk="amp" title="点击按振幅排序">振幅</th><th class="hide-sm" data-sk="hi" title="点击按最高价排序">最高</th><th class="hide-sm" data-sk="lo" title="点击按最低价排序">最低</th>
       <th class="ctr" style="width:36px"></th>
     </tr></thead>
     <tbody id="listBody"><tr><td colspan="12" class="lskel"><i></i><i></i><i></i><span>正在取全市场行情…</span></td></tr></tbody>
@@ -1416,7 +1417,11 @@ var DATA = [];                 // 全市场归一化数据
 var STATS = null;
 var LIVE = {};                 // 自选高频覆盖 {code: item}
 var LIVE_TS = 0;               // 自选行情最近一次到的时刻（腾讯直连）
-var g = 'all', sortKey = 'amt', limit = 100, kw = '';
+var g = 'all', limit = 100, kw = '';
+/* 排序状态：k = 字段，d = -1 降序 / 1 升序。
+   为什么不放在本地存储里：清单的默认视角是「成交额最大的在最上面」，
+   上次点了「按最低价升序」第二天打开还是那个顺序，反而要手动改回来。 */
+var SORT = { k: 'amt', d: -1 };
 var DATA_SRC = '', DATA_TS = 0;
 var lastP = {}, timerSlow = null, timerFast = null, timerSpd = null, timerT3 = null, retryTimer = null;
 var timerFut = null;
@@ -1600,6 +1605,18 @@ var IX_N  = {};                // 指数名 -> 该指数下 ETF 只数
 var DEDUP = true;              // 默认开
 var KEEP = {};                 // 指数名 -> 当前保留的 code
 var IXF = null;                // 当前展开的指数（点 ×N 标签进入，看该指数全部成员）
+/* 指数名 -> 当前快照里**真有行情**的成员数。
+   徽章上的「×N」必须等于「点开能看到几行」，所以用它，不用静态映射的 IX_N。
+   静态映射来自基金档案，里面有几类当天不会出现在行情里的成员：停牌、新发未上市、
+   已清盘但档案还挂着。按 IX_N 画徽章就会出现「写着 ×10，点开只有 5 行」——
+   用户报过这个 bug，而页面里没有任何东西能解释少了的那 5 只。 */
+var LIVE_N = {};
+
+/** 该指数当前能点开几只。快照没到（首次加载）时退回静态映射，别把徽章全抹了 */
+function ixCount(ix){
+  var n = LIVE_N[ix];
+  return (n == null || n === 0) ? (IX_N[ix] || 0) : n;
+}
 
 function markKeep(items){
   // 选代表的顺序：
@@ -1612,6 +1629,8 @@ function markKeep(items){
     if (!x.ix) continue;
     (buckets[x.ix] || (buckets[x.ix] = [])).push(x);
   }
+  LIVE_N = {};
+  for (var b in buckets) LIVE_N[b] = buckets[b].length;
   var score = function(o){ return o.amt > 0 ? o.amt : (o.mc || 0); };
 
   for (var k in buckets){
@@ -2803,7 +2822,7 @@ function loadShares(){
    去重开着、没展开某个指数、且该指数下不止一只 —— 三个条件同时成立才算合计。
    展开（IXF 非空）后每一行都是具体一只，必须回到单只口径。 */
 function shIsAgg(x){
-  return (DEDUP && !IXF && x.ix && IX_N[x.ix] > 1) ? x.ix : null;
+  return (DEDUP && !IXF && x.ix && ixCount(x.ix) > 1) ? x.ix : null;
 }
 
 function shIxLast(ix){
@@ -2829,7 +2848,7 @@ function shCell(x){
   var v = ix ? shIxLast(ix) : (SH_F[x.c] == null ? null : SH_F[x.c]);
   var cls = (v == null || v === 0) ? '' : (v > 0 ? 'up' : 'down');
   var tip = ix
-    ? '跟踪「' + ix + '」的 ' + IX_N[ix] + ' 只合计净申赎（亿元），截至 ' + (SH_D || '-')
+    ? '跟踪「' + ix + '」的 ' + ixCount(ix) + ' 只合计净申赎（亿元），截至 ' + (SH_D || '-')
       + '。份额跨基金不能相加，所以折成金额。点开看每日柱状图'
     : '本只当日净申赎（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。截至 '
       + (SH_D || '-') + '。点开看每日柱状图';
@@ -2863,7 +2882,7 @@ function shRepaint(){
 /* ---------------- 弹窗：每日增减柱状图 ---------------- */
 function shOpen(key, agg, nm, retry){
   var name = nm || key;
-  SH_VIEW = { key: key, agg: !!agg, name: name, v: null, cv: null, s: null, n: agg ? (IX_N[key] || 1) : 1 };
+  SH_VIEW = { key: key, agg: !!agg, name: name, v: null, cv: null, s: null, n: agg ? (ixCount(key) || 1) : 1 };
   // 窄屏标题栏只有 200 多像素，把「同指数合计」钉在标题上会折成两行，
   // 位置让给名字，口径交给副标题
   document.getElementById('shTitle').textContent = name;
@@ -3090,10 +3109,14 @@ function shBindHover(){
 
 /* ---------- 渲染 ---------- */
 function ixBadge(x){
-  if (!x.ix || !(IX_N[x.ix] > 1)) return '';
-  var n = IX_N[x.ix], mx = KEEP[x.ix] === x.c;
-  return '<span class="ixb'+(mx?' mx':'')+'" data-ix="'+x.ix+'" title="跟踪 '+x.ix+' · 同指数 '+n+' 只'
+  if (!x.ix) return '';
+  var n = ixCount(x.ix);
+  if (!(n > 1)) return '';
+  var mx = KEEP[x.ix] === x.c;
+  var gap = (IX_N[x.ix] || 0) - n;
+  return '<span class="ixb'+(mx?' mx':'')+'" data-ix="'+x.ix+'" title="跟踪 '+x.ix+' · 同指数 '+n+' 只有行情'
     + (mx ? '，本只成交额最大' : '，本只成交额不是最大')
+    + (gap > 0 ? '（档案里还有 ' + gap + ' 只，今天没有行情：停牌、未上市或源没给）' : '')
     + '。点击查看该指数全部 '+n+' 只' + '">×'+n+'</span>';
 }
 
@@ -3126,8 +3149,13 @@ function renderCards(){
   var gc = groupCounts();
   var dc = dedupCount();
   document.getElementById('cTotal').textContent = DATA.length || '-';
+  /* 「合并 N 组重复」按**当前快照里真有两只以上**的指数算。
+     以前用 Object.keys(IX_N).length，那是全部 480 个指数（含只有一只的），
+     于是常驻显示「合并 480 组重复」，跟「去重后 412 只」放在一起根本对不上。 */
+  var grp = 0;
+  for (var gk in LIVE_N) if (LIVE_N[gk] > 1) grp++;
   document.getElementById('cUni').textContent = (DATA.length && DEDUP && dc < DATA.length)
-    ? ('去重后 ' + dc + ' 只 · 合并 ' + Object.keys(IX_N).length + ' 组重复')
+    ? ('去重后 ' + dc + ' 只 · 合并 ' + grp + ' 组重复')
     : (DATA.length ? ('宽基'+gc.broad+' 跨境'+gc.cross+' 行业'+gc.industry) : '-');
   var nd = document.getElementById('n-dedup');
   if (nd) nd.textContent = (DATA.length && DEDUP) ? (' ' + dc) : '';
@@ -3915,18 +3943,80 @@ function diagInit(){
   diagSync();
 }
 
+/* ---------------- 点表头排序 ----------------
+   原先只有一个下拉框（成交额/涨幅/换手/溢价），想按「申赎」或「振幅」排根本没有入口，
+   而这些恰恰是看资金流时最常排的两列。现在每一列都能点：
+   第一次点按该列的默认方向（数字降序、文本升序），再点一次翻过来。 */
+
+/** 取排序值。申赎列必须跟单元格同口径：去重行是「同指数合计」，
+    展开或单只行是「本只」，否则点了排序会和眼睛看到的数字对不上。 */
+function sortVal(x, k){
+  if (k === 'c') return x.c;
+  if (k === 'n') return x.n || '';
+  if (k === 'amp') return (x.hi > 0 && x.lo > 0 && x.pc > 0) ? (x.hi - x.lo) / x.pc * 100 : null;
+  if (k === 'sh'){
+    var ix = shIsAgg(x);
+    return ix ? shIxLast(ix) : (SH_F[x.c] == null ? null : SH_F[x.c]);
+  }
+  return x[k];
+}
+
+function sortRows(list){
+  var k = SORT.k, d = SORT.d, txt = (k === 'c' || k === 'n');
+  return list.slice().sort(function(a, b){
+    var va = sortVal(a, k), vb = sortVal(b, k);
+    if (txt) return String(va == null ? '' : va).localeCompare(String(vb == null ? '' : vb), 'zh') * d;
+    /* 空值永远沉底，不随方向翻转：按申赎排序时，一堆「-」浮到最上面
+       等于把有数据的行全挤到屏幕外面。 */
+    var na = (va == null || !isFinite(va)), nb = (vb == null || !isFinite(vb));
+    if (na && nb) return 0;
+    if (na) return 1;
+    if (nb) return -1;
+    return (va - vb) * d;
+  });
+}
+
+function setSort(k){
+  if (!k) return;
+  if (SORT.k === k) SORT.d = -SORT.d;
+  else SORT = { k: k, d: (k === 'c' || k === 'n') ? 1 : -1 };
+  syncSortUi();
+  renderList();
+}
+
+function syncSortUi(){
+  var ths = document.querySelectorAll('th[data-sk]');
+  for (var i = 0; i < ths.length; i++){
+    var t = ths[i], on = t.getAttribute('data-sk') === SORT.k;
+    t.classList.toggle('son', on);
+    t.classList.toggle('asc', on && SORT.d === 1);
+    t.classList.toggle('desc', on && SORT.d === -1);
+  }
+}
+
 function renderList(){
+  syncSortUi();               // 表头箭头跟着 SORT 走，任何一次重绘都对得上
   var arr = DATA;
   if (IXF){
-    // 展开单个指数：显示该指数全部成员，按成交额排序，标出哪只是代表
-    arr = arr.filter(function(x){ return x.ix === IXF; });
-    arr = arr.slice().sort(function(a,b){ return (b.amt||0) - (a.amt||0); });
+    /* 展开单个指数：列出该指数在**当前快照**里的全部成员，标出哪只是代表。
+       计数用 arr.length 而不是 IX_N[IXF]——档案里有、今天没行情的成员
+       （停牌 / 新发未上市 / 已清盘但档案还挂着）本来就画不出行，
+       硬写「共 N 只」只会让人以为表格坏了。差额在后面单独说明。 */
+    var all = arr.filter(function(x){ return x.ix === IXF; });
+    var stat = IX_N[IXF] || all.length;
+    var miss = Math.max(0, stat - all.length);
+    arr = sortRows(all);
     var body0 = document.getElementById('listBody');
     body0.innerHTML = arr.length
-      ? arr.map(function(x){ return '<tr class="hr" data-c="'+x.c+'">'+rowHtml(x, false)+'</tr>'; }).join('')
-      : '<tr><td colspan="12" class="empty">该指数暂无行情</td></tr>';
+      ? arr.map(function(x){
+          return '<tr class="hr' + (KEEP[IXF] === x.c ? ' rep' : '') + '" data-c="'+x.c+'">'
+            + rowHtml(x, false) + '</tr>';
+        }).join('')
+      : '<tr><td colspan="12" class="empty">该指数今天没有一只有行情（停牌或未上市）</td></tr>';
     document.getElementById('listN').textContent =
-      '跟踪「' + IXF + '」的 ' + arr.length + ' 只 · 按成交额排序 · 再点一次标签返回全部';
+      '跟踪「' + IXF + '」的 ' + arr.length + ' 只'
+      + (miss ? '（档案里还有 ' + miss + ' 只今天没有行情：停牌、未上市，或行情源没给全）' : '')
+      + ' · 再点一次标签返回全部';
     stampN('listN', DATA_TS);
     return;
   }
@@ -3944,13 +4034,7 @@ function renderList(){
       return !x.ix || !KEEP[x.ix] || KEEP[x.ix] === x.c;
     });
   }
-  var key = sortKey === 'chgA' ? 'chg' : sortKey;
-  var dir = sortKey === 'chgA' ? 1 : -1;
-  arr = arr.slice().sort(function(a,b){
-    var va = a[key]==null ? -Infinity : a[key];
-    var vb = b[key]==null ? -Infinity : b[key];
-    return (va - vb) * dir;
-  });
+  arr = sortRows(arr);
   var matched = arr.length;
   arr = arr.slice(0, limit);
 
@@ -7972,8 +8056,14 @@ Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
   var b = document.getElementById('btnSec');
   if (b) b.onclick = function(){ SEC_CACHE = {}; renderSectors(); toast('已按最新快照重算板块'); };
 })();
-document.getElementById('sortSel').onchange = function(){ sortKey = this.value; renderList(); };
 document.getElementById('limitSel').onchange = function(){ limit = parseInt(this.value,10); renderList(); };
+/* 表头点击排序。绑在表头上而不是每行：thead 只有一行，重绘时也不会被换掉 */
+(function(){
+  var ths = document.querySelectorAll('th[data-sk]');
+  for (var i = 0; i < ths.length; i++){
+    ths[i].addEventListener('click', function(){ setSort(this.getAttribute('data-sk')); });
+  }
+})();
 (function(){
   var t = document.getElementById('dedupTag');
   if (!t) return;

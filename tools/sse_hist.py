@@ -43,10 +43,13 @@ def fetch_day(day, retries=4):
             req = urllib.request.Request(URL.format(d=day), headers=HDRS)
             raw = urllib.request.urlopen(req, timeout=25).read()
             d = json.loads(raw)
-            if d.get('STAT_DATE') and d['STAT_DATE'] != day:
-                # 回显不是请求日 → 该日尚未发布
-                return None
             res = d.get('result') or []
+            # 日期不在顶层（顶层只有 pageHelp），在 result 每一行上。
+            # 读 d['STAT_DATE'] 永远是 None，这道闸门等于没有：请求还没发布的日期时，
+            # 上交所会把上一日的表原样返回，按请求日写进轴里就是「当天零申赎」。
+            dts = {str(r.get('STAT_DATE') or '')[:10] for r in res} - {''}
+            if dts and (len(dts) > 1 or day not in dts):
+                return None
             if not res:
                 time.sleep(1.5 + k)
                 continue

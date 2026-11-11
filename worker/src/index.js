@@ -90,14 +90,34 @@ async function fetchEM() {
   const pages = Math.min(Math.ceil((first.total || 100) / 100), 24);
   let all = first.diff;
   if (pages > 1) {
+    /* 单页失败以前是 .catch(()=>[]) 静默吞掉：那份快照少 100 只，但条数仍在
+       GOOD_ROWS 之上，于是被当成「完整」端出去——用户看到的就是「同指数写着
+       10 只，点开只有 5 只」。先给每页两次重试，还失败就整份丢弃：
+       半份快照比旧快照更坑，旧快照至少是自洽的。 */
     const rest = await Promise.all(
       Array.from({ length: pages - 1 }, (_, i) =>
-        emPage(i + 2).then((x) => x.diff).catch(() => []))
+        emPageRetry(i + 2).then((x) => x.diff).catch(() => null))
     );
+    const holes = rest.filter((r) => r === null).length;
+    if (holes) throw new Error('EM ' + holes + '/' + pages + ' 页失败，整份丢弃');
     for (const rs of rest) all = all.concat(rs);
   }
   // 透传格式：{src, ts, n, raw}，raw 为东财原始 diff 数组
   return JSON.stringify({ src: 'eastmoney', n: all.length, raw: all });
+}
+
+/** 单页带退避重试。东财限流是「偶发 502/空响应」，原地重试一次多半就回来了 */
+async function emPageRetry(pn) {
+  let last;
+  for (let k = 0; k < 3; k++) {
+    try {
+      return await emPage(pn);
+    } catch (e) {
+      last = e;
+      if (k < 2) await new Promise((r) => setTimeout(r, 150 + k * 350));
+    }
+  }
+  throw last;
 }
 
 // ---------------------------------------------------------------- 新浪全量
@@ -145,6 +165,13 @@ async function mapLimit(items, limit, fn) {
 async function fetchSina() {
   const pages = Array.from({ length: SINA_PAGES }, (_, i) => i + 1);
   const parts = await mapLimit(pages, SINA_CONC, sinaPage);
+  /* 末尾的空页是正常的（页数给多了），**中间**的空页说明那 100 只没拿到。
+     以前这种空洞被静默接受，快照条数只掉 100、仍过 GOOD_ROWS 闸门，
+     页面就少了一百只而且看不出来。有洞就整份丢弃，让上层用旧快照。 */
+  let last = -1;
+  for (let i = 0; i < parts.length; i++) if (parts[i]) last = i;
+  const holes = parts.slice(0, Math.max(last, 0)).filter((t) => !t).length;
+  if (holes) throw new Error('SINA ' + holes + ' 页空洞，整份丢弃');
   const inner = parts.filter(Boolean).join(',');
   if (!inner) throw new Error('SINA empty');
   // 关键：不做 JSON.parse，直接拼成 {src,...,raw:[...]} 的文本
