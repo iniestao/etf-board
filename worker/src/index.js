@@ -855,7 +855,11 @@ async function serveOvernight() {
   const asiaP = emRetry(fetchAsia).catch(() => []);   // 亚太失败同样只缺一行
 
   const [us, fut, asia] = await Promise.all([usP, futP, asiaP]);
-  return json({ ok: true, us, fut, asia, ts: Date.now() }, 600);
+  /* 55 秒，不是 600。原先按「美股收盘后一整天都不动」设的 10 分钟，可亚太那张卡
+     和它共用这份响应：日经、KOSPI、恒生在盘中每分钟都在动，10 分钟才换一次，
+     跟旁边 60 秒一刷的板块地图差着两个数量级，看着就像卡死了。
+     55 秒和全站其余接口同一档（比前端的 60 秒轮询短 5 秒，保证每轮都命中新的）。 */
+  return json({ ok: true, us, fut, asia, ts: Date.now() }, 55);
 }
 
 /* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
@@ -909,6 +913,52 @@ async function serveOvMin(sid, env, ctx) {
   const d = j.data || {};
   const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
   const res = json({ ok: true, sid, pre, pts, ts: Date.now() }, 120);
+  if (cache) {
+    try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
+  }
+  return res;
+}
+
+/* 隔夜/亚太条目的 K 线：同一个 secid，换成东财的日线接口。
+   分时回答「今天怎么走」，K 线回答「现在这个位置算高还是低」——
+   隔夜卡上那几个指数（纳指、金价、A50）价格在什么区间里，光看一根分时看不出来。
+   前复权（fqt=1）：指数无所谓，但期货连续合约换月会跳空，不复权就是一根假缺口。
+   缓存 5 分钟：日线一天只变一次，点开时才请求，不值得为它做秒级。 */
+async function serveOvK(sid, n, env, ctx) {
+  const cache = await getCache();
+  const lim = Math.max(30, Math.min(300, n | 0));
+  const key = new Request('https://etf.internal/ovk/v1/' + sid + '/' + lim, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 降级直连 */ }
+  }
+  let j;
+  try {
+    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get'
+      + '?secid=' + sid + '&klt=101&fqt=1&lmt=' + lim
+      + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6'
+      + '&fields2=f51,f52,f53,f54,f55,f56,f57', {
+      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+      signal: AbortSignal.timeout(8000),
+    }).then((r) => {
+      if (!r.ok) throw new Error('K 线上游 HTTP ' + r.status);
+      return r.json();
+    }));
+  } catch (e) {
+    return json({ ok: false, error: 'K 线上游取不到：' + String((e && e.message) || e) });
+  }
+  const ks = j && j.data && j.data.klines;
+  if (!ks || !ks.length) return json({ ok: false, error: '没有 K 线数据' });
+  /* 字段顺序：日期,开,收,高,低,量,额。这里重排成 o/h/l/c 的顺序，
+     前端画蜡烛不用再记一遍源头的列序（记错了就是高低画反，肉眼极难发现）。 */
+  const bars = ks.map((s) => {
+    const a = s.split(',');
+    return [a[0], +a[1], +a[3], +a[4], +a[2], +a[5]];
+  }).filter((b) => b[1] > 0 && b[4] > 0);
+  if (!bars.length) return json({ ok: false, error: 'K 线解析为空' });
+  const res = json({ ok: true, sid, bars, ts: Date.now() }, 300);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
@@ -3933,6 +3983,13 @@ export default {
       const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
       if (!isOvSid(sid)) return json({ ok: false, error: 'sid 非法' });
       return serveOvMin(sid, env, ctx);
+    }
+
+    if (p === '/api/ovk') {
+      // 同一个条目切到日线看位置（东财 kline 代理，同一份 secid 白名单）
+      const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
+      if (!isOvSid(sid)) return json({ ok: false, error: 'sid 非法' });
+      return serveOvK(sid, +url.searchParams.get('n') || 120, env, ctx);
     }
 
     if (p === '/api/mkt') {

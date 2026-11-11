@@ -794,6 +794,13 @@ margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
 #ovBody .ovretry{margin-top:2px;font-size:11.5px;padding:3px 11px;border:1px solid var(--line);
 border-radius:6px;background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:inherit}
 #ovBody .ovretry:hover{border-color:var(--txt3);color:var(--txt)}
+.ovma i{display:inline-block;width:8px;height:2px;border-radius:1px;margin-right:4px;
+vertical-align:middle;position:relative;top:-1px}
+/* 分时 / K 线 切换。和别处的 .mtabs 同一套手感，但这里塞在标题栏右边，
+   所以不占一整行、也不带下边框 */
+.ovtabs{display:inline-flex;gap:2px;margin-left:auto;padding:1px;border:1px solid var(--line);border-radius:6px}
+.ovtab{font-size:11.5px;line-height:16px;padding:2px 9px;border-radius:5px;cursor:pointer;color:var(--txt3);user-select:none}
+.ovtab.on{background:var(--line);color:var(--txt)}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 8px 28px rgba(23,32,54,.16);overflow:hidden}
@@ -1338,7 +1345,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <div id="ovMask">
   <div class="iobox" style="max-width:760px">
     <div class="iohd"><b id="ovTitle">分时</b><span class="n" id="ovSub" style="font-size:11.5px;color:var(--txt3)"></span>
-      <button class="hx" id="ovClose" title="关闭 (Esc)" style="margin-left:auto">×</button></div>
+      <span class="ovtabs" id="ovTabs"><span class="ovtab on" data-ovt="min">分时</span><span class="ovtab" data-ovt="k">K 线</span></span>
+      <button class="hx" id="ovClose" title="关闭 (Esc)">×</button></div>
     <div class="iobody" id="ovBody"><div class="iotip">读取中…</div></div>
   </div>
 </div>
@@ -6716,29 +6724,51 @@ function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
 
 /** 可点分时的条目：名字 + 涨跌 + data-ovsid */
 function ovChip(n, chg, sid){
-  return '<span class="ovclk" data-ovsid="' + sid + '" data-ovnm="' + esc(n) + '" title="点看分时">'
+  return '<span class="ovclk" data-ovsid="' + sid + '" data-ovnm="' + esc(n) + '" title="点看分时 / 日线">'
     + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
 }
 
 /* 分时弹窗：东财 trends2 最近一个完整时段。美股/期货拿到的是昨晚那场，
    亚太是今天。图上有两套纵轴：左边涨跌幅（0 轴＝昨收，虚线），右边价格。
    只标价格的话，「涨了 2.1%」在图上占多少、是急拉还是缓抬，全得自己心算。 */
+/* 弹窗状态：看的是谁、哪一档。切 tab 不重新 open，只换数据源，
+   这样标题和滚动位置都稳。 */
+var OV = null;
+
 function ovOpen(sid, nm){
-  var mask = document.getElementById('ovMask');
+  OV = { sid: sid, nm: nm, mode: 'min' };
+  document.getElementById('ovMask').classList.add('on');
+  ovLoad();
+}
+
+/* 分时和 K 线共用一个弹窗。切档时旧请求可能后到，用 sid + mode 双重比对丢弃，
+   否则「先点 K 线再点分时」，晚到的 K 线会把分时图盖掉。 */
+function ovLoad(){
+  if (!OV) return;
+  var sid = OV.sid, nm = OV.nm, mode = OV.mode;
   var body = document.getElementById('ovBody');
-  document.getElementById('ovTitle').textContent = nm + ' 分时';
-  document.getElementById('ovSub').textContent = sid;
+  document.getElementById('ovTitle').textContent = nm;
+  document.getElementById('ovSub').textContent = sid + (mode === 'k' ? ' · 日线' : '');
+  var els = document.getElementById('ovTabs').getElementsByClassName('ovtab');
+  for (var i=0;i<els.length;i++){
+    els[i].className = 'ovtab' + (els[i].getAttribute('data-ovt') === mode ? ' on' : '');
+  }
   body.innerHTML = '<div class="iotip">读取中…</div>';
-  mask.classList.add('on');
-  fetch('/api/ovmin?sid=' + encodeURIComponent(sid)).then(function(r){ return r.json(); })
+  var url = mode === 'k'
+    ? '/api/ovk?sid=' + encodeURIComponent(sid) + '&n=160'
+    : '/api/ovmin?sid=' + encodeURIComponent(sid);
+  fetch(url).then(function(r){ return r.json(); })
     .then(function(j){
+      if (!OV || OV.sid !== sid || OV.mode !== mode) return;
       if (!j.ok) throw new Error(j.error || '无数据');
-      body.innerHTML = ovChartSvg(j.pts, j.pre);
+      body.innerHTML = mode === 'k' ? ovKlineHtml(j.bars) : ovChartSvg(j.pts, j.pre);
     })
     .catch(function(e){
+      if (!OV || OV.sid !== sid || OV.mode !== mode) return;
       /* 上游偶发空回，给一个能点的重试（按钮带 data-ovsid，走的是同一个
          点击委托，等于把这次打开重做一遍） */
-      body.innerHTML = '<div class="iotip">分时读取失败：' + esc(e.message || e) + '</div>'
+      body.innerHTML = '<div class="iotip">' + (mode === 'k' ? 'K 线' : '分时')
+        + '读取失败：' + esc(e.message || e) + '</div>'
         + '<button class="ovretry" data-ovsid="' + esc(sid) + '" data-ovnm="' + esc(nm) + '">重试</button>';
     });
 }
@@ -6838,6 +6868,139 @@ function ovChartSvg(pts, pre){
     + '<span>基准（0 轴）＝' + (usePre ? '昨收 ' : '开盘 ') + fmt(base) + '</span>'
     + '<span>' + s.length + ' 个点 · ' + (s.length >= pts.length ? '' : '按 ' + step + ' 抽 1 显示') + '</span></div>';
   return h;
+}
+
+/* ---------------- 日线蜡烛 ----------------
+   隔夜卡上的纳指、金价、A50 原来只能点开一根分时，看得见「今天怎么走」，
+   看不见「现在这个位置算高还是低」。这里补一张日线：160 根，够覆盖大半年的形态。
+
+   蜡烛有两个必须留神的坑：
+   - 开盘=收盘时矩形高度是 0，屏幕上直接消失，得 Math.max(1, …) 保底；
+   - 影线必须画在实体之前，否则半根影线被实体盖住，看着像缺口。 */
+function ovMA(bars, k){
+  var out = [], sum = 0, i;
+  for (i=0;i<bars.length;i++){
+    sum += bars[i][4];
+    if (i >= k) sum -= bars[i-k][4];
+    out.push(i >= k-1 ? sum / k : null);
+  }
+  return out;
+}
+
+function ovPx(v){
+  if (!isFinite(v)) return '-';
+  return v >= 1000 ? v.toFixed(0) : v >= 10 ? v.toFixed(2) : v >= 1 ? v.toFixed(3) : v.toFixed(4);
+}
+
+function ovKlineHtml(bars){
+  if (!bars || bars.length < 5) return '<div class="iotip">K 线太短，画不出来</div>';
+  var n = bars.length, first = bars[0][4], last = bars[n-1][4];
+  var hi = -Infinity, lo = Infinity, i;
+  for (i=0;i<n;i++){ if (bars[i][2] > hi) hi = bars[i][2]; if (bars[i][3] < lo) lo = bars[i][3]; }
+  var chg = (last / first - 1) * 100;
+  return ovKlineSvg(bars)
+    + '<div class="ovmeta">'
+    + '<span>' + n + ' 个交易日 <b class="' + (chg > 0 ? 'up' : chg < 0 ? 'down' : '') + '">'
+    + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</b></span>'
+    + '<span>区间 ' + ovPx(lo) + ' ~ ' + ovPx(hi) + '</span>'
+    + '<span>最新 ' + ovPx(last) + '</span>'
+    + '<span class="ovma"><i style="background:#e08b2e"></i>MA10'
+    + '<i style="background:#4a86c8;margin-left:8px"></i>MA30</span>'
+    + '</div>';
+}
+
+function ovKlineSvg(bars){
+  var vw = Math.max(320, Math.min(720, (window.innerWidth || 900) - 76));
+  var W = vw, H = vw < 480 ? 238 : 276;
+  // 只留右轴价格：蜡烛的高低本身就在表达涨跌，左边不必再给一列百分比
+  var ml = 6, mr = vw < 480 ? 46 : 52, mt = 10, mb = 16;
+  var plotW = W - ml - mr, plotH = H - mt - mb;
+  var volH = Math.round(plotH * 0.22), gap = 6;
+  var pH = plotH - volH - gap;
+  var n = bars.length, i;
+
+  var mn = Infinity, mx = -Infinity;
+  for (i=0;i<n;i++){
+    if (bars[i][3] < mn) mn = bars[i][3];
+    if (bars[i][2] > mx) mx = bars[i][2];
+  }
+  var maA = ovMA(bars, 10), maB = ovMA(bars, 30);
+  for (i=0;i<n;i++){
+    if (maA[i] != null){ if (maA[i] < mn) mn = maA[i]; if (maA[i] > mx) mx = maA[i]; }
+    if (maB[i] != null){ if (maB[i] < mn) mn = maB[i]; if (maB[i] > mx) mx = maB[i]; }
+  }
+  var pad = (mx - mn) * 0.06 || Math.abs(mx) * 0.01 || 1;
+  mn -= pad; mx += pad;
+
+  var vmax = 0;
+  for (i=0;i<n;i++) if (bars[i][5] > vmax) vmax = bars[i][5];
+
+  var xOf = function(k){ return ml + (k + 0.5) / n * plotW; };
+  var yOf = function(v){ return mt + (1 - (v - mn) / (mx - mn)) * pH; };
+  var bw = Math.max(1, plotW / n * 0.62);
+
+  var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg" '
+    + 'font-family="inherit" preserveAspectRatio="xMidYMid meet">';
+
+  // 横向网格 + 右轴价格。4 档就够，5 档在 380px 宽的图里会挤成一片
+  for (i=0;i<=4;i++){
+    var gv = mn + (mx - mn) * i / 4, gy = yOf(gv);
+    s += '<line x1="' + ml + '" y1="' + gy.toFixed(1) + '" x2="' + (ml + plotW)
+      + '" y2="' + gy.toFixed(1) + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 3"/>';
+    s += '<text x="' + (ml + plotW + 5) + '" y="' + (gy + 3).toFixed(1)
+      + '" font-size="9.5" fill="var(--txt3)">' + ovPx(gv) + '</text>';
+  }
+
+  // 成交量：压在价格区下面，颜色跟蜡烛一致但更淡，不抢注意力
+  var vTop = mt + pH + gap;
+  for (i=0;i<n;i++){
+    var vv = vmax > 0 ? bars[i][5] / vmax : 0;
+    var vhh = Math.max(1, vv * volH);
+    var vcol = bars[i][4] >= bars[i][1] ? 'var(--up)' : 'var(--down)';
+    s += '<rect x="' + (xOf(i) - bw / 2).toFixed(1) + '" y="' + (vTop + volH - vhh).toFixed(1)
+      + '" width="' + bw.toFixed(1) + '" height="' + vhh.toFixed(1) + '" fill="' + vcol + '" opacity=".45"/>';
+  }
+
+  // 蜡烛：影线在前、实体在后。实体高度 0 时给 1px，否则平盘那根会凭空消失
+  for (i=0;i<n;i++){
+    var b = bars[i], o = b[1], h1 = b[2], l1 = b[3], c = b[4];
+    var col = c >= o ? 'var(--up)' : 'var(--down)';
+    var x = xOf(i);
+    s += '<line x1="' + x.toFixed(1) + '" y1="' + yOf(h1).toFixed(1) + '" x2="' + x.toFixed(1)
+      + '" y2="' + yOf(l1).toFixed(1) + '" stroke="' + col + '" stroke-width="1"/>';
+    var yT = yOf(Math.max(o, c)), yB = yOf(Math.min(o, c));
+    s += '<rect x="' + (x - bw / 2).toFixed(1) + '" y="' + yT.toFixed(1)
+      + '" width="' + bw.toFixed(1) + '" height="' + Math.max(1, yB - yT).toFixed(1)
+      + '" fill="' + col + '"/>';
+  }
+
+  /* 均线：MA10 跟得紧、MA30 看得远，两条足够判断「站上还是跌破」。
+     不用 MA5——它贴收盘价太近，在 1px 宽的蜡烛堆里完全分辨不出来，
+     画了等于没画（第一版就是这样，两条线看着只有一条）。 */
+  var mkMa = function(arr, col2){
+    var d = '', started = false;
+    for (var j=0;j<n;j++){
+      if (arr[j] == null) continue;
+      d += (started ? 'L' : 'M') + xOf(j).toFixed(1) + ' ' + yOf(arr[j]).toFixed(1);
+      started = true;
+    }
+    return d ? '<path d="' + d + '" fill="none" stroke="' + col2 + '" stroke-width="1.5" opacity=".92"/>' : '';
+  };
+  // 颜色写死，不走 CSS 变量：SVG 的 presentation attribute 里 var() 一旦解析不出来
+  // 就整条线退化成本色，在密集蜡烛上等于隐形，排查时极难看出是「没画」还是「看不见」
+  s += mkMa(maA, '#e08b2e');
+  s += mkMa(maB, '#4a86c8');
+
+  // 日期：4 个刻度，按 (n-1)/3 等分，最后一个是真末尾而不是半截
+  var step = Math.max(1, Math.round((n - 1) / 3));
+  for (i=0;i<n;i+=step){
+    var ds = String(bars[i][0] || '').slice(5);
+    var tx = Math.min(Math.max(xOf(i), ml + 12), ml + plotW - 12);
+    s += '<text x="' + tx.toFixed(1) + '" y="' + (H - 4) + '" font-size="9.5" fill="var(--txt3)" '
+      + 'text-anchor="middle">' + esc(ds) + '</text>';
+  }
+  s += '</svg>';
+  return s;
 }
 
 function loadOvernight(){
@@ -6960,7 +7123,7 @@ function renderOvernight(){
       q = ON.asia[i];
       ap += ovChip(q.n, q.chg, q.sid);
     }
-    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">今日实时 · 点看分时</span></div>'
+    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">今日实时 · 点看分时 / 日线</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
     stampN('asN', ON.ts);
@@ -6970,6 +7133,8 @@ function renderOvernight(){
 }
 
 document.addEventListener('click', function(e){
+  var ovt = e.target && e.target.closest ? e.target.closest('[data-ovt]') : null;
+  if (ovt && OV){ OV.mode = ovt.getAttribute('data-ovt'); ovLoad(); return; }
   var ov = e.target && e.target.closest ? e.target.closest('[data-ovsid]') : null;
   if (ov){
     ovOpen(ov.getAttribute('data-ovsid'), ov.getAttribute('data-ovnm') || ov.getAttribute('data-ovsid'));
@@ -8173,7 +8338,11 @@ clock(); setInterval(clock, 1000);
 
 renderTrigCount();
 loadOvernight();
-setInterval(loadOvernight, 600000);   // 期货整夜在动，10 分钟跟一次够了
+/* 60 秒，和板块地图、自选、衍生品同一档。原来这里是 10 分钟，本意是「美股收盘后
+   一整天都不动」，可亚太那张卡跟它共用这份响应：日经、KOSPI、恒生在盘中每分钟
+   都在跳，10 分钟才换一次，看着就是卡死了。后台标签页跳过，切回来立刻补一次。 */
+setInterval(function(){ if (!document.hidden) loadOvernight(); }, 60000);
+document.addEventListener('visibilitychange', function(){ if (!document.hidden) loadOvernight(); });
 
 /* /research 走独立页面：同一个 HTML，只是把因子面板提到文档流里。
    URL 直接可分享，也不占一个弹窗的注意力。 */
