@@ -812,6 +812,7 @@ vertical-align:middle;position:relative;top:-1px}
 
 /* 份额（净申赎）列。数字等宽，正负一眼扫得出来；上标「合」表示这一行是
    同指数多只的合计——不加标记的话，去重行和展开行长得一样，很容易看错。 */
+.shd{display:block;font-size:9px;line-height:11px;color:var(--txt3);font-weight:400}
 .shcell{font-variant-numeric:tabular-nums;cursor:pointer;white-space:nowrap}
 .shcell:hover{text-decoration:underline;text-underline-offset:2px}
 .shcell .shagg{display:inline-block;margin-left:3px;padding:0 2px;font-size:9px;line-height:11px;
@@ -1280,7 +1281,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <thead><tr>
       <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th>
       <th class="ctr">溢价率</th><th>成交额</th>
-      <th class="ctr" title="当日净申购金额（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。红=净申购，绿=净赎回。同指数去重时显示该指数全部成员的合计（数字后带「合」），点开看最近 250 个交易日的每日柱状图">申赎</th><th>换手</th>
+      <th class="ctr" data-shd title="当日净申购金额（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。红=净申购，绿=净赎回。同指数去重时显示该指数全部成员的合计（数字后带「合」），点开看最近 250 个交易日的每日柱状图">申赎</th><th>换手</th>
       <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
       <th class="ctr" style="width:36px"></th>
     </tr></thead>
@@ -2790,6 +2791,7 @@ function loadShares(){
   }).then(function(k){
     if (k && k.ok) SH_IX = k.ix || {};
     SH_ST = 2;
+    shStampHead();
     shRepaint();
   }).catch(function(){
     SH_ST = -1;
@@ -2834,6 +2836,14 @@ function shCell(x){
   return '<td class="ctr shcell ' + cls + '" data-sh="' + (ix || x.c) + '"'
     + (ix ? ' data-agg="1"' : '') + ' title="' + tip + '">'
     + shNum(v) + (ix ? '<i class="shagg">合</i>' : '') + '</td>';
+}
+
+/* 表头标一次「截至 MM-DD」：份额是 T 日盘后披露的，盘中看到的是前一日。
+   不标出来，这一列会被当成「今天的申赎」，而它其实是昨天的。 */
+function shStampHead(){
+  var th = document.querySelector('#rankSec th[data-shd]');
+  if (!th || !SH_D) return;
+  th.innerHTML = '申赎<i class="shd">' + esc(SH_D.slice(5)) + '</i>';
 }
 
 /* 数据到了只改单元格，不重绘整张表：清单 60 秒自己会刷一次，这里再来一次
