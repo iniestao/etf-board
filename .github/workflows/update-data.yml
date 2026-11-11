@@ -44,7 +44,9 @@ jobs:
 
   build:
     needs: [probe]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule != '0 13 * * 1-5' || needs.probe.outputs.need == 'true') }}
+    # probe 自己挂掉时 outputs 是空的，若只看 need=='true' 就会静默跳过、白丢一天。
+    # 所以再加一条：probe 没成功也照跑（跑一次的成本远低于缺一天）。
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule != '0 13 * * 1-5' || needs.probe.outputs.need == 'true' || needs.probe.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 

@@ -183,8 +183,10 @@ if (stats.gap) log(`  ! ${stats.gap} 只库内最新不是上一交易日（有�
 const covered = snap.size ? (filled / snap.size * 100).toFixed(1) : '0';
 log(`  覆盖 ${filled}/${snap.size} = ${covered}%（东财不含货币/债券 ETF，余下的等新浪）`);
 
-if (!DRY && filled === 0) {
-  log('\n[警告] 一只都没补上：要么源没更新，要么校验全被拦');
+// 补 0 只有两种可能：本来就有当天（兜底批次重跑，正常），或者源没更新（异常）。
+// 不区分的话，每天第二批都会报一条假警。
+if (!DRY && filled === 0 && stats.has === 0) {
+  log('\n[警告] 一只都没补上，且库里也没有当天数据：源没更新或校验全被拦');
   process.exitCode = 1;
 }
 
