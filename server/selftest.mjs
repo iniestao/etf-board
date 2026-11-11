@@ -445,6 +445,49 @@ async function runContracts(base, pass) {
   r = await rawRequest(base, '/api/ovmin?sid=1.600519', { cookie });
   if (r.status === 200 && r.json().ok) bad('/api/ovmin 白名单失效：A 股个股 secid 竟然放行了');
 
+  /* 赛道成分股（美股个股）能不能点开，取决于两件事同时成立：
+     ① 前端 ON_USID 把每只代码映射成了东财 secid（猜错前缀 = 上游 200 空体）；
+     ② 后端白名单放行 105/106 这两个市场号。
+     先做静态核对——45 只逐个打靶成本太高（且上游偶发 RST），映射表本身
+     是探测出来的，用静态断言保证「新加标的没忘配 secid」就够了。 */
+  {
+    const pg = fs.readFileSync(path.join(SRC, 'page.js'), 'utf8');
+    const m = pg.match(/var ON_TRACKS = \[([\s\S]*?)\n\];/);
+    const u = pg.match(/var ON_USID = \{([\s\S]*?)\n\};/);
+    if (!m || !u) bad('page.js 里找不到 ON_TRACKS 或 ON_USID，赛道成分股可能整块失效');
+    else {
+      const tracks = new Set();
+      for (const g of m[1].matchAll(/us:\[([^\]]*)\]/g)) {
+        for (const s of g[1].matchAll(/'([A-Z]{1,5})'/g)) tracks.add(s[1]);
+      }
+      const ids = {};
+      for (const g of u[1].matchAll(/([A-Z]{1,5})\s*:\s*'(\d{3}\.[A-Z.]{1,8})'/g)) ids[g[1]] = g[2];
+      const miss = [...tracks].filter((s) => !ids[s]);
+      const wrongPfx = Object.entries(ids).filter(([, v]) => !/^(105|106|107)\./.test(v));
+      ok('赛道成分股 ' + tracks.size + ' 只，已配 secid ' + Object.keys(ids).length + ' 只');
+      if (miss.length) bad('这些赛道成分股没有 secid，点了会「读取失败」：' + miss.join(' '));
+      if (wrongPfx.length) bad('secid 前缀不是美股市场号：' + wrongPfx.map((x) => x[0] + '=' + x[1]).join(' '));
+    }
+  }
+  // 接口正例：挑一只 105、一只 106（市场号不同，别只测一边）
+  for (const [sid, nm] of [['105.NVDA', '英伟达'], ['106.TSM', '台积电']]) {
+    r = await rawRequest(base, '/api/ovmin?sid=' + sid, { cookie });
+    const m1 = r.json();
+    if (m1 && m1.ok) ok('/api/ovmin ' + nm + ' 分时 ' + (m1.pts || []).length + ' 点 · 昨收 ' + m1.pre);
+    else { bad('/api/ovmin ' + nm + ' 失败：' + r.text.slice(0, 140)); continue; }
+    if (!(m1.pre > 0)) bad('/api/ovmin ' + nm + ' 没带 pre');
+    r = await rawRequest(base, '/api/ovk?sid=' + sid + '&n=160', { cookie });
+    const k1 = r.json();
+    if (k1 && k1.ok) {
+      const bs = k1.bars || [];
+      ok('/api/ovk ' + nm + ' 日线 ' + bs.length + ' 根 · ' + (bs[0] || [''])[0] + ' → ' + (bs[bs.length - 1] || [''])[0]);
+      if (bs.length < 60) bad('/api/ovk ' + nm + ' 日线太短（' + bs.length + '）');
+      // 美股最后一根必须是「最近一个已收盘交易日」，不能是空的或未来
+      const lastD = (bs[bs.length - 1] || [''])[0];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(lastD)) bad('/api/ovk ' + nm + ' 末根日期格式不对：' + lastD);
+    } else bad('/api/ovk ' + nm + ' 失败：' + r.text.slice(0, 140));
+  }
+
   // 期指基差：口径对不对，只能靠恒等式核对——基差 = 期货 − 现货，年化 = 基差率×365/天数
   r = await rawRequest(base, '/api/fut', { cookie });
   const fu = r.json();

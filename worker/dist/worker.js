@@ -866,8 +866,13 @@ async function serveOvernight() {
    半场）。secid 白名单限定全球/港股指数 + A 股指数 + 外盘期货市场号，
    不给任意转发。 */
 /* A 股指数精确白名单：只放行亚太行用到的几个（直接对齐 ON_ASIA_SECIDS，
-   防止 6 位数字规则把个股也放进来——个股走 K 线面板，不给任意转发）。 */
-const OV_SID_RE = /^(100|101|102|103|104|124)\.[A-Za-z0-9]{1,12}$/;
+   防止 6 位数字规则把个股也放进来——个股走 K 线面板，不给任意转发）。
+   105/106/107 是美股三个市场号：105=NASDAQ、106=NYSE、107=AMEX。隔夜卡的
+   赛道成分股（英伟达、台积电这些）点开看分时/日线走的是这一档，前缀本身就是
+   白名单粒度——和上面 100~104 放行「任一代码」是同一个口径，域固定为东财
+   行情接口，不存在任意转发。市场号不能靠规则猜：45 只实测 25 只在 105、
+   20 只在 106，同名代码换个前缀就查不到，所以前端带的是逐只探测过的全码。 */
+const OV_SID_RE = /^(100|101|102|103|104|105|106|107|124)\.[A-Za-z0-9]{1,12}$/;
 function isOvSid(sid) {
   return OV_SID_RE.test(sid) || ON_ASIA_SECIDS.some((x) => x[0] === sid);
 }
@@ -4853,6 +4858,10 @@ align-items:center;justify-content:center;padding:18px}
 /* 隔夜/亚太条目点击看分时：可点的条目加指针和悬停反馈 */
 .onfut span.ovclk{cursor:pointer}
 .onfut span.ovclk:hover,.ontrk:hover{border-color:var(--txt3)}
+/* 赛道展开里的成分股同样是可点条目，但它外面是 .ous（一行挤 5~6 只），
+   不给边框、只用虚下划线提示可点——加了边框会把这行撑成两行。 */
+.ondet .ous span.ovclk{cursor:pointer;border-bottom:1px dotted transparent}
+.ondet .ous span.ovclk:hover{border-bottom-color:var(--txt3)}
 #ovMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
 #ovMask.on{display:flex}
@@ -10755,6 +10764,28 @@ var ON_SEL = null;           // 展开详情的赛道 key
 var ON_FOLD = false;
 try { ON_FOLD = localStorage.getItem('etf_onfold') === '1'; } catch(e){}
 
+/* 赛道成分股 → 东财 secid。quote 用腾讯（卡片上的价、涨跌幅来自那边），
+   点开看分时/日线是东财，两边代码体系不同：东财美股要带市场号，105=NASDAQ、
+   106=NYSE，而且**不能靠规则猜**——同一批 45 只里 25 只挂在 105、20 只在 106，
+   猜错了接口返回空壳（HTTP 200 空体），弹窗只会显示「读取失败」。
+   这张表是逐只用 push2delay 的 ulist 打靶打出来的，45 只全命中，名字也对得上
+   （英伟达/台积电/阿斯麦…）。新加标的必须同样探一遍再写进来。 */
+var ON_USID = {
+  NVDA:'105.NVDA', AMD:'105.AMD', AVGO:'105.AVGO', TSM:'106.TSM', MRVL:'105.MRVL',
+  AMAT:'105.AMAT', LRCX:'105.LRCX', KLAC:'105.KLAC', ASML:'105.ASML',
+  ANET:'106.ANET', COHR:'106.COHR', CIEN:'106.CIEN', LITE:'105.LITE', FN:'106.FN',
+  MSFT:'105.MSFT', GOOG:'105.GOOG', AMZN:'105.AMZN', META:'105.META',
+  ORCL:'106.ORCL', SNOW:'106.SNOW', ADBE:'105.ADBE', CRM:'106.CRM', NOW:'106.NOW',
+  PLTR:'105.PLTR', APP:'105.APP',
+  VST:'106.VST', CEG:'105.CEG', TLN:'105.TLN', NRG:'106.NRG', GEV:'106.GEV',
+  AAPL:'105.AAPL', DELL:'106.DELL', SMCI:'105.SMCI', TSLA:'105.TSLA', UBER:'106.UBER',
+  BABA:'106.BABA', JD:'105.JD', PDD:'105.PDD', BIDU:'105.BIDU', NTES:'105.NTES',
+  LLY:'106.LLY', MRK:'106.MRK', AZN:'106.AZN', NVO:'106.NVO', PFE:'106.PFE'
+};
+/* 美股 secid 前缀：弹窗里要把「北京时间」标出来，否则横轴 22:30 会被当成
+   早上开盘——东财给美股分时打的是北京时间标签（冬令时 22:30~05:00）。 */
+function isUsSid(sid){ return /^(105|106|107)\\./.test(sid || ''); }
+
 var ON_TRACKS = [
   { k:'chip',  n:'算力芯片',    us:['NVDA','AMD','AVGO','TSM','MRVL'],
     ix:['中证全指半导体产品与设备','国证半导体芯片','中证芯片产业','中华交易服务半导体芯片行业'] },
@@ -10816,7 +10847,10 @@ function ovLoad(){
   var sid = OV.sid, nm = OV.nm, mode = OV.mode;
   var body = document.getElementById('ovBody');
   document.getElementById('ovTitle').textContent = nm;
-  document.getElementById('ovSub').textContent = sid + (mode === 'k' ? ' · 日线' : '');
+  /* 副标题里标时区。东财给美股分时打的是北京时间标签（22:30~05:00，冬令时），
+     不标的话横轴那个 22:30 会被读成「早上开盘」，图上形状全对、时间全错。 */
+  document.getElementById('ovSub').textContent = sid
+    + (mode === 'k' ? ' · 日线' : (isUsSid(sid) ? ' · 分时（北京时间）' : ''));
   var els = document.getElementById('ovTabs').getElementsByClassName('ovtab');
   for (var i=0;i<els.length;i++){
     els[i].className = 'ovtab' + (els[i].getAttribute('data-ovt') === mode ? ' on' : '');
@@ -11160,7 +11194,14 @@ function renderOvernight(){
       det += '<div class="ondet"><div class="ot">隔夜成分</div><div class="ous">';
       for (var j=0;j<t2.us.length;j++){
         var qq = ON.us['us' + t2.us[j].toLowerCase()];
-        if (qq) det += '<span>' + esc(qq.n) + ' <b class="' + onCls(qq.chg) + '">' + onTxt(qq.chg) + '</b></span>';
+        if (!qq) continue;
+        /* 成分股也能点开：卡片上只有一个均涨跌（赛道内 5 只美股的平均），
+           看不出是哪只拖的。点开看它自己的分时/日线，比看平均值有用。
+           没有 secid 的（新加的标的还没探过）降级成纯文本，不挡住别的内容。 */
+        var usid = ON_USID[t2.us[j]];
+        det += usid
+          ? ovChip(qq.n, qq.chg, usid)
+          : '<span>' + esc(qq.n) + ' <b class="' + onCls(qq.chg) + '">' + onTxt(qq.chg) + '</b></span>';
       }
       det += '</div><div class="ot">映射到 A 股（自选优先' + (isOpen() ? '' : ' · 非交易时段显示昨收') + '）</div><div class="oetfs">';
       var ets = onEtfs(t2);
