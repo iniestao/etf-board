@@ -2520,7 +2520,7 @@ function secHealth(){
   if (!m || gM > 3 || MKT_HIST.d.length < 200){
     worse(gM > 6 || !m ? 'bad' : 'warn');
     msgs.push('全 A 散点历史停在 ' + (m ? m.slice(5) : '—') + (m ? '（' + gM + ' 天前）' : '')
-      + '，Actions 可能没跑');
+      + '，Actions 没跑或没把快照回写进 Worker');
   }
   var sd = SEC_BASE && SEC_BASE.length ? SEC_BASE[SEC_BASE.length - 1].d : null;
   if (sd){
@@ -2556,7 +2556,8 @@ function secMetaToggle(){
         + ' 天 · 最新 ' + (m ? m.slice(5) : '—'))
     + it(sd && gS <= 3, '板块日档', (SEC_BASE ? SEC_BASE.length : 0)
         + ' 天 · 最新 ' + (sd ? sd.slice(5) : '—'))
-    + '<span class="note">两份历史由 Actions 每天收盘后回算；停更＝管道挂了，页面数字不会自己动</span>'
+    + '<span class="note">两份历史由 Actions 每天收盘后回算并回写 Worker（构建时内联），'
+      + '停更＝管道挂了，页面数字不会自己动</span>'
     + (secHealth().msgs.length ? '<span class="warnmsg">⚠ ' + secHealth().msgs.join('；') + '</span>' : '');
 }
 

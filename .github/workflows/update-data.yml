@@ -151,7 +151,12 @@ jobs:
       - name: 回算板块日档与全 A 结构
         continue-on-error: true
         run: |
-          node pipeline/gen_sec_hist.mjs --json-only || echo "::warning::日档回算失败，沿用上一次发布的那份"
+          # 以前这里带 --json-only：只出 data 分支那份 json，源码模块留着不动。
+          # 但页面的「板块占比走势」和「全 A 散点云」读的是 worker/src/*.js 里
+          # 内联进去的那份常量，不是运行时拉 json——于是页面永远停在最后一次
+          # 手提交的那天（2026-11-11 体检报「散点停在 11-06」，Actions 天天跑着）。
+          # 现在两个产物都生成，下面「回写内联快照」那步负责把它们送到 main。
+          node pipeline/gen_sec_hist.mjs || echo "::warning::日档回算失败，沿用上一次发布的那份"
           node pipeline/gen_mkt_hist.mjs || echo "::warning::全A结构回算失败，沿用上一次发布的那份"
           python3 - <<'PY'
           import json, pathlib
@@ -340,6 +345,70 @@ jobs:
           echo "data 分支 $(git rev-parse --short HEAD)，$(du -sh "$PUB" | cut -f1)，" \
                "$(ls "$PUB"/hist | wc -l) 个 hist"
           python3 -c "import json;d=json.load(open('$PUB/research.json'));print('因子研究数据:',d['generated_at'],'因子',d['ic']['n'],'个')"
+
+      # ---------- 4b. 把内联快照回写 main ----------
+      # worker/src/mkt_hist.js、sec_hist.js 不是运行时拉取的，是构建 Worker 时由
+      # build.mjs 直接拼进 HTML 的常量。上面「回算」只在 runner 上生成它们，不回写
+      # 就等于白算：data 分支的 json 天天新，页面里的散点云却停在最后一次手提交的
+      # 那天。2026-11-11 体检报「全 A 散点停在 11-06」，Actions 其实天天在跑。
+      # 只有内容真变了才提交；GITHUB_TOKEN 的 push 不会触发 deploy-worker
+      # （GitHub 防递归约定），所以下面必须自己 deploy 一次。
+      - name: 回写内联快照
+        id: snap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "etf-board-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          FILES="worker/src/mkt_hist.js worker/src/sec_hist.js"
+          if git diff --quiet -- $FILES; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "内联快照无变化（回算失败时会走到这里，属正常降级）"
+            exit 0
+          fi
+          git diff --stat -- $FILES
+          ( cd worker && node build.mjs && node --check dist/worker.js )
+          git add $FILES worker/dist/worker.js
+          git commit -q -m "chore(data): 内联快照跟随 $(date -u '+%Y-%m-%d') 回算结果"
+          ok=0
+          for i in 1 2 3; do
+            git fetch -q --depth=20 origin main
+            if ! git rebase -q origin/main; then
+              git rebase --abort || true
+              echo "::warning::与最新 main 冲突，放弃本次提交（明天会再补一次）"
+              break
+            fi
+            if git push -q origin HEAD:main; then ok=1; break; fi
+            echo "第 $i 次推送失败，5 秒后重试"; sleep 5
+          done
+          [ "$ok" = "1" ] || { echo "::error::快照提交推送失败"; exit 1; }
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "已推送 $(git rev-parse --short HEAD)"
+
+      - name: 部署 Worker（快照已变）
+        id: snapdeploy
+        if: steps.snap.outputs.changed == 'true'
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy
+
+      # 推送成功、部署失败要撤回：否则仓库里是新快照、线上还是旧的，而第二天
+      # git diff 干净会跳过提交，永远卡在这个状态且没人发现。
+      - name: 部署失败则回滚快照提交
+        if: steps.snap.outputs.changed == 'true' && steps.snapdeploy.outcome == 'failure'
+        run: |
+          git revert --no-edit HEAD
+          ok=0
+          for i in 1 2 3; do
+            if git push -q origin HEAD:main; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = "1" ] || echo "::error::回滚也推不上去，手工处理"
+          echo "::warning::Worker 部署失败，已回滚快照提交"
 
       # ---------- 5. 映射有变才回写仓库并重部署 ----------
       # idx_data.js 是「构建时固化」进页面的（不额外发请求），所以补了映射必须重新部署
