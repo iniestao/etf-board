@@ -357,6 +357,19 @@ jobs:
       - name: 生成份额日档
         continue-on-error: true
         run: |
+          # 份额依赖三四个外部接口，且东财对云 IP 会整段拒连。先把可达性打出来，
+          # 出问题时不用再猜是「源没发布」还是「根本连不上」。
+          echo "--- 数据源可达性 ---"
+          for u in \
+            'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=2&po=1&np=1&fltt=2&invt=2&fid=f12&fs=b:MK0021&fields=f12,f38' \
+            'https://www.szse.cn/api/report/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1945&PAGENO=1' \
+            'https://query.sse.com.cn/commonQuery.do?sqlId=COMMON_SSE_ZQPZ_ETFZL_XXPL_ETFGM_SEARCH_L&pageHelp.pageSize=5&pageHelp.pageNo=1' \
+            'https://hq.sinajs.cn/list=sh510300' ; do
+            printf '%-52s ' "$(echo "$u" | cut -c1-52)"
+            curl -s -o /tmp/probe.bin -w '%{http_code} %{size_download}B %{time_total}s\n' -m 15 \
+              -H 'User-Agent: Mozilla/5.0' -H 'Referer: https://www.szse.cn/' "$u" || echo 'CONN-FAIL'
+          done
+          echo "--- 开始抓取 ---"
           node pipeline/gen_shares.mjs --fetch
           echo "--- 产物 ---"
           du -sh dist/shares | cut -f1

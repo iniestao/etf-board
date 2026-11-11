@@ -128,26 +128,32 @@ async function fetchEMShares() {
  * 所以宁可翻 78 页（每页固定 10 行，传 PAGESIZE 无效）也要拿到。
  */
 async function fetchSZSE(day) {
-  const base = 'https://www.szse.cn/api/report/ShowReport/data'
-    + '?SHOWTYPE=JSON&CATALOGID=1945&txtDate=' + day;
+  const bases = [
+    'https://www.szse.cn/api/report/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1945&txtDate=' + day,
+    'http://www.szse.cn/api/report/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1945&txtDate=' + day,
+  ];
   const out = {};
   let pages = 0;
   for (let pg = 1; pg <= 90; pg++) {
-    let d = null;
+    let d = null, why = '';
     for (let k = 0; k < 3; k++) {
       try {
-        const r = await fetch(base + '&PAGENO=' + pg, {
-          headers: { 'User-Agent': UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
-        });
+        const r = await fetch(bases[k % bases.length] + '&PAGENO=' + pg + '&random=' + Math.random(),
+          { headers: { 'User-Agent': UA, Referer: 'https://www.szse.cn/', Accept: '*/*' } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         d = Array.isArray(j) ? j[0] : null;
+        if (!d) why = '返回结构不对';
         break;
-      } catch (e) { await sleep(600 * (k + 1)); }
+      } catch (e) { why = e.message; await sleep(600 * (k + 1)); }
     }
-    if (!d) break;
+    if (!d) { log(`    （深交所第 ${pg} 页拿不到：${why}）`); break; }
     // 报表表头带日期，不是目标日说明当天还没发布
-    const stamp = (d.metadata && d.metadata.subname) || '';
-    if (pg === 1 && stamp && stamp !== day) return null;
+    const stamp = String((d.metadata && d.metadata.subname) || '').trim();
+    if (pg === 1 && stamp && stamp !== day) {
+      log(`    （深交所报表日期是 ${stamp}，不是 ${day}，当天还没发布）`);
+      return null;
+    }
     const rows = d.data || [];
     if (!rows.length) break;
     pages++;
