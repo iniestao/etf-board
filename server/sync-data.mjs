@@ -11,6 +11,7 @@
  *
  * 用法：
  *   node server/sync-data.mjs            检查并同步（mark 没变就跳过）
+ *   node server/sync-data.mjs --hist     同一天也重下全部 hist（45MB）
  *   node server/sync-data.mjs --force    强制重下
  *   node server/sync-data.mjs --check    只看状态，不动文件
  * 环境变量：
@@ -114,6 +115,18 @@ async function writeState(obj) {
   await fsp.writeFile(f, JSON.stringify(obj, null, 2));
 }
 
+/** 顶层小文件（几 MB 以内）：每次同步都刷，和 hist 那 1719 个分开走 */
+async function pullTops(cdn, dist) {
+  for (const f of ['manifest.json', 'research.json', 'hist/events.json',
+                   'sec_daily.json', 'mkt_hist.json',
+                   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json']) {
+    try {
+      const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
+      if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));
+    } catch { /* 拿不到就保留旧的 */ }
+  }
+}
+
 /** 单文件下载：按基址顺序试 + 退避重试，落盘走 tmp+rename（不留半个文件） */
 async function fetchOne(urls, dst) {
   let lastErr;
@@ -183,22 +196,49 @@ export async function syncData(opts = {}) {
   // 而当天 mark 又没变，不这么判就永远补不上。
   const haveEh = fs.existsSync(path.join(dist, 'etfopt_hist.json'));
 
+  const codes = (man.items || []).map((x) => x.code).filter(Boolean);
+  if (!codes.length) throw new Error('远端 manifest 里没有 items，无法确定要拉哪些文件');
+
+  const [cdn, raw] = bases(repo, branch, man.pin);
+
   if (!opts.force && haveHist && haveFut && haveEh && local
       && (local.mark === man.mark || local.sha === man.mark)) {
     log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），跳过');
     return { changed: false, mark: man.mark, skipped: 'up-to-date' };
   }
+
+  /* 同一天重跑（手动触发、失败重试、cron 补跑）会拿到新 commit sha，但交易日没变。
+     这时候把 1719 个 hist 再下一遍（45MB / 三分钟）纯属白费：hist 是「一天一根」，
+     同一天重算只可能改末尾那一根，而真正会变的是顶层那几份（manifest / fut_daily /
+     sec_daily / etfopt_hist）。文件数变了（新 ETF 上市）或换了交易日才必须全量。
+     --hist 强制全量，--force 同理。 */
+  /* 别拿 readdir 的数量比：hist 目录里还躺着 events.json，永远比标的数多 1，
+     那样这个条件永远不成立，等于没写。逐只判文件在不在最实在——1719 次
+     existsSync 是毫秒级，还能顺带发现「新 ETF 上市、本地缺它的 bin」。 */
+  const allHaveHist = haveHist && codes.every((c) => fs.existsSync(path.join(histDir, c + '.bin')));
+  const sameDay = !!(local && man.last_trade_date
+    && local.last_trade_date === man.last_trade_date && allHaveHist);
+
   if (opts.check) {
     log('远端 ' + label(man.mark) + '（' + (man.last_trade_date || '') + '）'
-      + ' / 本地 ' + (local ? label(local.mark || local.sha) : '无') + ' → 需要同步');
+      + ' / 本地 ' + (local ? label(local.mark || local.sha) : '无')
+      + (sameDay ? ' → 同一交易日，只刷顶层文件' : ' → 需要全量同步'));
     return { changed: true, mark: man.mark, skipped: 'check-only' };
   }
 
-  const codes = (man.items || []).map((x) => x.code).filter(Boolean);
-  if (!codes.length) throw new Error('远端 manifest 里没有 items，无法确定要拉哪些文件');
+  if (!opts.force && !opts.hist && haveHist && haveFut && haveEh && sameDay) {
+    await pullTops(cdn, dist);
+    const files = (await fsp.readdir(histDir)).length;
+    await writeState({
+      mark: man.mark, last_trade_date: man.last_trade_date,
+      synced_at: new Date().toISOString(), files, repo, branch,
+    });
+    log('同一交易日（' + man.last_trade_date + '）重跑：只刷顶层文件，'
+      + codes.length + ' 个 hist 跳过（要重下加 --hist）');
+    return { changed: true, mark: man.mark, files, histSkipped: true };
+  }
 
   await fsp.mkdir(histDir, { recursive: true });
-  const [cdn, raw] = bases(repo, branch, man.pin);
   const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
   const t0 = Date.now();
   log('开始同步 ' + codes.length + ' 个 hist 文件（并发 ' + conc + '）');
@@ -227,14 +267,7 @@ export async function syncData(opts = {}) {
   //
   // etfopt_hist.json 是 ETF 期权那段历史。它每天都在合并新一天，沙箱不跟着换
   // 就是「线上 131 天、本地还停在发布那天」，越差越远。
-  for (const f of ['manifest.json', 'research.json', 'hist/events.json',
-                   'sec_daily.json', 'mkt_hist.json',
-                   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json']) {
-    try {
-      const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
-      if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));
-    } catch { /* 拿不到就保留旧的 */ }
-  }
+  await pullTops(cdn, dist);
 
   const sec = ((Date.now() - t0) / 1000).toFixed(0);
   const files = (await fsp.readdir(histDir)).length;
@@ -265,7 +298,11 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve
 if (isMain) {
   const flags = new Set(process.argv.slice(2));
   try {
-    const r = await syncData({ force: flags.has('--force'), check: flags.has('--check') });
+    const r = await syncData({
+      force: flags.has('--force'),
+      hist: flags.has('--hist'),
+      check: flags.has('--check'),
+    });
     if (r && r.failed) process.exit(2);
   } catch (e) {
     console.error('同步失败：' + ((e && e.message) || e));
