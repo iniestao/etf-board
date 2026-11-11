@@ -663,6 +663,15 @@ node server/sync-data.mjs       # 手动同步最新 hist（--check 只看状态
 这条判据（日档生成后 `last.td` 追平 `td`，被当成没有昨收），已改成快照内嵌
 `prev` 取上一交易日的 `{oi,bp}`。
 
+**但沙箱同步改不了散点云**：四象限的 `MKT_HIST`、板块占比走势的 `SEC_HIST` 不是运行时
+拉 json，而是 `build.mjs` 直接拼进 `worker.js` 的常量（源头是 `worker/src/mkt_hist.js`
+和 `sec_hist.js`）。`mkt_hist.json` 在 data 分支上再新，页面也不看它。
+2026-11-11 体检报「全 A 散点停在 11-06」就是这么来的：Actions 天天在跑、data 分支天天更新，
+但这两个脚本的产物生成在 runner 上，随 job 结束一起丢了——只有 json 被发布出去，源码没人回写。
+现在 `update-data` 结尾有一段「回写内联快照」：内容真变了才提交 main，然后自己
+`wrangler deploy`（`GITHUB_TOKEN` 的 push 不触发 deploy-worker，这是 GitHub 的防递归约定），
+部署失败会把那次提交 revert 掉，免得卡在「仓库新、线上旧、第二天 diff 干净所以跳过」的状态。
+
 **改口令**要两步，少一步不生效：
 
 ```bash

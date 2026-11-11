@@ -186,6 +186,36 @@ function cookieOf(res) {
   return String(first).split(';')[0];
 }
 
+/* ---------------------------------------------------------------- 1.5 内联快照
+ * 四象限的散点云（MKT_HIST）和板块占比走势（SEC_HIST）不是运行时拉 json，
+ * 是 build.mjs 拼进 worker.js 的常量。data 分支的 mkt_hist.json / sec_daily.json
+ * 只喂同步脚本自身，页面根本不看——所以这两对文件必须同日。
+ * 不同步的表现是「页面一切正常，只是散点云停在上周」，2026-11-11 就是这样：
+ * 「全 A 散点停在 11-06」，Actions 天天跑，产物在 runner 上随 job 丢了。
+ */
+console.log('\n[内联快照] worker.js 里的常量与 data 分支 json 是否同日');
+{
+  const pairs = [
+    ['dist/mkt_hist.json', 'worker/src/mkt_hist.js', '全 A 散点'],
+    ['dist/sec_daily.json', 'worker/src/sec_hist.js', '板块占比'],
+  ];
+  for (const [jp, sp, label] of pairs) {
+    const jf = path.join(ROOT, jp), sf = path.join(ROOT, sp);
+    if (!fs.existsSync(jf)) { console.log('  – ' + label + '：没有 ' + jp + '（沙箱还没同步过），跳过'); continue; }
+    let jd = null, sd = null;
+    try { jd = JSON.parse(fs.readFileSync(jf, 'utf8')).last_trade_date || null; } catch { /* 下面报 */ }
+    try {
+      const ds = fs.readFileSync(sf, 'utf8').match(/20\d\d-\d\d-\d\d/g) || [];
+      sd = ds.length ? ds[ds.length - 1] : null;
+    } catch { /* 下面报 */ }
+    if (!jd || !sd) { bad(label + '快照日期读不出来（json=' + jd + ' src=' + sd + '）'); continue; }
+    jd === sd
+      ? ok(label + '快照同日：' + sd)
+      : bad(label + '快照不同日：源码内联 ' + sd + '，data 分支 json ' + jd
+          + '——重跑 gen_* 或等 Actions 回写，否则页面停在前者那天');
+  }
+}
+
 async function runContracts(base, pass) {
   console.log('\n[2/2] 接口契约（' + base + '）');
 
