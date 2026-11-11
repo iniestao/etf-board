@@ -64,20 +64,53 @@ async function get(url, tries = RETRY + 1) {
    - 东财 b:MK0021..MK0024 覆盖 1660 只、名称规范，但漏掉那 60 只债券 ETF。
    所以两个源取并集：新浪的简称优先保留，东财补覆盖。 */
 const EM_HDR = { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' };
+// 东财对云 IP 会间歇性拒连（2026-11-11 Actions 上 25 页全失败，只拿到 1023 只）。
+// 同一份接口挂在几个 CDN 节点上，轮着试。
+const EM_HOSTS = [
+  'push2.eastmoney.com',
+  '82.push2.eastmoney.com',
+  '1.push2.eastmoney.com',
+  'push2delay.eastmoney.com',
+];
 
-async function getEM(url, tries = RETRY + 1) {
+async function getEM(pathAndQuery, tries = 4) {
   let last;
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await fetch(url, { headers: EM_HDR });
+      const r = await fetch('https://' + EM_HOSTS[i % EM_HOSTS.length] + pathAndQuery, {
+        headers: EM_HDR, signal: AbortSignal.timeout(20000),
+      });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return await r.text();
     } catch (e) {
       last = e;
-      if (i < tries - 1) await sleep(500 * (i + 1));
+      if (i < tries - 1) await sleep(1000 * Math.pow(2, i));   // 1,2,4 秒
     }
   }
   throw last;
+}
+
+/**
+ * 上一版清单（data 分支的 manifest）：前两个源都降级时的保底。
+ * 实测 2026-11-11 Actions 上东财全线拒连、新浪当天缩水到 938 只，并集只剩 1023 只，
+ * 完整性断言把流水线拦红了。而昨天的 manifest 里有 1702 只——新上市的会漏一两天，
+ * 但已上市的能全覆盖，比「整轮作废」强得多。
+ */
+async function loadPrevManifest() {
+  const urls = [
+    'https://raw.githubusercontent.com/iniestao/etf-board/data/manifest.json',
+    'https://cdn.jsdelivr.net/gh/iniestao/etf-board@data/manifest.json',
+  ];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const items = Array.isArray(j && j.items) ? j.items : [];
+      if (items.length > 500) return items;
+    } catch { /* 换下一个 */ }
+  }
+  return [];
 }
 
 async function listETF() {
@@ -110,21 +143,38 @@ async function listETF() {
 
   // 2) 东财：覆盖全，名称规范
   const fss = 'b:MK0021,b:MK0022,b:MK0023,b:MK0024';
+  let emN = 0, emStreak = 0;
   for (let pn = 1; pn <= 25; pn++) {
-    const u = 'https://push2.eastmoney.com/api/qt/clist/get?pn=' + pn
+    const u = '/api/qt/clist/get?pn=' + pn
       + '&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fs=' + encodeURIComponent(fss)
       + '&fields=f12,f14';
     let d = null;
     try { d = JSON.parse(await getEM(u)); } catch { d = null; }
     const diff = (d && d.data && d.data.diff) || [];
-    if (!diff.length) break;
+    if (!diff.length) {
+      // 翻到底 vs 整条链路挂了：连续三页拿不到就放弃东财，别再耗下去
+      if (++emStreak >= 3) { console.log(`  东财第 ${pn} 页起连续失败，放弃这个源`); break; }
+      await sleep(1500);
+      continue;
+    }
+    emStreak = 0;
     for (const x of diff) push(String(x.f12 || ''), x.f14);
+    emN = out.length;
     await sleep(200);
   }
 
-  console.log(`名单：新浪 ${sinaN} 只，并上东财后共 ${out.length} 只`);
+  // 3) 上一版清单：前两个源都降级时保底
+  let prevN = 0;
   if (out.length < 1500) {
-    console.log('::warning::名单只有 ' + out.length + ' 只，两个上游可能都在降级');
+    const prev = await loadPrevManifest();
+    for (const it of prev) if (it && it.code) push(String(it.code), it.name);
+    prevN = out.length - emN;
+    console.log(`  上一版清单：${prev.length} 只，新增 ${prevN} 只`);
+  }
+
+  console.log(`名单：新浪 ${sinaN} 只 → 东财${emN ? '补到 ' + emN + ' 只' : '全线失败'} → 最终 ${out.length} 只`);
+  if (out.length < 1500) {
+    console.log('::warning::名单只有 ' + out.length + ' 只，三个源都在降级');
   }
   return out;
 }
