@@ -4871,6 +4871,10 @@ margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
 #ovBody .ovretry{margin-top:2px;font-size:11.5px;padding:3px 11px;border:1px solid var(--line);
 border-radius:6px;background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:inherit}
 #ovBody .ovretry:hover{border-color:var(--txt3);color:var(--txt)}
+/* 「↑↓ 缩放」跟在统计行末尾，颜色再淡一档——它是提示，不是数据。
+   不设 margin-left:auto：那个会把整行撑到溢出（iobox 是 overflow:hidden，
+   最后一个字会被直接切掉），宁可让它自然换行。 */
+.ovmeta .ovzoom{color:var(--txt3);white-space:nowrap}
 .ovma i{display:inline-block;width:8px;height:2px;border-radius:1px;margin-right:4px;
 vertical-align:middle;position:relative;top:-1px}
 /* 分时 / K 线 切换。和别处的 .mtabs 同一套手感，但这里塞在标题栏右边，
@@ -8570,7 +8574,7 @@ function loadK(code){
       if (ext){
         note = (note ? note + ' ' : '') + hExtNote();
       }
-      document.getElementById('hNote').textContent = note;
+      document.getElementById('hNote').textContent = (note ? note + ' ' : '') + HK_ZOOM_TIP;
     }
 
     /* 全市场快照里找不到这只、或者拿到的快照没有高低价/成交额（东财限流时
@@ -9961,6 +9965,24 @@ document.getElementById('hOv').onclick = function(e){
 document.getElementById('hClose').onclick = closeHist;document.getElementById('histMask').onclick = function(e){
   if (e.target === this) closeHist();
 };
+/* ↑↓ 缩放 K 线。只认箭头的两种按下（带 Ctrl/Alt/Cmd 的不抢，那是浏览器手势），
+   并且避开输入框——自选、搜索里按上下是要翻候选的。
+   两处 K 线任一个开着就归它管：弹窗（隔夜/亚太）优先，其次详情面板。 */
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  var dir = e.key === 'ArrowUp' ? 'in' : 'out';
+  if (document.getElementById('ovMask').classList.contains('on')){
+    if (ovKZoom(dir)) e.preventDefault();
+    return;
+  }
+  if (document.getElementById('histMask').classList.contains('on')){
+    if (histKZoom(dir)) e.preventDefault();
+  }
+});
+
 document.addEventListener('keydown', function(e){
   if (e.key !== 'Escape') return;
   if (document.getElementById('ioMask').classList.contains('on')) { ioClose(); return; }
@@ -10017,21 +10039,55 @@ document.getElementById('hHold').addEventListener('click', function(e){
   }
 });
 
+var HK_ZOOM_TIP = 'K 线可 ↑↓ 缩放区间（右端始终对齐最新一根）。';
+
+/* 区间档位唯一入口：按钮点、键盘缩放都走这里，两份逻辑不会各自漂。
+   rng = 0 是「全部」（DOM 上 data-r=0），内部一律按 0 存，取值时再兜成 d.n。 */
+function hSetRange(rng){
+  H.range = rng;
+  H.hover = -1;
+  var tot = (H.d && H.d.n) ? H.d.n : 0;
+  var tabs = document.querySelectorAll('#hTabs span');
+  for (var i=0;i<tabs.length;i++){
+    var r = parseInt(tabs[i].getAttribute('data-r'), 10);
+    var on = (r === rng) || (r === 0 && tot > 0 && rng >= tot);
+    if (on) tabs[i].classList.add('on'); else tabs[i].classList.remove('on');
+  }
+  if (!H.d) return;
+  hDraw();
+  hLegend(-1);
+  /* 备注要拼全三块，缺一块都会让人误判：
+     根数（缩放了多少）→ 复权/分红（原始价有跳空）→ 末根是不是今日实时。
+     原来这里是「只留 hAdjNote」，缩放一次「最后一根为今日行情」就消失了。 */
+  var tot2 = H.d.n || 0;
+  var nt = (rng > 0 && rng < tot2)
+    ? ('近 ' + rng + ' / ' + tot2 + ' 个交易日。')
+    : ('全部 ' + tot2 + ' 个交易日。');
+  var a2 = hAdjNote();
+  if (a2) nt += ' ' + a2;
+  if (H.ext) nt += ' ' + hExtNote();
+  document.getElementById('hNote').textContent = nt + ' ' + HK_ZOOM_TIP;
+}
+
+/* ↑↓ 缩放详情 K 线。这里改的是 H.range（显示最近多少根），数据本来就全在
+   内存里（H.d 是整段历史），所以缩放是纯重绘，不发请求、不重新解析。
+   贴近全量时吸附到「全部」（0），免得出现 231 根里的 230 根这种半截数。 */
+function histKZoom(dir){
+  if (!document.getElementById('histMask').classList.contains('on')) return false;
+  if (H.mode !== 'k' || !H.d || !H.d.n) return false;
+  var tot = H.d.n;
+  var cur = (H.range > 0 && H.range < tot) ? H.range : 0;   // 0 = 全部
+  var base = cur || tot;
+  var next = dir === 'in' ? base / OV_ZOOM_STEP : base * OV_ZOOM_STEP;
+  next = Math.max(20, Math.min(tot, Math.round(next)));
+  if (next >= tot - 1) next = 0;
+  if (next === cur) return true;        // 到头了也吃掉按键，别让背景滚
+  hSetRange(next);
+  return true;
+}
+
 Array.prototype.forEach.call(document.querySelectorAll('#hTabs span'), function(t){
-  t.onclick = function(){
-    Array.prototype.forEach.call(document.querySelectorAll('#hTabs span'), function(x){
-      x.classList.remove('on');
-    });
-    t.classList.add('on');
-    H.range = parseInt(t.getAttribute('data-r'), 10);
-    H.hover = -1;
-    if (H.d){
-      hDraw();
-      hLegend(-1);
-      var note = hAdjNote();
-      document.getElementById('hNote').textContent = note;
-    }
-  };
+  t.onclick = function(){ hSetRange(parseInt(t.getAttribute('data-r'), 10)); };
 });
 
 var hResizeTimer = null;
@@ -10835,7 +10891,8 @@ function ovChip(n, chg, sid){
 var OV = null;
 
 function ovOpen(sid, nm){
-  OV = { sid: sid, nm: nm, mode: 'min' };
+  // bars/win 一次打开内复用：切到分时再切回来，缩放过的窗口还在
+  OV = { sid: sid, nm: nm, mode: 'min', bars: null, win: 0 };
   document.getElementById('ovMask').classList.add('on');
   ovLoad();
 }
@@ -10855,15 +10912,29 @@ function ovLoad(){
   for (var i=0;i<els.length;i++){
     els[i].className = 'ovtab' + (els[i].getAttribute('data-ovt') === mode ? ' on' : '');
   }
+  /* 同一次打开内切来切去，K 线数据不重取：分时↔K 线是看同一只标的的两面，
+     来回切一次就发一次 20KB 请求、还要等 200ms 空白，没必要。 */
+  if (mode === 'k' && OV.bars && OV.bars.length){
+    body.innerHTML = ovKlineHtml(OV.bars, OV.win);
+    return;
+  }
   body.innerHTML = '<div class="iotip">读取中…</div>';
+  /* 一次要 300 根（服务端上限），但默认只显示 160——多要的这部分是留给
+     ↓ 缩放的余量，不然每按一次就得再发一次请求，200ms 的空窗里图会闪一下。 */
   var url = mode === 'k'
-    ? '/api/ovk?sid=' + encodeURIComponent(sid) + '&n=160'
+    ? '/api/ovk?sid=' + encodeURIComponent(sid) + '&n=300'
     : '/api/ovmin?sid=' + encodeURIComponent(sid);
   fetch(url).then(function(r){ return r.json(); })
     .then(function(j){
       if (!OV || OV.sid !== sid || OV.mode !== mode) return;
       if (!j.ok) throw new Error(j.error || '无数据');
-      body.innerHTML = mode === 'k' ? ovKlineHtml(j.bars) : ovChartSvg(j.pts, j.pre);
+      if (mode === 'k'){
+        OV.bars = j.bars || [];
+        if (!(OV.win > 0)) OV.win = Math.min(160, OV.bars.length);
+        body.innerHTML = ovKlineHtml(OV.bars, OV.win);
+      } else {
+        body.innerHTML = ovChartSvg(j.pts, j.pre);
+      }
     })
     .catch(function(e){
       if (!OV || OV.sid !== sid || OV.mode !== mode) return;
@@ -10874,6 +10945,22 @@ function ovLoad(){
         + '<button class="ovretry" data-ovsid="' + esc(sid) + '" data-ovnm="' + esc(nm) + '">重试</button>';
     });
 }
+/* ↑↓ 缩放：改的是「显示最近多少根」，数据不重取。
+   方向按常见约定：↑ 放大（根数变少、蜡烛变宽），↓ 缩小（根数变多）。
+   返回 true 表示这个键归弹窗管，要拦掉页面滚动——弹窗开着时滚背景没有意义。 */
+var OV_ZOOM_STEP = 1.35;
+function ovKZoom(dir){
+  if (!OV || OV.mode !== 'k' || !OV.bars || OV.bars.length < 6) return false;
+  var total = OV.bars.length;
+  var win = (OV.win > 0) ? OV.win : total;
+  var next = dir === 'in' ? win / OV_ZOOM_STEP : win * OV_ZOOM_STEP;
+  next = Math.max(20, Math.min(total, Math.round(next)));
+  if (next === win) return true;          // 到头了也吃掉按键，别让背景滚
+  OV.win = next;
+  document.getElementById('ovBody').innerHTML = ovKlineHtml(OV.bars, next);
+  return true;
+}
+
 function ovClose(){ document.getElementById('ovMask').classList.remove('on'); }
 document.getElementById('ovClose').onclick = ovClose;
 document.getElementById('ovMask').onclick = function(e){ if (e.target === this) ovClose(); };
@@ -10994,24 +11081,33 @@ function ovPx(v){
   return v >= 1000 ? v.toFixed(0) : v >= 10 ? v.toFixed(2) : v >= 1 ? v.toFixed(3) : v.toFixed(4);
 }
 
-function ovKlineHtml(bars){
+/* win = 显示最近多少根（↑↓ 缩放用）。传空/超界就是全部。
+   统计（涨跌、区间最高最低）只看窗口内的，画图仍拿全量 bars + 起点索引，
+   这样窗口左端那几根的 MA10/MA30 是「用窗口之前的数据算出来的」——
+   否则每次放大，均线都要从左边缘重新长出来，看上去像断了。 */
+function ovKlineHtml(bars, win){
   if (!bars || bars.length < 5) return '<div class="iotip">K 线太短，画不出来</div>';
-  var n = bars.length, first = bars[0][4], last = bars[n-1][4];
+  var total = bars.length;
+  var w = (win > 0) ? Math.min(total, Math.max(5, Math.round(win))) : total;
+  var i0 = total - w;
+  var n = w, first = bars[i0][4], last = bars[total-1][4];
   var hi = -Infinity, lo = Infinity, i;
-  for (i=0;i<n;i++){ if (bars[i][2] > hi) hi = bars[i][2]; if (bars[i][3] < lo) lo = bars[i][3]; }
+  for (i=i0;i<total;i++){ if (bars[i][2] > hi) hi = bars[i][2]; if (bars[i][3] < lo) lo = bars[i][3]; }
   var chg = (last / first - 1) * 100;
-  return ovKlineSvg(bars)
+  return ovKlineSvg(bars, i0)
     + '<div class="ovmeta">'
-    + '<span>' + n + ' 个交易日 <b class="' + (chg > 0 ? 'up' : chg < 0 ? 'down' : '') + '">'
+    + '<span>' + n + ' / ' + total + ' 个交易日 <b class="' + (chg > 0 ? 'up' : chg < 0 ? 'down' : '') + '">'
     + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</b></span>'
     + '<span>区间 ' + ovPx(lo) + ' ~ ' + ovPx(hi) + '</span>'
     + '<span>最新 ' + ovPx(last) + '</span>'
     + '<span class="ovma"><i style="background:#e08b2e"></i>MA10'
     + '<i style="background:#4a86c8;margin-left:8px"></i>MA30</span>'
+    + '<span class="ovzoom">↑↓ 缩放</span>'
     + '</div>';
 }
 
-function ovKlineSvg(bars){
+function ovKlineSvg(bars, i0){
+  i0 = i0 || 0;
   var vw = Math.max(320, Math.min(720, (window.innerWidth || 900) - 76));
   var W = vw, H = vw < 480 ? 238 : 276;
   // 只留右轴价格：蜡烛的高低本身就在表达涨跌，左边不必再给一列百分比
@@ -11019,15 +11115,15 @@ function ovKlineSvg(bars){
   var plotW = W - ml - mr, plotH = H - mt - mb;
   var volH = Math.round(plotH * 0.22), gap = 6;
   var pH = plotH - volH - gap;
-  var n = bars.length, i;
+  var n = bars.length, cnt = Math.max(1, n - i0), i;
 
   var mn = Infinity, mx = -Infinity;
-  for (i=0;i<n;i++){
+  for (i=i0;i<n;i++){
     if (bars[i][3] < mn) mn = bars[i][3];
     if (bars[i][2] > mx) mx = bars[i][2];
   }
   var maA = ovMA(bars, 10), maB = ovMA(bars, 30);
-  for (i=0;i<n;i++){
+  for (i=i0;i<n;i++){
     if (maA[i] != null){ if (maA[i] < mn) mn = maA[i]; if (maA[i] > mx) mx = maA[i]; }
     if (maB[i] != null){ if (maB[i] < mn) mn = maB[i]; if (maB[i] > mx) mx = maB[i]; }
   }
@@ -11035,11 +11131,12 @@ function ovKlineSvg(bars){
   mn -= pad; mx += pad;
 
   var vmax = 0;
-  for (i=0;i<n;i++) if (bars[i][5] > vmax) vmax = bars[i][5];
+  for (i=i0;i<n;i++) if (bars[i][5] > vmax) vmax = bars[i][5];
 
-  var xOf = function(k){ return ml + (k + 0.5) / n * plotW; };
+  // 横坐标按「窗口内第几根」定位，i0 之前的不画（数据还在，用来喂均线）
+  var xOf = function(k){ return ml + (k - i0 + 0.5) / cnt * plotW; };
   var yOf = function(v){ return mt + (1 - (v - mn) / (mx - mn)) * pH; };
-  var bw = Math.max(1, plotW / n * 0.62);
+  var bw = Math.max(1, plotW / cnt * 0.62);
 
   var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg" '
     + 'font-family="inherit" preserveAspectRatio="xMidYMid meet">';
@@ -11055,7 +11152,7 @@ function ovKlineSvg(bars){
 
   // 成交量：压在价格区下面，颜色跟蜡烛一致但更淡，不抢注意力
   var vTop = mt + pH + gap;
-  for (i=0;i<n;i++){
+  for (i=i0;i<n;i++){
     var vv = vmax > 0 ? bars[i][5] / vmax : 0;
     var vhh = Math.max(1, vv * volH);
     var vcol = bars[i][4] >= bars[i][1] ? 'var(--up)' : 'var(--down)';
@@ -11064,7 +11161,7 @@ function ovKlineSvg(bars){
   }
 
   // 蜡烛：影线在前、实体在后。实体高度 0 时给 1px，否则平盘那根会凭空消失
-  for (i=0;i<n;i++){
+  for (i=i0;i<n;i++){
     var b = bars[i], o = b[1], h1 = b[2], l1 = b[3], c = b[4];
     var col = c >= o ? 'var(--up)' : 'var(--down)';
     var x = xOf(i);
@@ -11081,7 +11178,7 @@ function ovKlineSvg(bars){
      画了等于没画（第一版就是这样，两条线看着只有一条）。 */
   var mkMa = function(arr, col2){
     var d = '', started = false;
-    for (var j=0;j<n;j++){
+    for (var j=i0;j<n;j++){
       if (arr[j] == null) continue;
       d += (started ? 'L' : 'M') + xOf(j).toFixed(1) + ' ' + yOf(arr[j]).toFixed(1);
       started = true;
@@ -11094,8 +11191,8 @@ function ovKlineSvg(bars){
   s += mkMa(maB, '#4a86c8');
 
   // 日期：4 个刻度，按 (n-1)/3 等分，最后一个是真末尾而不是半截
-  var step = Math.max(1, Math.round((n - 1) / 3));
-  for (i=0;i<n;i+=step){
+  var step = Math.max(1, Math.round((cnt - 1) / 3));
+  for (i=i0;i<n;i+=step){
     var ds = String(bars[i][0] || '').slice(5);
     var tx = Math.min(Math.max(xOf(i), ml + 12), ml + plotW - 12);
     s += '<text x="' + tx.toFixed(1) + '" y="' + (H - 4) + '" font-size="9.5" fill="var(--txt3)" '
