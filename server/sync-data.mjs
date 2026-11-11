@@ -35,9 +35,14 @@ export function repoInfo() {
   };
 }
 
-function bases(repo, branch) {
-  const cdn = process.env.DATA_CDN || ('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch);
-  const raw = 'https://raw.githubusercontent.com/' + repo + '/' + branch;
+function bases(repo, branch, pin) {
+  // pin 是 data 分支当前的 commit sha。jsDelivr 对 @branch 这个地址按路径缓存
+  // 12 小时，分支前进了它也不回源——2026-11-11 就吃到过：动作早就把 11-10 推上去了，
+  // 这边还拿着 11-09 的 manifest 说「已是最新」，K 线永远少一天。
+  // @sha 是全新 URL，缓存必然未命中，能立刻拿到新内容。
+  const ref = pin || branch;
+  const cdn = process.env.DATA_CDN || ('https://cdn.jsdelivr.net/gh/' + repo + '@' + ref);
+  const raw = 'https://raw.githubusercontent.com/' + repo + '/' + ref;
   return [cdn, raw];
 }
 
@@ -56,24 +61,40 @@ async function getJson(url, timeout = 25000) {
  *   2. 没 token：读 manifest.json，用它自己的 generated_at 当指纹
  *      （未认证 API 只有 60 次/小时，沙箱出口是共享 IP，实测直接 403）
  */
+function ghToken() {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  // 沙箱里通常已经 gh auth login 过，但这个脚本不继承那个环境变量。
+  // 就地读一次，省得为了「取一个 commit sha」再让人配 token。
+  try {
+    const p = path.join(process.env.HOME || '/root', '.config/gh/hosts.yml');
+    const y = fs.readFileSync(p, 'utf8');
+    const m = y.match(/oauth_token:\s*(\S+)/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
 async function remoteManifest(repo, branch) {
   const [cdn] = bases(repo, branch);
-  if (process.env.GITHUB_TOKEN) {
+  const tk = ghToken();
+  if (tk) {
     try {
       const url = 'https://api.github.com/repos/' + repo + '/commits?sha=' + branch + '&per_page=1';
       const r = await fetch(url, {
         headers: {
           'user-agent': 'etf-board-sync',
           accept: 'application/vnd.github+json',
-          authorization: 'Bearer ' + process.env.GITHUB_TOKEN,
+          authorization: 'Bearer ' + tk,
         },
         signal: AbortSignal.timeout(15000),
       });
       if (r.ok) {
         const arr = await r.json();
         if (Array.isArray(arr) && arr.length) {
-          const m = await getJson(cdn + '/manifest.json').catch(() => null);
-          if (m) return { ...m, mark: 'sha:' + arr[0].sha };
+          // 有 sha 就按 sha 取 manifest：既避开 CDN 缓存，又能把 pin 带下去
+          const pin = arr[0].sha;
+          const [pinned] = bases(repo, branch, pin);
+          const m = await getJson(pinned + '/manifest.json').catch(() => null);
+          if (m) return { ...m, mark: 'sha:' + pin, pin };
         }
       }
     } catch { /* 落到 manifest 指纹 */ }
@@ -177,7 +198,7 @@ export async function syncData(opts = {}) {
   if (!codes.length) throw new Error('远端 manifest 里没有 items，无法确定要拉哪些文件');
 
   await fsp.mkdir(histDir, { recursive: true });
-  const [cdn, raw] = bases(repo, branch);
+  const [cdn, raw] = bases(repo, branch, man.pin);
   const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
   const t0 = Date.now();
   log('开始同步 ' + codes.length + ' 个 hist 文件（并发 ' + conc + '）');
