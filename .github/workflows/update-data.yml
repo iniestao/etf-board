@@ -236,22 +236,29 @@ jobs:
           # 不按日历推：那样不知道哪天放假，长假期间会天天算出一个不存在的日子。
           # 直接问中金所——那份 XML 是收盘后生成的静态文件，「文件在」就等于
           # 「那天开市且已定稿」。探测失败（网络）只警告，不冤枉这条链。
+          #
+          # 判据必须是内容里有没有合约节点，不能看字节数：中金所对不存在的日期不回
+          # 404，而是 302 跳到 /error_page/error_404.html——那页 2KB、HTTP 200，
+          # urllib 默认跟过去，「len > 500」对任何一天都成立。2026-11-11 凌晨那次
+          # 就是被这页骗了，把还没收盘的当天判成已归档，硬校验当场红掉。
           def has_xml(d):
               u = ('http://www.cffex.com.cn/sj/hqsj/rtj/%s/%s/index.xml'
                    % (d.strftime('%Y%m'), d.strftime('%d')))
               try:
                   req = urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
-                  return len(urllib.request.urlopen(req, timeout=20).read()) > 500
+                  body = urllib.request.urlopen(req, timeout=20).read()
+                  return b'<dailydata>' in body   # 正常 539KB / 788 条合约
               except Exception:
                   return None
 
           today = (datetime.utcnow() + timedelta(hours=8)).date()
-          expect, unknown, d = None, False, today
+          expect, unknown, d, tried = None, False, today, []
           for _ in range(8):
               if d.weekday() >= 5:
                   d -= timedelta(days=1)
                   continue
               got = has_xml(d)
+              tried.append(f"{d.isoformat()}={'有' if got else '无' if got is False else '?'}")
               if got is None:
                   unknown = True
                   break
@@ -259,6 +266,7 @@ jobs:
                   expect = d
                   break
               d -= timedelta(days=1)
+          print('探测：' + '  '.join(tried))
 
           last = date.fromisoformat(h['d'][-1])
           if unknown:

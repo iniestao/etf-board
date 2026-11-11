@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 期指期权日档：中金所 XML → dist/fut_daily.json（250 天历史）+ dist/fut_last.json（最新一天）
+ * 衍生品日档（期货 + 股指期权）：中金所 XML → dist/fut_daily.json（250 天历史）+ dist/fut_last.json（最新一天）
  *
  * 为什么放在 Actions 而不是 Worker 里算：
  *   中金所的单日全品种文件 539KB / 788 个合约，Worker 免费版只有 10ms CPU，
@@ -90,11 +90,18 @@ function dailyXmlUrl(date) {
 
 /** 那天的日行情归档了没有。中金所这个静态文件是收盘后才生成的，所以
  *  「文件在」等价于「那天是交易日、且已定稿」。比按日历推算准——后者不知道
- *  哪天放假，长假期间会天天算出一个不存在的「上一交易日」。 */
+ *  哪天放假，长假期间会天天算出一个不存在的「上一交易日」。
+ *
+ *  判据必须是内容里有没有合约节点，不能看字节数：中金所对不存在的日期不是回
+ *  404，而是 302 跳到 /error_page/error_404.html —— 那页是 2KB 的 HTML，HTTP
+ *  状态 200，fetch 默认跟随重定向，于是「length > 500」对任何一天都成立。
+ *  2026-11-11 凌晨那次就是这么把当天判成「已归档」，目标日期里混进了还没收盘的
+ *  当天，末尾一天注定取不到，硬校验当场红掉。 */
+const XML_ROW = '<dailydata>';
 async function hasDailyXml(date) {
   try {
     const t = await fetchText(dailyXmlUrl(date), 2, 15000);
-    return t.length > 500;   // 正常 500KB+，404 壳页只有几百字节
+    return t.includes(XML_ROW);   // 正常 539KB / 788 条合约；404 壳页里没有这个节点
   } catch (e) {
     return false;
   }
@@ -623,7 +630,10 @@ async function main() {
       continue;
     }
     const rows = parseDailyXml(xml);
-    if (!rows.length) { log(`  ${date} 解析出 0 行，跳过`); continue; }
+    if (!rows.length) {
+      log(`  ${date} 解析出 0 行，跳过` + (xml.includes(XML_ROW) ? '' : '（拿回来的是 404 页，不是 XML）'));
+      continue;
+    }
 
     // 会员持仓只补最近 POS_DAYS 天（dates 是升序，所以看的是「离末尾多远」）
     let posObj = null;
