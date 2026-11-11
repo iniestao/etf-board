@@ -4950,6 +4950,10 @@ vertical-align:middle;position:relative;top:-1px}
 border-radius:3px;background:var(--line);color:var(--txt2);font-style:normal;vertical-align:1px;
 letter-spacing:0}
 .shcell.up{color:var(--up)} .shcell.down{color:var(--down)}
+#shMask .iohd{position:relative}
+#shMask .hx{position:static;margin-left:auto;flex:0 0 auto}
+#shMask .iohd b{flex:0 0 auto;max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#shMask .iohd .n{flex:1 1 auto;min-width:0;white-space:normal;line-height:1.45}
 .shchart{position:relative}
 .shchart svg{display:block;width:100%;height:auto}
 .shfoot{display:flex;gap:6px 18px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
@@ -6982,7 +6986,9 @@ function shRepaint(){
 function shOpen(key, agg, nm, retry){
   var name = nm || key;
   SH_VIEW = { key: key, agg: !!agg, name: name, v: null, cv: null, s: null, n: agg ? (IX_N[key] || 1) : 1 };
-  document.getElementById('shTitle').textContent = name + (agg ? ' · 同指数合计' : '');
+  // 窄屏标题栏只有 200 多像素，把「同指数合计」钉在标题上会折成两行，
+  // 位置让给名字，口径交给副标题
+  document.getElementById('shTitle').textContent = name;
   document.getElementById('shSub').textContent = '';
   document.getElementById('shBody').innerHTML = '<div class="iotip">读取中…</div>';
   document.getElementById('shMask').classList.add('on');
@@ -7026,7 +7032,7 @@ function shRender(){
   // 单只/汇总的序列都是同一根 250 天轴生成的，长度对不上时按尾部对齐
   var dates = (ax.length === v.length) ? ax : ax.slice(Math.max(0, ax.length - v.length));
   document.getElementById('shSub').textContent =
-    '截至 ' + (SH_D || '-') + ' · ' + v.length + ' 个交易日'
+    (d.agg ? '同指数合计 · ' : '') + '截至 ' + (SH_D || '-') + ' · ' + v.length + ' 个交易日'
     + (d.agg && d.n ? ' · ' + d.n + ' 只合计' : '')
     + (d.s ? ' · 最新份额 ' + d.s.toFixed(2) + ' 亿份' : '');
   document.getElementById('shBody').innerHTML = shSvg(v, dates, d.cv) + shFoot(v, d);
