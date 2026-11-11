@@ -119,6 +119,51 @@ async function fetchEMShares() {
 }
 
 /** 沪市：上交所 ETF 规模报表的 TOT_VOL（万份）。必须校验 STAT_DATE 回显。 */
+/**
+ * 深交所 ETF 规模报表（CATALOGID=1945）给的 dqgm 就是「当前规模」，单位万份，
+ * 与 sz_hist 的份额口径一致（158076 两边都是 10,169.75 万份）。
+ *
+ * 这是深市的**第二源**：东财 f38 对云 IP 会整段拒连（2026-11-11 Actions 上
+ * 25 页全挂），而深市份额断一天就再也补不回来——它不像沪市能用 STAT_DATE 回查。
+ * 所以宁可翻 78 页（每页固定 10 行，传 PAGESIZE 无效）也要拿到。
+ */
+async function fetchSZSE(day) {
+  const base = 'https://www.szse.cn/api/report/ShowReport/data'
+    + '?SHOWTYPE=JSON&CATALOGID=1945&txtDate=' + day;
+  const out = {};
+  let pages = 0;
+  for (let pg = 1; pg <= 90; pg++) {
+    let d = null;
+    for (let k = 0; k < 3; k++) {
+      try {
+        const r = await fetch(base + '&PAGENO=' + pg, {
+          headers: { 'User-Agent': UA, Referer: 'https://www.szse.cn/', Accept: '*/*' },
+        });
+        const j = await r.json();
+        d = Array.isArray(j) ? j[0] : null;
+        break;
+      } catch (e) { await sleep(600 * (k + 1)); }
+    }
+    if (!d) break;
+    // 报表表头带日期，不是目标日说明当天还没发布
+    const stamp = (d.metadata && d.metadata.subname) || '';
+    if (pg === 1 && stamp && stamp !== day) return null;
+    const rows = d.data || [];
+    if (!rows.length) break;
+    pages++;
+    for (const r of rows) {
+      const m = /code=(\d{6})/.exec(r.sys_key || '');
+      const v = parseFloat(String(r.dqgm || '').replace(/,/g, ''));
+      if (m && v > 0) out[m[1]] = Math.round(v * 1e4);
+    }
+    if (d.metadata && d.metadata.pagecount && pg >= d.metadata.pagecount) break;
+    await sleep(120);
+  }
+  if (!Object.keys(out).length) return null;
+  log(`    （深交所 ${pages} 页 / ${Object.keys(out).length} 只）`);
+  return out;
+}
+
 async function fetchSH(day) {
   const url = 'http://query.sse.com.cn/commonQuery.do'
     + '?sqlId=COMMON_SSE_ZQPZ_ETFZL_XXPL_ETFGM_SEARCH_L'
@@ -170,6 +215,13 @@ async function fetchAppend(mk) {
     let got = null, srcNote = '';
     if (m.mkt === 'SZ') {
       got = (await emShares())?.sz || null;
+      // 东财整段挂掉时只拿到几只甚至 0 只，这时改走深交所
+      if (!got || Object.keys(got).length < 700) {
+        const s = await fetchSZSE(T);
+        if (s && Object.keys(s).length > (got ? Object.keys(got).length : 0)) {
+          got = s; srcNote = '（东财没给，降级深交所）';
+        }
+      }
     } else {
       got = await fetchSH(T);
       if (!got) {
