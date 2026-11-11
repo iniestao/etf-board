@@ -54,7 +54,7 @@ function done(need, why) {
 
 const { date: TODAY, min: NOW_MIN } = bjNow();
 
-// 1) 今天到底开市没有
+// 1) 今天到底开市没有。东财问不到就问新浪——两个都崩了才保守跑一轮
 let stampDay = null;
 try {
   const j = await get('https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=20&po=1&np=1'
@@ -64,13 +64,29 @@ try {
   const days = diff.map((x) => (x.f124 ? bjDateOf(x.f124) : null)).filter(Boolean).sort();
   stampDay = days[days.length - 1] || null;
 } catch (e) {
-  // 源挂了就不能判断"缺不缺"，宁可跑一遍：跑一次的成本远低于丢一天
-  done(true, `东财快照取不到（${e.message}），保守起见跑一轮`);
+  // 东财对云 IP 会整段拒连，换新浪问一只就行（返回里第 31 个字段是日期）
+  try {
+    const r = await fetch('https://hq.sinajs.cn/list=sh510300', {
+      headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn' },
+      signal: AbortSignal.timeout(15000),
+    });
+    const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const m = /"(.*)"/.exec(txt);
+    const f = m ? m[1].split(',') : [];
+    if (f.length >= 31) stampDay = f[30];
+    log(`（东财不可用，改用新浪：快照日期 ${stampDay || '未知'}）`);
+  } catch (e2) {
+    // 两个源都崩了就判断不了"缺不缺"，宁可跑一遍：跑一次的成本远低于丢一天
+    done(true, `东财和新浪都取不到（${e.message} / ${e2.message}），保守起见跑一轮`);
+  }
 }
 
 log(`北京 ${TODAY} ${String(Math.floor(NOW_MIN / 60)).padStart(2, '0')}:${String(NOW_MIN % 60).padStart(2, '0')}`
   + ` · 东财快照日期 ${stampDay || '未知'}`);
 
+if (!stampDay) {
+  done(true, '两个源都没给出日期，保守起见跑一轮');
+}
 if (stampDay !== TODAY) {
   done(false, `今天没开市（快照停在 ${stampDay}），非交易日不跑`);
 }
