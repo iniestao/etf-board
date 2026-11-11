@@ -6,9 +6,14 @@ name: 更新 ETF 数据
 
 on:
   schedule:
-    # GitHub 的 cron 是 UTC。北京时间 16:35 = UTC 08:35
-    # 收盘 15:00 + 数据源清洗延迟，留 1.5 小时余量
+    # 两批。GitHub 的 cron 是 UTC，+8 才是北京：
+    #   08:35 UTC = 北京 16:35  主批次
+    #   13:00 UTC = 北京 21:00  兜底批次
+    # 加第二批是因为单点失败会直接丢一天，而深市份额断了就再也补不回来。
+    # 兜底批次先跑 probe 判断数据是否已齐，齐了立刻结束（约 30 秒），
+    # 不齐才整条重跑。仓库是公开的，Actions 分钟数不计费，成本只在时间。
     - cron: '35 8 * * 1-5'
+    - cron: '0 13 * * 1-5'
   workflow_dispatch:        # 支持手动跑，改因子后不用等定时
 
 concurrency:
@@ -20,7 +25,26 @@ permissions:
   contents: write
 
 jobs:
+  # 兜底批次专用：数据已经齐了就不要再跑一遍 39 分钟的流水线。
+  # 主批次不探测——16:35 那会儿当天数据必定还没到，问了也是白问。
+  probe:
+    if: github.event.schedule == '0 13 * * 1-5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    outputs:
+      need: ${{ steps.chk.outputs.need }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 判断要不要跑
+        id: chk
+        run: node tools/probe_fresh.mjs
+
   build:
+    needs: [probe]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule != '0 13 * * 1-5' || needs.probe.outputs.need == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -38,6 +62,17 @@ jobs:
       - name: 拉取日线（1717 只，约 9 分钟）
         working-directory: data
         run: node import_etf.mjs --out etf.db --delay 60
+        env:
+          NODE_NO_WARNINGS: '1'
+
+      # 新浪的当天 K 线要等到深夜、甚至次日才出：2026-11-11 18:35 实测，
+      # 四只代表标的的最新 bar 都还停在 11-10，而东财已经是 11-11。
+      # 不补这一根，整条链（因子、K 线、份额轴）就永远慢一天。
+      # 失败不判红：这是补丁，主数据仍由新浪负责，缺口留给兜底批次。
+      - name: 补齐当天日线（东财快照）
+        continue-on-error: true
+        working-directory: data
+        run: node backfill_today.mjs --db etf.db
         env:
           NODE_NO_WARNINGS: '1'
 
