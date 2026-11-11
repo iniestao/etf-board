@@ -140,6 +140,18 @@ async function fetchSH(day) {
 async function fetchAppend(mk) {
   const T = mk.last_trade_date;
   log(`\n[fetch] 目标日 ${T}`);
+
+  /* 份额轴必须逐格对齐。原来只 push 一个 T：沪深两份文件是各追各的，某天
+     只有一边抓成功（上交所报表比东财晚，或反向），那一份的 d 就少一天，
+     而 c 数组按索引对应 —— 下次再 push，整条历史就永久错开一天，且看不出来。
+     所以这里按「价格库的交易日历」把中间缺的日子一并补上，缺的那天写 null。 */
+  let db = null;
+  const daysBetween = (after) => {
+    if (!db) db = openDb();
+    return db.prepare('SELECT DISTINCT date FROM etf_daily WHERE date > ? AND date <= ? ORDER BY date')
+      .all(after, T).map((r) => r.date);
+  };
+
   for (const m of await loadShares()) {
     if (m.d[m.d.length - 1] >= T) { log(`  · ${m.mkt} 轴已到 ${m.d[m.d.length - 1]}，跳过`); continue; }
     let got = m.mkt === 'SZ' ? await fetchSZ() : await fetchSH(T);
@@ -157,9 +169,16 @@ async function fetchAppend(mk) {
       continue;
     }
 
-    m.d.push(T);
+    const fill = daysBetween(m.d[m.d.length - 1]);
+    if (!fill.length) { log(`  ✗ ${m.mkt} 价格库里没有更晚的交易日，不追加`); continue; }
+    if (fill.length > 1) {
+      log(`  ! ${m.mkt} 断档 ${fill.length - 1} 天（${fill.slice(0, -1).join(' ')}），按 null 补齐以保证轴对齐`);
+    }
+    m.d.push(...fill);
+    const gap = fill.length - 1;
     let filled = 0;
     for (const [code, arr] of Object.entries(m.c)) {
+      for (let i = 0; i < gap; i++) arr.push(null);
       if (got[code]) { arr.push(got[code]); filled++; } else arr.push(null);
     }
     // 当天新上市、老表里没有的代码
