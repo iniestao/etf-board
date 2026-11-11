@@ -160,7 +160,7 @@ background:var(--bg3)}
 .mbrk{flex:0 0 0;height:0}
 @media(max-width:820px){.mbrk{flex:0 0 100%}.mtab.grp{margin-left:0}}
 
-/* 期指期权区块：五张卡，桌面两列、手机一列。
+/* 衍生品区块：五张卡，桌面两列、手机一列。
    「基差历史」占整行——曲线要横向空间，塞进半列会把 250 个点压成一团。 */
 .futgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .futgrid .wide{grid-column:1 / -1}
@@ -1067,7 +1067,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <a data-t="secSec">板块地图</a>
   <a data-t="watchSec">自选</a>
   <a data-t="spdSec">急涨急跌</a>
-  <a data-t="futSec">期指期权</a>
+  <a data-t="futSec">衍生品</a>
   <a data-t="rankSec">清单</a>
 </nav>
 
@@ -1177,13 +1177,13 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 </div>
 
 <div class="sec" id="futSec">
-  <div class="sechd"><b>期指期权</b><span class="n" id="futN"></span>
+  <div class="sechd"><b>衍生品</b><span class="n" id="futN"></span>
     <span class="sync" id="btnFut" title="重新读一遍中金所实时行情">刷新</span></div>
-  <div class="dnote">期指基差＝期货−现货，负数即贴水；期权用 <b>K＋购−沽</b> 合成一张期货，再和同月期货对照。年化按自然日折算，剩余不足 3 天不给——那时分母太小，算出来是噪音。</div>
+  <div class="dnote">期货基差＝期货−现货，负数即贴水；期权用 <b>K＋购−沽</b> 合成一张期货，再和同月期货对照。年化按自然日折算，剩余不足 3 天不给——那时分母太小，算出来是噪音。</div>
 
   <div class="futgrid">
     <div class="mkbox">
-      <div class="futttl"><b>期指基差</b><span id="futBasisSub">四象限是「持仓量变化 × 价格方向」的推断，不是交易所多空</span></div>
+      <div class="futttl"><b>期货基差</b><span id="futBasisSub">四象限是「持仓量变化 × 价格方向」的推断，不是交易所多空</span></div>
       <div class="tbl" id="futBasis"><div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div></div>
     </div>
 
@@ -6614,7 +6614,7 @@ function schedule(){
     runTop3(watch.slice(0, 30));
   }, 60000);
 
-  /* 期指期权：盘中 60 秒，盘后 5 分钟。收盘后 16:00~17:00 这段单独加一把劲——
+  /* 衍生品：盘中 60 秒，盘后 5 分钟。收盘后 16:00~17:00 这段单独加一把劲——
      中金所的会员持仓和结算价要等它发出来，而这时段的页面如果一直显示昨天的
      多空表，比不显示更容易误导。查到当天那份出现就自然停止（pos.d === td）。 */
   clearInterval(timerFut);
@@ -7333,7 +7333,7 @@ document.getElementById('btnProbe').onclick = function(){
 
 function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
 
-/* ---------- 期指期权 ----------
+/* ---------- 衍生品 ----------
    三块数据各走各的接口，互不阻塞：
      /api/fut      中金所实时（期货 + 股指期权 + 现货）+ 收盘日档里的会员持仓
      /api/futopt   东财 ETF 期权链，main / rest 两批
@@ -7422,7 +7422,7 @@ function futBaseNote(){
 function futFail(msg){
   var box = document.getElementById('futBasis');
   if (box){
-    box.innerHTML = '<div class="lerr"><b>期指行情没读上来</b><span>' + esc(msg || '') + '</span>'
+    box.innerHTML = '<div class="lerr"><b>衍生品行情没读上来</b><span>' + esc(msg || '') + '</span>'
       + '<button id="futRetry">立即重试</button></div>';
     var b = document.getElementById('futRetry');
     if (b) b.onclick = function(){ loadFut(); loadFutOpt('main'); };
