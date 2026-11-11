@@ -313,6 +313,18 @@ jobs:
           assert n >= 3, f'只有 {n} 天，画不出曲线'
           PY
 
+      # ---------- 3f. 份额日档（份额 → 净申购金额） ----------
+      # 份额历史留在 main（data/shares/），派生产物随 data 分支发布（dist/shares/）。
+      # --fetch 先抓当日份额再算；抓不到就降级用已有轴。份额只是清单里的一列，
+      # 不该因为它把整条流水线拖红，所以 continue-on-error。
+      - name: 生成份额日档
+        continue-on-error: true
+        run: |
+          node pipeline/gen_shares.mjs --fetch
+          echo "--- 产物 ---"
+          du -sh dist/shares | cut -f1
+          ls dist/shares | wc -l
+
       # ---------- 4. 发布历史数据 ----------
       # 默认走 GitHub 自己的 data 分支：不需要 R2、不需要绑卡、不需要配 secret。
       # 每次都是「孤儿单提交 + force push」，所以仓库不会一天涨 62MB。
@@ -333,6 +345,7 @@ jobs:
           for f in sec_daily.json mkt_hist.json fut_daily.json fut_last.json etfopt_hist.json; do
             if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; else echo "::warning::dist/$f 不存在，这轮不发布它"; fi
           done
+          if [ -d dist/shares ]; then cp -r dist/shares "$PUB/"; else echo "::warning::dist/shares 不存在，这轮不发布份额"; fi
           cd "$PUB"
           git init -q
           git config user.name "etf-board-bot"
@@ -409,6 +422,41 @@ jobs:
           done
           [ "$ok" = "1" ] || echo "::error::回滚也推不上去，手工处理"
           echo "::warning::Worker 部署失败，已回滚快照提交"
+
+      # ---------- 4c. 回写份额历史 ----------
+      # 份额是「只能往前长」的东西：深市历史只有用户导的那一份，之后全靠每天收盘后
+      # 从东财 f38 采一次。不回写 main，就等于每天都从同一个起点重抓，断一天就永远断。
+      # 不回写 Worker：份额不影响任何内联常量，没必要为它重新部署。
+      - name: 回写份额历史
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "etf-board-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          FILES="data/shares/sz_hist.json data/shares/sh_hist.json"
+          if git diff --quiet -- $FILES; then
+            echo "份额历史无变化（抓取失败或轴上已是最新）"
+            exit 0
+          fi
+          git diff --stat -- $FILES
+          git add $FILES
+          git commit -q -m "data(shares): 追加 $(date -u '+%Y-%m-%d') 份额"
+          ok=0
+          for i in 1 2 3; do
+            git fetch -q --depth=20 origin main
+            if ! git rebase -q origin/main; then
+              git rebase --abort || true
+              echo "::warning::与最新 main 冲突，放弃本次提交"
+              break
+            fi
+            if git push -q origin HEAD:main; then ok=1; break; fi
+            sleep 5
+          done
+          if [ "$ok" = "1" ]; then
+            echo "已推送 $(git rev-parse --short HEAD)"
+          else
+            echo "::warning::份额历史推送失败，当天份额明天重抓（可能丢一天）"
+          fi
 
       # ---------- 5. 映射有变才回写仓库并重部署 ----------
       # idx_data.js 是「构建时固化」进页面的（不额外发请求），所以补了映射必须重新部署

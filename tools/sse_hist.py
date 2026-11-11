@@ -161,8 +161,21 @@ def main():
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     tmp = OUT + '.tmp'
+    # 每只一行（与 xlsx2shares.py 的 write_shares 同一格式，见那里的注释）：
+    # 单行 JSON 会让每天的 commit 都是整 blob，每只一行才能让 git delta 只存增量。
+    codes_sorted = list(data.keys())
+    head = {k: v for k, v in out.items() if k not in ('n', 'c')}
+    lines = [json.dumps(head, ensure_ascii=False, separators=(',', ':'))[:-1] + ',"n":{']
+    for i, code in enumerate(codes_sorted):
+        lines.append('"%s":%s%s' % (code, json.dumps(out['n'].get(code, ''), ensure_ascii=False),
+                                    ',' if i < len(codes_sorted) - 1 else ''))
+    lines.append('},"c":{')
+    for i, code in enumerate(codes_sorted):
+        lines.append('"%s":%s%s' % (code, json.dumps(data[code], separators=(',', ':')),
+                                    ',' if i < len(codes_sorted) - 1 else ''))
+    lines.append('}}')
     with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
+        f.write('\n'.join(lines) + '\n')
     os.replace(tmp, OUT)
 
     cnt = [sum(1 for x in v if x is not None) for v in data.values()]

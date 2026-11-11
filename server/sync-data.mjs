@@ -119,12 +119,37 @@ async function writeState(obj) {
 async function pullTops(cdn, dist) {
   for (const f of ['manifest.json', 'research.json', 'hist/events.json',
                    'sec_daily.json', 'mkt_hist.json',
-                   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json']) {
+                   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json',
+                   'shares/last.json', 'shares/ix.json']) {
     try {
       const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
-      if (r.ok) await fsp.writeFile(path.join(dist, f), Buffer.from(await r.arrayBuffer()));
+      if (r.ok) {
+        const dst = path.join(dist, f);
+        await fsp.mkdir(path.dirname(dst), { recursive: true });
+        await fsp.writeFile(dst, Buffer.from(await r.arrayBuffer()));
+      }
     } catch { /* 拿不到就保留旧的 */ }
   }
+}
+
+/**
+ * 份额单只文件（~1700 个，每个 1.5KB）。
+ *
+ * 只补本地缺的：同一天重跑时它们不会变，全下是白费；但新上市的 ETF 会出现
+ * 新文件，所以要逐只 existsSync 判——和 hist 那边同一个坑（目录文件数会被
+ * events.json 干扰）。失败不影响主流程：清单里那一列显示「-」而已。
+ */
+async function pullShares(cdn, raw, dist, codes, conc, log) {
+  const dir = path.join(dist, 'shares');
+  await fsp.mkdir(dir, { recursive: true });
+  const need = codes.filter((c) => !fs.existsSync(path.join(dir, c + '.json')));
+  if (!need.length) return 0;
+  log('  补 ' + need.length + ' 个份额文件');
+  await pool(need, conc, (code) => fetchOne(
+    [cdn + '/shares/' + code + '.json', raw + '/shares/' + code + '.json'],
+    path.join(dir, code + '.json'),
+  ), () => {});
+  return need.length;
 }
 
 /** 单文件下载：按基址顺序试 + 退避重试，落盘走 tmp+rename（不留半个文件） */
@@ -226,8 +251,11 @@ export async function syncData(opts = {}) {
     return { changed: true, mark: man.mark, skipped: 'check-only' };
   }
 
+  const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
+
   if (!opts.force && !opts.hist && haveHist && haveFut && haveEh && sameDay) {
     await pullTops(cdn, dist);
+    await pullShares(cdn, raw, dist, codes, conc, log).catch(() => 0);
     const files = (await fsp.readdir(histDir)).length;
     await writeState({
       mark: man.mark, last_trade_date: man.last_trade_date,
@@ -239,7 +267,6 @@ export async function syncData(opts = {}) {
   }
 
   await fsp.mkdir(histDir, { recursive: true });
-  const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
   const t0 = Date.now();
   log('开始同步 ' + codes.length + ' 个 hist 文件（并发 ' + conc + '）');
 
@@ -268,6 +295,7 @@ export async function syncData(opts = {}) {
   // etfopt_hist.json 是 ETF 期权那段历史。它每天都在合并新一天，沙箱不跟着换
   // 就是「线上 131 天、本地还停在发布那天」，越差越远。
   await pullTops(cdn, dist);
+  await pullShares(cdn, raw, dist, codes, conc, log).catch(() => 0);
 
   const sec = ((Date.now() - t0) / 1000).toFixed(0);
   const files = (await fsp.readdir(histDir)).length;

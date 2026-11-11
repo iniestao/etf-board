@@ -127,6 +127,30 @@ def find_layout(rows):
     return code_row, cmap, date_col, first
 
 
+def write_shares(obj, path):
+    """按「每只一行」写盘。
+
+    为什么不 json.dump 成一整行：这份文件在 main 分支上每天追加一格，单行 JSON
+    会让每次 commit 都是一个 2 MB 的整 blob；每只一行时 git 的 delta 压缩只存
+    每行末尾多出来的几个字节，一年下来仓库不会爆。
+    """
+    tmp = path + '.tmp'
+    head = {k: v for k, v in obj.items() if k not in ('n', 'c')}
+    codes = list(obj['c'].keys())
+    lines = [json.dumps(head, ensure_ascii=False, separators=(',', ':'))[:-1] + ',"n":{']
+    for i, code in enumerate(codes):
+        lines.append('"%s":%s%s' % (code, json.dumps(obj['n'].get(code, ''), ensure_ascii=False),
+                                    ',' if i < len(codes) - 1 else ''))
+    lines.append('},"c":{')
+    for i, code in enumerate(codes):
+        lines.append('"%s":%s%s' % (code, json.dumps(obj['c'][code], separators=(',', ':')),
+                                    ',' if i < len(codes) - 1 else ''))
+    lines.append('}}')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.replace(tmp, path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('xlsx')
@@ -219,8 +243,7 @@ def main():
 
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, 'w', encoding='utf-8') as f:
-            json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
+        write_shares(out, a.out)
         print('已写 %s（%.2f MB）' % (a.out, os.path.getsize(a.out) / 1048576))
 
     if a.csv:

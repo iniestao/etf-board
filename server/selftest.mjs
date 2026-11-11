@@ -259,6 +259,33 @@ async function runContracts(base, pass) {
   r = await rawRequest(base, '/api/hist?code=510300', { cookie });
   (r.status === 200 && r.body.length > 1000) ? ok('/api/hist 510300 → ' + r.body.length + ' 字节') : bad('/api/hist 异常：' + r.status + ' ' + r.body.length);
 
+  // 份额：清单第 12 列 + 点开的柱状图。没生成时只提示，不判红（本地没跑过 pipeline）
+  r = await rawRequest(base, '/api/shares', { cookie });
+  const jsh = r.json();
+  if (jsh && jsh.code === 'NO_SHARES') {
+    ok('/api/shares 还没生成（跳过明细）');
+  } else if (!jsh || !jsh.ok) {
+    bad('/api/shares 异常：' + r.status + ' ' + ((jsh && jsh.error) || r.body.slice(0, 60)));
+  } else {
+    const ax = jsh.ax || [];
+    const nC = Object.keys(jsh.c || {}).length;
+    (ax.length >= 60 && nC > 1000)
+      ? ok('/api/shares 轴 ' + ax.length + ' 天 · ' + nC + ' 只 · 截至 ' + jsh.d)
+      : bad('/api/shares 结构不对：轴 ' + ax.length + ' 天、' + nC + ' 只');
+    const s5 = (jsh.c || {})['510300'];
+    (s5 > 100 && s5 < 2000) ? ok('510300 份额 ' + s5 + ' 亿份') : bad('510300 份额异常：' + s5);
+
+    r = await rawRequest(base, '/api/shares?code=510300', { cookie });
+    const jone = r.json();
+    (jone && jone.ok && Array.isArray(jone.v) && jone.v.length === ax.length)
+      ? ok('单只份额 510300 → ' + jone.v.length + ' 天')
+      : bad('/api/shares?code=510300 异常：' + r.status + ' ' + r.body.slice(0, 60));
+
+    r = await rawRequest(base, '/api/shares?code=abc', { cookie });
+    const jbad = r.json();
+    (jbad && jbad.ok === false) ? ok('非法 code 被挡住') : bad('非法 code 没被挡住');
+  }
+
   // K 线：参数校验
   r = await rawRequest(base, '/api/hist?code=__bad__', { cookie });
   const jb = r.json();

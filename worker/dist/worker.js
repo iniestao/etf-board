@@ -983,6 +983,60 @@ async function serveOvK(sid, n, env, ctx) {
  *
  * 4 页 × 100 条，约 0.4 秒。60 秒边缘缓存：盘中不必秒级，收盘后基本不动。
  */
+// ---------------------------------------------------------------- 份额日档
+/**
+ * 份额变化（清单里那一列 + 点开后的每日柱状图）。
+ *
+ *   GET /api/shares              → shares/last.json     整表：份额、当日净流入、指数归属
+ *   GET /api/shares?ix=1         → shares/ix.json       同指数汇总的每日序列
+ *   GET /api/shares?code=510300  → shares/510300.json   单只 250 天净流入 + 折算标记
+ *
+ * 为什么不并进 /api/all：那个响应 600KB，再 JSON.parse 一遍份额会吃掉免费版
+ * 10ms 的 CPU 预算。这里只做字节透传，一个字段都不解。
+ *
+ * 也不写 KV：份额每天只变一次，边缘缓存 5 分钟足够，没必要占 KV 的写额度。
+ */
+async function serveShares(url, env, ctx) {
+  const code = String(url.searchParams.get('code') || '').trim();
+  const isIx = url.searchParams.get('ix') === '1';
+  if (code && !/^\d{6}$/.test(code)) return json({ ok: false, error: 'code 非法' }, 60);
+  const key = code ? 'shares/' + code + '.json' : (isIx ? 'shares/ix.json' : 'shares/last.json');
+  const ttl = code || isIx ? 1800 : 300;
+
+  const cache = await getCache();
+  const ck = new Request('https://etf-board.internal/' + key, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(ck);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败继续回源 */ }
+  }
+
+  let obj;
+  try {
+    obj = await readAsset(env, key);
+  } catch (e) {
+    // 失败只缓存 60 秒：pipeline 一旦补上数据，页面不用再等半小时
+    return json({ ok: false, code: 'SHARES_ERR', error: '读取份额数据失败: ' + (e.message || e) }, 60);
+  }
+  if (!obj) return json({ ok: false, code: 'NO_SHARES', error: '份额数据还没生成' }, 60);
+
+  const h = new Headers();
+  if (obj.etag) h.set('ETag', obj.etag);
+  h.set('Content-Type', 'application/json; charset=utf-8');
+  h.set('Cache-Control', 'public, max-age=' + ttl);
+  h.set('Access-Control-Allow-Origin', '*');
+  const resp = new Response(obj.body, { headers: h });
+  if (cache) {
+    try {
+      const p = cache.put(ck, resp.clone());
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(p);
+      else await p;
+    } catch (e) { /* 忽略 */ }
+  }
+  return resp;
+}
+
 async function serveMkt(env, ctx) {
   const cache = await getCache();
   const key = new Request('https://etf-board.internal/mkt/v1', { method: 'GET' });
@@ -3994,6 +4048,11 @@ export default {
       const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
       if (!isOvSid(sid)) return json({ ok: false, error: 'sid 非法' });
       return serveOvK(sid, +url.searchParams.get('n') || 120, env, ctx);
+    }
+
+    if (p === '/api/shares') {
+      // 份额变化：last / ix / 单只三档，纯透传
+      return serveShares(url, env, ctx);
     }
 
     if (p === '/api/mkt') {
