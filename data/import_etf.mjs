@@ -57,10 +57,43 @@ async function get(url, tries = RETRY + 1) {
 }
 
 // ---------------------------------------------------------------- ETF 列表
+/* 两个源都要，缺一个就少几百只：
+   - 新浪 etf_hq_fund 给的是**短简称**（「科创债WJ」「信用债DC」这种只有它有），
+     但节点口径会变：2026-11-11 它的 count 接口自报 938 只，而前一天还是 1719。
+     靠它单独当名单，数据会静默腰斩（完整性断言才拦下来）。
+   - 东财 b:MK0021..MK0024 覆盖 1660 只、名称规范，但漏掉那 60 只债券 ETF。
+   所以两个源取并集：新浪的简称优先保留，东财补覆盖。 */
+const EM_HDR = { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' };
+
+async function getEM(url, tries = RETRY + 1) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, { headers: EM_HDR });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.text();
+    } catch (e) {
+      last = e;
+      if (i < tries - 1) await sleep(500 * (i + 1));
+    }
+  }
+  throw last;
+}
+
 async function listETF() {
   if (ONLY.length) return ONLY.map((c) => ({ code: c, name: '' }));
   const out = [];
-  for (let p = 1; p <= 25; p++) {
+  const seen = new Set();
+  const push = (c, n) => {
+    const code = String(c || '');
+    if (!/^\d{6}$/.test(code) || seen.has(code)) return;
+    seen.add(code);
+    out.push({ code, name: String(n || '') });
+  };
+
+  // 1) 新浪：短简称，量少但补得上债券 ETF
+  let sinaN = 0;
+  for (let p = 1; p <= 30; p++) {
     const u = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
       + 'Market_Center.getHQNodeData?page=' + p
       + '&num=100&sort=symbol&asc=1&node=etf_hq_fund&symbol=&_s_r_a=page';
@@ -69,9 +102,29 @@ async function listETF() {
     if (!Array.isArray(arr) || !arr.length) break;
     for (const x of arr) {
       // 新浪的 symbol 自带 sh/sz 前缀，统一剥成 6 位数字
-      const c = String(x.symbol || x.code || '').replace(/^(sh|sz)/i, '');
-      if (/^\d{6}$/.test(c)) out.push({ code: c, name: String(x.name || '') });
+      push(String(x.symbol || x.code || '').replace(/^(sh|sz)/i, ''), x.name);
     }
+    sinaN = out.length;
+    await sleep(120);            // 连着打十几页会被限流，前面就是这样静默断在第 10 页
+  }
+
+  // 2) 东财：覆盖全，名称规范
+  const fss = 'b:MK0021,b:MK0022,b:MK0023,b:MK0024';
+  for (let pn = 1; pn <= 25; pn++) {
+    const u = 'https://push2.eastmoney.com/api/qt/clist/get?pn=' + pn
+      + '&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fs=' + encodeURIComponent(fss)
+      + '&fields=f12,f14';
+    let d = null;
+    try { d = JSON.parse(await getEM(u)); } catch { d = null; }
+    const diff = (d && d.data && d.data.diff) || [];
+    if (!diff.length) break;
+    for (const x of diff) push(String(x.f12 || ''), x.f14);
+    await sleep(200);
+  }
+
+  console.log(`名单：新浪 ${sinaN} 只，并上东财后共 ${out.length} 只`);
+  if (out.length < 1500) {
+    console.log('::warning::名单只有 ' + out.length + ' 只，两个上游可能都在降级');
   }
   return out;
 }
@@ -238,6 +291,16 @@ CREATE TABLE IF NOT EXISTS etf_adjust (
 
 // ---------------------------------------------------------------- 主流程
 const t0 = Date.now();
+
+// 只查名单，不建库、不抓 K 线：上游口径变了要先能一眼看到数量，
+// 而不是等九天跑完一条条往下翻
+if (flag('list-only')) {
+  const l = await listETF();
+  console.log(JSON.stringify(l.slice(0, 3)));
+  console.log(`共 ${l.length} 只`);
+  process.exit(0);
+}
+
 const db = new DatabaseSync(OUT);
 db.exec(SCHEMA);
 
