@@ -92,12 +92,13 @@ async function fetchSZ() {
     const url = 'https://push2.eastmoney.com/api/qt/clist/get'
       + `?pn=${pn}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fs=b:MK0021&fields=f12,f14,f38`;
     let d = null;
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < 4; k++) {
       try {
         const r = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
         d = await r.json();
         break;
-      } catch (e) { await sleep(1200 * (k + 1)); }
+      } catch (e) { await sleep(1500 * (k + 1)); }
     }
     const diff = d?.data?.diff;
     if (!diff || !diff.length) break;
@@ -107,6 +108,9 @@ async function fetchSZ() {
     }
     await sleep(350);            // 东财会限流，别打太急
   }
+  // 空结果必须返回 null：原来返回 {} 会让上层判成「抓取成功、追加 0 只有值」，
+  // 日志一片绿但其实什么都没拿到。东财被限流时正是这个表现（Empty reply）。
+  if (!Object.keys(out).length) return null;
   return out;
 }
 
