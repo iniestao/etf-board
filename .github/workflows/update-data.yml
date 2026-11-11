@@ -380,15 +380,23 @@ jobs:
             exit 0
           fi
           git diff --stat -- $FILES
+          echo "--- 其它脏文件（rebase 会因它们失败）---"
+          git status --porcelain | grep -v -E 'src/(mkt_hist|sec_hist)\.js' | head -10 || true
           ( cd worker && node build.mjs && node --check dist/worker.js )
           git add $FILES worker/dist/worker.js
           git commit -q -m "chore(data): 内联快照跟随 $(date -u '+%Y-%m-%d') 回算结果"
+          # 工作区里常常躺着别的步骤写下的脏文件（比如「生成份额日档」会改
+          # data/shares/*.json）。rebase 要求工作区干净，直接跑会被顶回来，
+          # 报出来的却是「与 main 冲突」，很容易误判。autoStash 让它自己 stash/pop。
+          git config rebase.autoStash true
           ok=0
           for i in 1 2 3; do
             git fetch -q --depth=20 origin main
             if ! git rebase -q origin/main; then
+              echo "--- 放弃前的工作区状态 ---"
+              git status --porcelain | head -20
               git rebase --abort || true
-              echo "::warning::与最新 main 冲突，放弃本次提交（明天会再补一次）"
+              echo "::warning::提交没能重放到最新 main（真冲突或 stash 恢复失败），放弃本次提交（明天会再补一次）"
               break
             fi
             if git push -q origin HEAD:main; then ok=1; break; fi
@@ -441,12 +449,18 @@ jobs:
           git diff --stat -- $FILES
           git add $FILES
           git commit -q -m "data(shares): 追加 $(date -u '+%Y-%m-%d') 份额"
+          # 工作区里常常躺着别的步骤写下的脏文件（比如「生成份额日档」会改
+          # data/shares/*.json）。rebase 要求工作区干净，直接跑会被顶回来，
+          # 报出来的却是「与 main 冲突」，很容易误判。autoStash 让它自己 stash/pop。
+          git config rebase.autoStash true
           ok=0
           for i in 1 2 3; do
             git fetch -q --depth=20 origin main
             if ! git rebase -q origin/main; then
+              echo "--- 放弃前的工作区状态 ---"
+              git status --porcelain | head -20
               git rebase --abort || true
-              echo "::warning::与最新 main 冲突，放弃本次提交"
+              echo "::warning::提交没能重放到最新 main（真冲突或 stash 恢复失败），放弃本次提交"
               break
             fi
             if git push -q origin HEAD:main; then ok=1; break; fi
@@ -475,14 +489,17 @@ jobs:
           ( cd worker && node build.mjs && node --check dist/worker.js )
           git add pipeline/index_map.json worker/src/idx_data.js worker/dist/worker.js
           git commit -q -m "chore(idx): 增量补齐跟踪指数映射 $(date -u '+%Y-%m-%d')"
+          git config rebase.autoStash true
           ok=0
           for i in 1 2 3; do
             # 先把提交重放到最新 main 上再推：checkout 的是开工那一刻的 main，
             # 这十几分钟里有人推过代码的话，直接 push 会被 non-fast-forward 顶回来。
             git fetch -q --depth=20 origin main
             if ! git rebase -q origin/main; then
+              echo "--- 放弃前的工作区状态 ---"
+              git status --porcelain | head -20
               git rebase --abort || true
-              echo "::warning::与最新 main 冲突，放弃本次提交（明天会再补一次）"
+              echo "::warning::提交没能重放到最新 main（真冲突或 stash 恢复失败），放弃本次提交（明天会再补一次）"
               break
             fi
             if git push -q origin HEAD:main; then ok=1; break; fi
@@ -515,7 +532,7 @@ jobs:
           ok=0
           for i in 1 2 3; do
             if git push -q origin HEAD:main; then ok=1; break; fi
-            git fetch -q --depth=20 origin main && git rebase -q origin/main || true
+            git fetch -q --depth=20 origin main && git -c rebase.autoStash=true rebase -q origin/main || true
             sleep 5
           done
           [ "$ok" = "1" ] && echo "::warning::Worker 部署失败，已回滚映射提交，明天重试" \

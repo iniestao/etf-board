@@ -255,6 +255,13 @@ async function runContracts(base, pass) {
   r = await rawRequest(base, '/', { cookie });
   (r.status === 200 && r.text.length > 50000) ? ok('首页 200，' + r.body.length + ' 字节') : bad('首页异常：' + r.status + ' ' + r.body.length + ' 字节');
 
+  // 清单第 12 列：份额（净申赎）。列头和单元格定位属性都在同一个 HTML 里，
+  // 少一个就是「接口有数、页面不显示」，这种静默失败只能靠断言盯住。
+  const hasTh = r.text.includes('class="ctr" title="当日净申购金额');
+  const hasTd = r.text.includes("data-sh=')") || r.text.includes('data-sh="');
+  (hasTh && hasTd) ? ok('清单含「申赎」列（表头 + data-sh 单元格）')
+    : bad('清单缺申赎列：表头 ' + hasTh + ' / 单元格 ' + hasTd);
+
   // K 线
   r = await rawRequest(base, '/api/hist?code=510300', { cookie });
   (r.status === 200 && r.body.length > 1000) ? ok('/api/hist 510300 → ' + r.body.length + ' 字节') : bad('/api/hist 异常：' + r.status + ' ' + r.body.length);

@@ -789,9 +789,9 @@ align-items:center;justify-content:center;padding:18px}
    不给边框、只用虚下划线提示可点——加了边框会把这行撑成两行。 */
 .ondet .ous span.ovclk{cursor:pointer;border-bottom:1px dotted transparent}
 .ondet .ous span.ovclk:hover{border-bottom-color:var(--txt3)}
-#ovMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
+#ovMask,#shMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
-#ovMask.on{display:flex}
+#ovMask.on,#shMask.on{display:flex}
 #ovBody svg{display:block;width:100%;height:auto}
 .ovmeta{display:flex;gap:8px 16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
 margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
@@ -809,6 +809,21 @@ vertical-align:middle;position:relative;top:-1px}
 .ovtabs{display:inline-flex;gap:2px;margin-left:auto;padding:1px;border:1px solid var(--line);border-radius:6px}
 .ovtab{font-size:11.5px;line-height:16px;padding:2px 9px;border-radius:5px;cursor:pointer;color:var(--txt3);user-select:none}
 .ovtab.on{background:var(--line);color:var(--txt)}
+
+/* 份额（净申赎）列。数字等宽，正负一眼扫得出来；上标「合」表示这一行是
+   同指数多只的合计——不加标记的话，去重行和展开行长得一样，很容易看错。 */
+.shcell{font-variant-numeric:tabular-nums;cursor:pointer;white-space:nowrap}
+.shcell:hover{text-decoration:underline;text-underline-offset:2px}
+.shcell .shagg{display:inline-block;margin-left:3px;padding:0 2px;font-size:9px;line-height:11px;
+border-radius:3px;background:var(--line);color:var(--txt2);font-style:normal;vertical-align:1px;
+letter-spacing:0}
+.shcell.up{color:var(--up)} .shcell.down{color:var(--down)}
+.shchart{position:relative}
+.shchart svg{display:block;width:100%;height:auto}
+.shfoot{display:flex;gap:6px 18px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
+margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
+.shfoot b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
+.shnote{font-size:11px;color:var(--txt3);line-height:1.6;margin-top:8px}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 8px 28px rgba(23,32,54,.16);overflow:hidden}
@@ -1260,11 +1275,12 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="tbl"><table>
     <thead><tr>
       <th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨跌%</th>
-      <th class="ctr">溢价率</th><th>成交额</th><th>换手</th>
+      <th class="ctr">溢价率</th><th>成交额</th>
+      <th class="ctr" title="当日净申购金额（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。红=净申购，绿=净赎回。同指数去重时显示该指数全部成员的合计（数字后带「合」），点开看最近 250 个交易日的每日柱状图">申赎</th><th>换手</th>
       <th class="hide-sm">振幅</th><th class="hide-sm">最高</th><th class="hide-sm">最低</th>
       <th class="ctr" style="width:36px"></th>
     </tr></thead>
-    <tbody id="listBody"><tr><td colspan="11" class="lskel"><i></i><i></i><i></i><span>正在取全市场行情…</span></td></tr></tbody>
+    <tbody id="listBody"><tr><td colspan="12" class="lskel"><i></i><i></i><i></i><span>正在取全市场行情…</span></td></tr></tbody>
   </table></div>
 </div>
 
@@ -1347,6 +1363,14 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         <span class="iom" id="trigMsg"></span>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="shMask">
+  <div class="iobox" style="max-width:780px;flex:0 1 780px">
+    <div class="iohd"><b id="shTitle">份额变化</b><span class="n" id="shSub" style="font-size:11.5px;color:var(--txt3)"></span>
+      <button class="hx" id="shClose" title="关闭 (Esc)">×</button></div>
+    <div class="iobody" id="shBody"><div class="iotip">读取中…</div></div>
   </div>
 </div>
 
@@ -2726,6 +2750,326 @@ function renderSectors(){
 }
 
 
+/* ================= 份额变化（净申赎） =================
+   列里显示的是**金额**而不是份额，两条理由都不是审美问题：
+   1) 份额跨基金不能相加。去重后一行代表同指数 N 只，把 588000 的「亿份」和
+      159915 的「亿份」加起来是个没有意义的数；折成金额才有可加性。
+   2) 折算日份额会跳变（1 份拆 2 份、净值从 2 元砍到 1 元），只按 ΔS 看是
+      几百亿的假申购。派生层已经用 (S_t − S_{t−1}×k)×close_t 把 k 除掉，
+      前端拿到的就是真实净申购，折算那天只会剩一个小柱子。
+
+   数据分两个请求：last.json（当日值，约 100KB）先到先画；ix.json（249 组
+   250 天序列，约 310KB）跟上，去重行才有合计值。份额是 T 日盘后披露的，
+   日期通常比行情晚一天，所以标题里必须写清楚是哪天，别让人以为是当天。
+*/
+var SH_D = '';                  // 份额数据截至日
+var SH_F = {};                  // code -> 当日净申购（亿元）
+var SH_S = {};                  // code -> 最新份额（亿份）
+var SH_IXOF = {};               // code -> 跟踪指数名
+var SH_IX = null;               // 指数名 -> {v:[250 天], n:成员数}
+var SH_AX = [];                 // 250 天日期轴
+var SH_ST = 0;                  // 0 未请求 / 1 请求中 / 2 就绪 / -1 失败
+var SH_VIEW = null;             // 弹窗当前在看的序列
+var SH_GEO = null;              // 柱状图的几何，hover 时按它反查下标
+
+function loadShares(){
+  if (SH_ST === 1 || SH_ST === 2) return;
+  SH_ST = 1;
+  fetch('/api/shares').then(function(r){ return r.json(); }).then(function(j){
+    if (!j || !j.ok) throw new Error((j && j.error) || '没有份额数据');
+    SH_D = j.d || '';
+    SH_AX = j.ax || [];
+    SH_F = j.f || {};
+    SH_S = j.c || {};
+    SH_IXOF = j.ix || {};
+    return fetch('/api/shares?ix=1').then(function(r){ return r.json(); });
+  }).then(function(k){
+    if (k && k.ok) SH_IX = k.ix || {};
+    SH_ST = 2;
+    shRepaint();
+  }).catch(function(){
+    SH_ST = -1;
+    shRepaint();
+  });
+}
+
+/* 这一行代表的是「同指数合计」还是「本只」：
+   去重开着、没展开某个指数、且该指数下不止一只 —— 三个条件同时成立才算合计。
+   展开（IXF 非空）后每一行都是具体一只，必须回到单只口径。 */
+function shIsAgg(x){
+  return (DEDUP && !IXF && x.ix && IX_N[x.ix] > 1) ? x.ix : null;
+}
+
+function shIxLast(ix){
+  var g = SH_IX && SH_IX[ix];
+  if (!g || !g.v || !g.v.length) return null;
+  var v = g.v[g.v.length - 1];
+  return (v == null || !isFinite(v)) ? null : v;
+}
+
+/* 亿元这个量级跨度太大：宽基一天几十亿、小票一天零点零几亿。
+   三位小数挤成一片，所以按量级收：>=100 取整，>=10 一位，其余两位。 */
+function shNum(v){
+  if (v == null || !isFinite(v)) return '-';
+  var a = Math.abs(v), t;
+  if (a >= 100) t = v.toFixed(0);
+  else if (a >= 10) t = v.toFixed(1);
+  else t = v.toFixed(2);
+  return (v > 0 ? '+' : '') + t;
+}
+
+function shCell(x){
+  var ix = shIsAgg(x);
+  var v = ix ? shIxLast(ix) : (SH_F[x.c] == null ? null : SH_F[x.c]);
+  var cls = (v == null || v === 0) ? '' : (v > 0 ? 'up' : 'down');
+  var tip = ix
+    ? '跟踪「' + ix + '」的 ' + IX_N[ix] + ' 只合计净申赎（亿元），截至 ' + (SH_D || '-')
+      + '。份额跨基金不能相加，所以折成金额。点开看每日柱状图'
+    : '本只当日净申赎（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。截至 '
+      + (SH_D || '-') + '。点开看每日柱状图';
+  return '<td class="ctr shcell ' + cls + '" data-sh="' + (ix || x.c) + '"'
+    + (ix ? ' data-agg="1"' : '') + ' title="' + tip + '">'
+    + shNum(v) + (ix ? '<i class="shagg">合</i>' : '') + '</td>';
+}
+
+/* 数据到了只改单元格，不重绘整张表：清单 60 秒自己会刷一次，这里再来一次
+   重建 tbody 的话，用户正在看的那一屏会跳回顶部。 */
+function shRepaint(){
+  var cells = document.querySelectorAll('#listBody td[data-sh]');
+  for (var i = 0; i < cells.length; i++){
+    var td = cells[i];
+    var key = td.getAttribute('data-sh');
+    var agg = td.getAttribute('data-agg') === '1';
+    var v = agg ? shIxLast(key) : (SH_F[key] == null ? null : SH_F[key]);
+    td.className = 'ctr shcell ' + ((v == null || v === 0) ? '' : (v > 0 ? 'up' : 'down'));
+    td.innerHTML = shNum(v) + (agg ? '<i class="shagg">合</i>' : '');
+  }
+}
+
+/* ---------------- 弹窗：每日增减柱状图 ---------------- */
+function shOpen(key, agg, nm, retry){
+  var name = nm || key;
+  SH_VIEW = { key: key, agg: !!agg, name: name, v: null, cv: null, s: null, n: agg ? (IX_N[key] || 1) : 1 };
+  document.getElementById('shTitle').textContent = name + (agg ? ' · 同指数合计' : '');
+  document.getElementById('shSub').textContent = '';
+  document.getElementById('shBody').innerHTML = '<div class="iotip">读取中…</div>';
+  document.getElementById('shMask').classList.add('on');
+
+  if (agg){
+    var g = SH_IX && SH_IX[key];
+    if (g && g.v){ SH_VIEW.v = g.v; SH_VIEW.n = g.n || SH_VIEW.n; shRender(); return; }
+    // ix.json 还没回来（首屏刚打开就点）：单独再拉一次，别让用户盯着「读取中」
+    if (SH_ST === 2){ shFail('这组指数没有份额数据'); return; }
+    var tries = retry || 0;
+    if (tries > 8){ shFail('指数汇总还在路上，稍后再点一次'); return; }
+    setTimeout(function(){
+      if (SH_VIEW && SH_VIEW.key === key) shOpen(key, agg, name, tries + 1);
+    }, 500);
+    return;
+  }
+
+  if (SH_F[key] == null && SH_ST === 2){ shFail('这只没有份额披露（货币 ETF 不走该口径）'); return; }
+  fetch('/api/shares?code=' + encodeURIComponent(key)).then(function(r){ return r.json(); }).then(function(j){
+    if (!SH_VIEW || SH_VIEW.key !== key) return;
+    if (!j || !j.ok) throw new Error((j && j.error) || '没有数据');
+    SH_VIEW.v = j.v || [];
+    SH_VIEW.cv = j.cv || null;
+    SH_VIEW.s = j.s;
+    shRender();
+  }).catch(function(e){
+    if (!SH_VIEW || SH_VIEW.key !== key) return;
+    shFail(e.message || String(e));
+  });
+}
+
+function shFail(msg){
+  document.getElementById('shBody').innerHTML = '<div class="iotip">' + esc(msg) + '</div>';
+}
+
+function shRender(){
+  var d = SH_VIEW;
+  if (!d) return;
+  var v = d.v || [];
+  var ax = SH_AX || [];
+  // 单只/汇总的序列都是同一根 250 天轴生成的，长度对不上时按尾部对齐
+  var dates = (ax.length === v.length) ? ax : ax.slice(Math.max(0, ax.length - v.length));
+  document.getElementById('shSub').textContent =
+    '截至 ' + (SH_D || '-') + ' · ' + v.length + ' 个交易日'
+    + (d.agg && d.n ? ' · ' + d.n + ' 只合计' : '')
+    + (d.s ? ' · 最新份额 ' + d.s.toFixed(2) + ' 亿份' : '');
+  document.getElementById('shBody').innerHTML = shSvg(v, dates, d.cv) + shFoot(v, d);
+  shBindHover();
+}
+
+function shFoot(v, d){
+  var last = null, s20 = 0, sAll = 0, pos = 0, neg = 0, nn = 0;
+  for (var i = 0; i < v.length; i++){
+    var x = v[i];
+    if (x == null || !isFinite(x)) continue;
+    nn++;
+    sAll += x;
+    if (i >= v.length - 20) s20 += x;
+    if (x > 0) pos++; else if (x < 0) neg++;
+    last = x;
+  }
+  var col = function(z){ return z > 0 ? 'var(--up)' : (z < 0 ? 'var(--down)' : 'var(--txt2)'); };
+  var nCv = 0;
+  if (d.cv) for (var k in d.cv) nCv++;
+  return '<div class="shfoot">'
+    + '<span>最新一日 <b style="color:' + col(last) + '">' + shNum(last) + '</b> 亿</span>'
+    + '<span>近 20 日 <b style="color:' + col(s20) + '">' + shNum(s20) + '</b> 亿</span>'
+    + '<span>近 ' + nn + ' 日累计 <b style="color:' + col(sAll) + '">' + shNum(sAll) + '</b> 亿</span>'
+    + '<span>申购 <b style="color:var(--up)">' + pos + '</b> 天 / 赎回 <b style="color:var(--down)">' + neg + '</b> 天</span>'
+    + (nCv ? '<span>含 ' + nCv + ' 次份额折算（已换算，柱子上方有小圆点）</span>' : '')
+    + '</div>'
+    + '<div class="shnote">柱子 = 当日净申购金额（份额变化 × 收盘价），红为净申购、绿为净赎回。'
+    + '份额在 T 日盘后登记，价格 T+1 才反映折算，这里已经按份额乘子 k 对齐，'
+    + '所以折算日不会出现「凭空多出几百亿」。鼠标悬浮看具体数值。</div>';
+}
+
+function shSvg(vals, dates, cv){
+  /* 宽度跟窗口走，理由同 ovChartSvg：svg 是 width:100% 缩放的，写死 880 在
+     手机上 250 根柱子会糊成一片色块，写 1:1 出图反而能一根根数出来。 */
+  var W = Math.max(320, Math.min(720, (window.innerWidth || 900) - 76));
+  var H = 200, ml = 52, mr = 10, mt = 16, mb = 22;
+  var n = vals.length;
+  if (!n) return '<div class="iotip">没有数据</div>';
+
+  var mn = 0, mx = 0, i;
+  for (i = 0; i < n; i++){
+    var t = vals[i];
+    if (t == null || !isFinite(t)) continue;
+    if (t < mn) mn = t;
+    if (t > mx) mx = t;
+  }
+  if (mn === 0 && mx === 0) mx = 1;
+  var span = mx - mn || 1;
+  // 上边多留一点：柱顶要放折算标记，贴边会被裁
+  var lo = mn - span * 0.08, hi = mx + span * 0.14;
+  var bw0 = (W - ml - mr) / n;
+  var bw = Math.max(1, Math.min(9, bw0 * 0.74));
+  var yOf = function(v){ return mt + (1 - (v - lo) / (hi - lo)) * (H - mt - mb); };
+  var xOf = function(idx){ return ml + bw0 * (idx + 0.5); };
+  var y0 = yOf(0);
+
+  var g = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H + '" xmlns="http://www.w3.org/2000/svg">';
+  g += '<line x1="' + ml + '" y1="' + y0.toFixed(1) + '" x2="' + (W - mr) + '" y2="' + y0.toFixed(1)
+    + '" stroke="var(--line)" stroke-width="1"/>';
+  // 纵轴只标上下两端（中间那几档在 250 根柱子里没人读，反而把柱子压得看不见）
+  var ax1 = Math.abs(hi) >= 100 ? String(Math.round(hi)) : hi.toFixed(1);
+  var ax2 = Math.abs(lo) >= 100 ? String(Math.round(lo)) : lo.toFixed(1);
+  g += '<text x="' + (ml - 6) + '" y="' + (yOf(hi) + 8).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">' + ax1 + '</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (yOf(lo) - 2).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">' + ax2 + '</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (y0 + 4).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">0</text>';
+
+  for (i = 0; i < n; i++){
+    var v = vals[i];
+    if (v == null || !isFinite(v)) continue;
+    var y = yOf(v);
+    var top = Math.min(y, y0);
+    var h = Math.max(1, Math.abs(y - y0));   // 0.00 那种也给 1px，不然那天像没数据
+    g += '<rect x="' + (xOf(i) - bw / 2).toFixed(1) + '" y="' + top.toFixed(1)
+      + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1)
+      + '" fill="' + (v >= 0 ? '#d93a3a' : '#0e9a61') + '" opacity="' + (i === n - 1 ? '1' : '0.8') + '"/>';
+  }
+  // 折算标记：份额乘子不为 1 的那天顶上点一个小圆点
+  if (cv){
+    for (var kk in cv){
+      var j = parseInt(kk, 10);
+      if (!(j >= 0 && j < n)) continue;
+      var vv = vals[j];
+      if (vv == null || !isFinite(vv)) continue;
+      g += '<circle cx="' + xOf(j).toFixed(1) + '" cy="' + (yOf(vv) - (vv >= 0 ? 5 : -5)).toFixed(1)
+        + '" r="2" fill="#f0b23c"/>';
+    }
+  }
+  g += '<text x="' + ml + '" y="' + (H - 6) + '" font-size="9.5" fill="var(--txt3)">'
+    + esc(String((dates && dates[0]) || '').slice(2)) + '</text>';
+  g += '<text x="' + (W - mr) + '" y="' + (H - 6) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">'
+    + esc(String((dates && dates[n - 1]) || '').slice(2)) + '</text>';
+
+  /* 悬停层。和 futHistSvg 一样全部用 SVG 坐标：250 根柱子每根不到 3px，
+     没有竖线和气泡的话，柱高只能看个大概，具体哪天多少读不出来。 */
+  g += '<g class="sh-hov" style="display:none;pointer-events:none">'
+    + '<line class="sh-ln" y1="' + mt + '" y2="' + (H - mb) + '" stroke="#9aa4b2" stroke-width="1" stroke-dasharray="3 3"/>'
+    + '<g class="sh-tip"><rect class="sh-bg" rx="4" width="126" height="34" fill="#15181d" opacity="0.92"/>'
+    + '<text class="sh-d" font-size="9.5" fill="#cbd5e1"></text>'
+    + '<text class="sh-v" font-size="12" font-weight="600" fill="#fff"></text></g></g>';
+  g += '</svg>';
+
+  SH_GEO = { vals: vals, dates: dates, n: n, ml: ml, mr: mr, W: W, H: H, mt: mt, mb: mb,
+    lo: lo, hi: hi, bw0: bw0 };
+  return '<div class="shchart">' + g + '</div>';
+}
+
+/* 坐标换算走 getScreenCTM：图是 100% 宽自适应，用像素直接算会随窗口和
+   padding 漂，反过来用矩阵把屏幕坐标变回 viewBox 坐标最稳。 */
+function shHoverAt(e){
+  var geo = SH_GEO;
+  var svg = document.querySelector('#shBody svg');
+  if (!geo || !svg) return;
+  var ctm = svg.getScreenCTM();
+  if (!ctm) return;
+  var pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  var vx = pt.matrixTransform(ctm.inverse()).x;
+  var idx = Math.floor((vx - geo.ml) / geo.bw0);
+  if (idx < 0) idx = 0;
+  if (idx > geo.n - 1) idx = geo.n - 1;
+  // 停在没有数据的那天，往两边各找 3 根：气泡不该整个消失
+  var at = idx, step = 1;
+  while ((geo.vals[at] == null || !isFinite(geo.vals[at])) && step <= 3){
+    if (idx - step >= 0 && geo.vals[idx - step] != null && isFinite(geo.vals[idx - step])){ at = idx - step; break; }
+    if (idx + step < geo.n && geo.vals[idx + step] != null && isFinite(geo.vals[idx + step])){ at = idx + step; break; }
+    step++;
+  }
+  var val = geo.vals[at];
+  if (val == null || !isFinite(val)){ shHoverOff(); return; }
+
+  var px = geo.ml + geo.bw0 * (at + 0.5);
+  var py = geo.mt + (1 - (val - geo.lo) / (geo.hi - geo.lo)) * (geo.H - geo.mt - geo.mb);
+  var y0 = geo.mt + (1 - (0 - geo.lo) / (geo.hi - geo.lo)) * (geo.H - geo.mt - geo.mb);
+  var ln = svg.querySelector('.sh-ln');
+  var layer = svg.querySelector('.sh-hov'), bg = svg.querySelector('.sh-bg');
+  var td = svg.querySelector('.sh-d'), tv = svg.querySelector('.sh-v');
+  if (!ln || !layer) return;
+  ln.setAttribute('x1', px.toFixed(1)); ln.setAttribute('x2', px.toFixed(1));
+  td.textContent = String(geo.dates[at] || '').slice(5);
+  tv.textContent = shNum(val) + ' 亿';
+  var tw = 126, th = 34;
+  var tx = px + 8, ty = (val >= 0 ? py : y0) - th - 8;
+  if (tx + tw > geo.W - 2) tx = px - tw - 8;
+  if (ty < 2) ty = y0 + 8;
+  if (tx < 2) tx = 2;
+  bg.setAttribute('x', tx.toFixed(1)); bg.setAttribute('y', ty.toFixed(1));
+  td.setAttribute('x', (tx + 8).toFixed(1)); td.setAttribute('y', (ty + 13).toFixed(1));
+  tv.setAttribute('x', (tx + 8).toFixed(1)); tv.setAttribute('y', (ty + 28).toFixed(1));
+  tv.setAttribute('fill', val > 0 ? '#fca5a5' : (val < 0 ? '#86efac' : '#ffffff'));
+  layer.style.display = '';
+}
+
+function shHoverOff(){
+  var layer = document.querySelector('#shBody svg .sh-hov');
+  if (layer) layer.style.display = 'none';
+}
+
+function shBindHover(){
+  var box = document.getElementById('shBody');
+  if (!box || box.getAttribute('data-hv')) return;
+  box.setAttribute('data-hv', '1');
+  box.addEventListener('pointermove', shHoverAt);
+  box.addEventListener('pointerdown', shHoverAt);
+  box.addEventListener('pointerleave', shHoverOff);
+  box.addEventListener('pointercancel', shHoverOff);
+}
+
+(function(){
+  var m = document.getElementById('shMask');
+  var c = document.getElementById('shClose');
+  if (c) c.onclick = function(){ m.classList.remove('on'); };
+  if (m) m.onclick = function(e){ if (e.target === m) m.classList.remove('on'); };
+})();
+
 /* ---------- 渲染 ---------- */
 function ixBadge(x){
   if (!x.ix || !(IX_N[x.ix] > 1)) return '';
@@ -2752,6 +3096,7 @@ function rowHtml(x, withDel){
     + '<td class="ctr">'+pbadge(x.pm)+'</td>'
     + (withDel ? '<td style="color:var(--txt2)">'+(x.iopv?x.iopv.toFixed(4):'-')+'</td>' : '')
     + '<td>'+famt(x.amt)+'</td>'
+    + (withDel ? '' : shCell(x))
     + '<td style="color:var(--txt2)">'+(x.tr?x.tr.toFixed(2)+'%':'-')+'</td>'
     + '<td class="hide-sm" style="color:var(--txt2)">'+(amp?amp.toFixed(2)+'%':'-')+'</td>'
     + '<td class="hide-sm">'+(x.hi?fp(x.hi):'-')+'</td>'
@@ -3561,7 +3906,7 @@ function renderList(){
     var body0 = document.getElementById('listBody');
     body0.innerHTML = arr.length
       ? arr.map(function(x){ return '<tr class="hr" data-c="'+x.c+'">'+rowHtml(x, false)+'</tr>'; }).join('')
-      : '<tr><td colspan="11" class="empty">该指数暂无行情</td></tr>';
+      : '<tr><td colspan="12" class="empty">该指数暂无行情</td></tr>';
     document.getElementById('listN').textContent =
       '跟踪「' + IXF + '」的 ' + arr.length + ' 只 · 按成交额排序 · 再点一次标签返回全部';
     stampN('listN', DATA_TS);
@@ -3593,7 +3938,7 @@ function renderList(){
 
   var body = document.getElementById('listBody');
   if (!arr.length){
-    body.innerHTML = '<tr><td colspan="11" class="empty">没有匹配结果</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="empty">没有匹配结果</td></tr>';
   } else {
     var buf = [];
     for (var i=0;i<arr.length;i++)
@@ -5915,6 +6260,7 @@ document.addEventListener('keydown', function(e){
   if (e.key !== 'Escape') return;
   if (document.getElementById('ioMask').classList.contains('on')) { ioClose(); return; }
   if (document.getElementById('trigMask').classList.contains('on')) { trigClose(); return; }
+  if (document.getElementById('shMask').classList.contains('on')) { document.getElementById('shMask').classList.remove('on'); return; }
   if (document.getElementById('ovMask').classList.contains('on')) { ovClose(); return; }
   if (document.getElementById('rsMask').classList.contains('on')) { closeRs(); return; }
   if (document.getElementById('histMask').classList.contains('on')) closeHist();
@@ -6129,7 +6475,7 @@ function loadFull(){
     if (!DATA.length){
       var lbody = document.getElementById('listBody');
       lbody.innerHTML =
-        '<tr><td colspan="11" class="lerr">'
+        '<tr><td colspan="12" class="lerr">'
         + '<b>行情源暂时不可用</b>'
         + '<span>' + esc(String(e.message || e)) + '</span>'
         + '<button type="button" id="btnListRetry">立即重试</button></td></tr>';
@@ -7553,6 +7899,19 @@ document.body.addEventListener('click', function(e){
     renderList();
     return;
   }
+  // 份额单元格：点数字看每日柱状图。必须排在 tr[data-c] 那条前面，
+  // 否则会被「点整行看 K 线」吃掉（openHist 里没有份额这一档）
+  var shc = e.target.closest('td[data-sh]');
+  if (shc){
+    var shKey = shc.getAttribute('data-sh');
+    var shAgg = shc.getAttribute('data-agg') === '1';
+    var shRow = shc.closest('tr[data-c]');
+    var shNm = shAgg ? shKey
+      : ((shRow && shRow.querySelector('td.nm .nmx'))
+        ? shRow.querySelector('td.nm .nmx').textContent : shKey);
+    shOpen(shKey, shAgg, shNm);
+    return;
+  }
   var a = e.target.closest('[data-add]');
   if (a){
     var c = a.getAttribute('data-add');
@@ -8491,6 +8850,7 @@ if (RS_MODE){
   pullResearch();
 } else {
   pullWatch();
+  loadShares();          // 与全量行情并行：它是独立接口，别等 loadFull 回来
   // 全 A 快照和全量行情并行：它只要 0.5 秒，等 loadFull 的三四秒跑完再发，
   // 首屏那张卡片就已经用基线最后一天画完了（会显示「11-06」而不是「今天」）
   loadMktSnap();
