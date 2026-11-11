@@ -278,6 +278,17 @@ async function main() {
   const manifest = JSON.parse(await fs.readFile(path.join(ROOT, 'dist/manifest.json'), 'utf8'));
   log(`清单交易日 ${manifest.last_trade_date}，${manifest.items.length} 只`);
 
+  /* manifest 的 last_trade_date 是 compute.py 写的，它一旦中途失败就停在旧日期。
+     而份额轴该跟「行情实际到哪天」走：K 线已经到 T、份额还停在 T-1，等于白抓
+     一天，且深市那一天再也补不回来。取二者较大的，日志里说清楚是从哪来的。 */
+  try {
+    const dbLast = openDb().prepare('SELECT MAX(date) AS d FROM etf_daily').get().d;
+    if (dbLast && dbLast > (manifest.last_trade_date || '')) {
+      log(`  价格库已到 ${dbLast}，比 manifest 新 → 按 ${dbLast} 追加份额`);
+      manifest.last_trade_date = dbLast;
+    }
+  } catch (e) { log(`  ! 读价格库失败（${e.message}），仍按 manifest 的日期`); }
+
   if (flag('fetch')) await fetchAppend(manifest);
 
   log('\n[1/5] 载入份额');
