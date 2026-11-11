@@ -354,6 +354,13 @@ jobs:
       # 份额历史留在 main（data/shares/），派生产物随 data 分支发布（dist/shares/）。
       # --fetch 先抓当日份额再算；抓不到就降级用已有轴。份额只是清单里的一列，
       # 不该因为它把整条流水线拖红，所以 continue-on-error。
+      # 沪市份额按 STAT_DATE 可以回查（深市不行，断了就没了）。所以每轮先把
+      # 最近几天补一遍：上交所那份报表常在 18:00 后才发布，16:35 那轮拿不到，
+      # 21:00 那轮如果还是拿不到，第二天这一轮会自动补上，不需要人工干预。
+      - name: 回补沪市份额
+        continue-on-error: true
+        run: python3 tools/sse_hist.py --days 4
+
       - name: 生成份额日档
         continue-on-error: true
         run: |

@@ -511,15 +511,24 @@ async function main() {
   const bad = [];
   const warn = [];
   const c510300 = lastC['510300'], f510300 = lastF['510300'];
-  if (!c510300) bad.push('510300 不在 last.c 里');
-  else if (c510300 < 100 || c510300 > 2000) bad.push(`510300 份额 ${c510300} 亿份，超出 100~2000 的合理区间`);
+  /* 末日只有深市、沪市是 null 是**正常**的：上交所那份报表当天往往 18:00 后才发，
+     21:00 那轮仍拿不到就留空，次日 sse_hist.py 会按 STAT_DATE 回补（沪市可回查，
+     深市不行）。所以这里只提示，不判错——判错会让整条流水线为了一件明天自愈的事红掉。
+     2026-11-11 就是这么红的：深市 772 只有了，沪市还没发布。 */
+  const nLastC = Object.keys(lastC).length;
+  if (nLastC < 1500) {
+    warn.push(`末日只有 ${nLastC} 只有份额（另一市场当天未发布），产物不完整，等回补`);
+  }
+  if (c510300 && (c510300 < 100 || c510300 > 2000)) {
+    bad.push(`510300 份额 ${c510300} 亿份，超出 100~2000 的合理区间`);
+  }
 
   const cov = Object.keys(lastF).length / Object.keys(lastC).length;
   if (cov < 0.9) warn.push(`末日净流入只覆盖 ${(cov * 100).toFixed(1)}% 的标的（${Object.keys(lastF).length}/${Object.keys(lastC).length}）——多半是新浪当天 K 线没补全`);
 
   const hs300 = ixOut['沪深300'];
   if (!hs300) bad.push('ix 里没有沪深300');
-  else if (hs300.v.at(-1) === null) bad.push('沪深300 最新汇总为 null');
+  else if (hs300.v.at(-1) === null && nLastC >= 1500) bad.push('沪深300 最新汇总为 null');
 
   // 汇总自洽：随机两个指数，重算成员和
   for (const name of Object.keys(ixOut).slice(0, 2)) {
