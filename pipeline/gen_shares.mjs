@@ -86,8 +86,9 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 深市：东财 clist 的 f38（总份额，单位份）。只在收盘后采信。 */
-async function fetchSZ() {
-  const out = {};
+/** 东财 f38：一次拿到沪深两市的份额。深市只有这一个源；沪市拿它给上交所兜底。 */
+async function fetchEMShares() {
+  const out = { sz: {}, sh: {} };
   for (let pn = 1; pn <= 20; pn++) {
     const url = 'https://push2.eastmoney.com/api/qt/clist/get'
       + `?pn=${pn}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f12&fs=b:MK0021&fields=f12,f14,f38`;
@@ -104,13 +105,16 @@ async function fetchSZ() {
     if (!diff || !diff.length) break;
     for (const x of diff) {
       const c = String(x.f12 || '');
-      if (/^15\d{4}$/.test(c) && typeof x.f38 === 'number' && x.f38 > 0) out[c] = Math.round(x.f38);
+      const v = typeof x.f38 === 'number' && x.f38 > 0 ? Math.round(x.f38) : null;
+      if (!v) continue;
+      if (/^15\d{4}$/.test(c)) out.sz[c] = v;
+      else if (/^5\d{5}$/.test(c)) out.sh[c] = v;
     }
     await sleep(350);            // 东财会限流，别打太急
   }
   // 空结果必须返回 null：原来返回 {} 会让上层判成「抓取成功、追加 0 只有值」，
   // 日志一片绿但其实什么都没拿到。东财被限流时正是这个表现（Empty reply）。
-  if (!Object.keys(out).length) return null;
+  if (!Object.keys(out.sz).length && !Object.keys(out.sh).length) return null;
   return out;
 }
 
@@ -156,9 +160,23 @@ async function fetchAppend(mk) {
       .all(after, T).map((r) => r.date);
   };
 
+  let emCache = null;
+  const emShares = async () => { if (!emCache) emCache = await fetchEMShares(); return emCache; };
+
   for (const m of await loadShares()) {
     if (m.d[m.d.length - 1] >= T) { log(`  · ${m.mkt} 轴已到 ${m.d[m.d.length - 1]}，跳过`); continue; }
-    let got = m.mkt === 'SZ' ? await fetchSZ() : await fetchSH(T);
+    /* 深市只有东财一个源；沪市上交所优先（TOT_VOL 万份、口径最正），
+       但它约 1/3 概率返回空（未发布或限流），失败就降级到东财 f38。 */
+    let got = null, srcNote = '';
+    if (m.mkt === 'SZ') {
+      got = (await emShares())?.sz || null;
+    } else {
+      got = await fetchSH(T);
+      if (!got) {
+        const em = await emShares();
+        if (em && Object.keys(em.sh).length) { got = em.sh; srcNote = '（上交所没给，降级东财）'; }
+      }
+    }
     if (!got) { log(`  ✗ ${m.mkt} 抓取失败/未发布，本轮不追加`); continue; }
 
     // 防「数据源还没更新」：新值与最后一天 80% 以上完全相同 → 判定为陈旧快照
@@ -196,7 +214,7 @@ async function fetchAppend(mk) {
     m.raw.d = m.d; m.raw.c = m.c; m.raw.n = m.n;
     m.raw.imported = new Date().toISOString();
     if (!DRY) await writeSharesFile(m.mkt === 'SZ' ? SZ_F : SH_F, m.raw);
-    log(`  ✓ ${m.mkt} 追加 ${T}：${filled} 只有值（比对 ${tot} 只，与上日相同仅 ${same} 只）`);
+    log(`  ✓ ${m.mkt} 追加 ${T}：${filled} 只有值（比对 ${tot} 只，与上日相同仅 ${same} 只）${srcNote}`);
   }
 }
 
