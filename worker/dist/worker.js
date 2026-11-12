@@ -3256,8 +3256,9 @@ async function fetchSinaFut(codes) {
 
 /** 东财 ulist.np 批量报价。主域偶发 502（2026-11-10 线上撞了两次，一次把指数
  *  现货整批打空、期指四张表的基差全成 null），所以主域/延迟子域各试两次再放弃。 */
-async function emUlist(secids, fields) {
+async function emUlist(secids, fields, toMs) {
   const qs = secids.join(',');
+  const ms = toMs || 8000;
   const hosts = ['push2.eastmoney.com', 'push2delay.eastmoney.com'];
   let lastErr = null;
   for (const h of hosts) {
@@ -3267,7 +3268,7 @@ async function emUlist(secids, fields) {
       try {
         const r = await fetch(u, {
           headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(ms),
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
@@ -3284,14 +3285,70 @@ async function emUlist(secids, fields) {
   throw new Error(String((lastErr && lastErr.message) || lastErr) + '（两个域名都试过）');
 }
 
+/** 四个现货指数（沪深300/中证500/上证50/中证1000）。
+ *
+ *  东财 ulist 作主源，但它对同一出口的短时连打会整批断连（实测两个域名都
+ *  fetch failed，重试无效）。基差是「期货 − 现货」，现货整批缺失就等于四张
+ *  期指表的基差、基差率、年化同时变 null，而期货价照常显示——看着像算不出来。
+ *  所以换厂商兜两级：腾讯 qt.gtimg 与新浪 s_ 简版，两者都不依赖东财。
+ *  涨跌幅一律「现价 ÷ 昨收」自算，不赌上游字段下标。 */
 async function fetchSpotIdx() {
-  const arr = await emUlist(FUT_SPOT_ID.split(','), 'f2,f3,f12,f14');
   const out = {};
-  for (const x of arr) {
-    const c = String(x.f12 || '');
-    const p = +x.f2;
-    if (c && p > 0) out[c] = { p, chg: +(+x.f3 || 0).toFixed(2) };
-  }
+  const take = (code, p, chg) => {
+    if (code && p > 0 && !out[code]) out[code] = { p, chg: +(+chg || 0).toFixed(2) };
+  };
+
+  /* 东财这一档只给 2.8 秒总预算：它内部是「两域名 × 两次重试」，遇 502 挂起时
+     全跑完要十几秒，而备源才是能出数的那一档。超时就走腾讯，不等它。 */
+  try {
+    const emP = emUlist(FUT_SPOT_ID.split(','), 'f2,f3,f12,f14', 2200).catch(() => null);
+    const arr = await Promise.race([
+      emP,
+      new Promise((res) => setTimeout(() => res(null), 2800)),
+    ]);
+    if (arr) for (const x of arr) take(String(x.f12 || ''), +x.f2, +x.f3);
+  } catch (e) { /* 换厂商 */ }
+  if (Object.keys(out).length >= 4) return out;
+
+  const codes = FUT_SPOT_ID.split(',').map((s) => s.split('.')[1]).filter(Boolean);
+
+  // 腾讯：88 字段版本，f[3] 现价、f[4] 昨收
+  try {
+    const r = await fetch('https://qt.gtimg.cn/q=' + codes.map((c) => 'sh' + c).join(','), {
+      headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (r.ok) {
+      const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+      for (const line of txt.split('\n')) {
+        const m = /v_sh(\d{6})="([^"]*)"/.exec(line.trim());
+        if (!m) continue;
+        const f = m[2].split('~');
+        const p = +f[3], pc = +f[4];
+        if (p > 0 && pc > 0) take(m[1], p, (p / pc - 1) * 100);
+      }
+    }
+  } catch (e) { /* 再换新浪 */ }
+  if (Object.keys(out).length >= 4) return out;
+
+  // 新浪简版：名称,现价,涨跌额,涨跌幅,成交量,成交额
+  try {
+    const r = await fetch('https://hq.sinajs.cn/list=' + codes.map((c) => 's_sh' + c).join(','), {
+      headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (r.ok) {
+      const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+      for (const line of txt.split('\n')) {
+        const m = /hq_str_s_sh(\d{6})="([^"]*)"/.exec(line.trim());
+        if (!m) continue;
+        const a = m[2].split(',');
+        if (a.length < 4) continue;
+        take(m[1], +a[1], +a[3]);
+      }
+    }
+  } catch (e) { /* 三档都挂，交给调用方退日档 */ }
+
   return out;
 }
 
@@ -4849,6 +4906,9 @@ tr.hr:hover td{background:#f7f9fd}
 footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
 .err{color:var(--up)}
 .empty{padding:20px;text-align:center;color:var(--txt3);font-size:12.5px}
+/* 现货整批缺失时压在期指表顶部的一行说明。左对齐、贴着表格，不要做成居中的空态——
+   表本身是有内容的，缺的只是基差那三列。 */
+.futnospot{padding:2px 0 8px;color:var(--txt3);font-size:12px;line-height:1.7}
 /* 清单的加载态与失败态。
    为什么单独做：清单是整页最后一块、也是最高的一块，首屏拉全市场要等上游
    （冷启动现场拉两个源要十几二十秒）。原来这里只有一行 12.5px 灰字「加载中…」，
@@ -12738,8 +12798,13 @@ function renderFutAll(){
   }
   var n = document.getElementById('futN');
   if (n){
-    var bad = (FUT.partial || []).length;
-    n.textContent = futStatus() + (bad ? ' · 缺 ' + (FUT.partial || []).join('/') : '');
+    /* partial 里是内部键（spot / IO / IF …），直接拼给用户看是一串天书。
+       换成人话：缺的是哪一端，才解释得了对应那几列为什么是空的。 */
+    var PN = { spot: '现货指数', opt: '期权链', IO: 'IO 期权', MO: 'MO 期权', HO: 'HO 期权' };
+    var miss = (FUT.partial || []).map(function (k) {
+      return PN[k] || (k.length <= 2 ? k + ' 期货' : k);
+    }).join('、');
+    n.textContent = futStatus() + (miss ? ' · 缺 ' + miss : '');
     n.className = 'n' + (FUT.stale ? ' warn' : '');
   }
   stampN('futN', FUT.asof || FUT.ts);
@@ -12750,6 +12815,10 @@ function renderFutBasis(){
   if (!box) return;
   var list = FUT.fut || [];
   if (!list.length){ box.innerHTML = '<div class="empty">没有合约数据</div>'; return; }
+
+  /* 基差 = 期货 − 现货。现货整批缺失时三列会同时变空，而期货价照常有值，
+     看上去像「这个时点算不出来」。说清楚缺的是哪一端，别让人以为是计算错误。 */
+  var noSpot = Object.keys(FUT.spot || {}).length < 3;
 
   var order = ['IF', 'IH', 'IC', 'IM'], byP = {};
   for (var i = 0; i < list.length; i++){
@@ -12808,6 +12877,10 @@ function renderFutBasis(){
     }
   }
   h += '</tbody></table>';
+  if (noSpot){
+    h = '<div class="futnospot">现货指数这一轮没取到，基差、基差率、年化留空——期货价不受影响，'
+      + '下一轮自动重试。</div>' + h;
+  }
   box.innerHTML = h;
 }
 

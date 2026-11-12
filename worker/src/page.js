@@ -477,6 +477,9 @@ tr.hr:hover td{background:#f7f9fd}
 footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
 .err{color:var(--up)}
 .empty{padding:20px;text-align:center;color:var(--txt3);font-size:12.5px}
+/* 现货整批缺失时压在期指表顶部的一行说明。左对齐、贴着表格，不要做成居中的空态——
+   表本身是有内容的，缺的只是基差那三列。 */
+.futnospot{padding:2px 0 8px;color:var(--txt3);font-size:12px;line-height:1.7}
 /* 清单的加载态与失败态。
    为什么单独做：清单是整页最后一块、也是最高的一块，首屏拉全市场要等上游
    （冷启动现场拉两个源要十几二十秒）。原来这里只有一行 12.5px 灰字「加载中…」，
@@ -8366,8 +8369,13 @@ function renderFutAll(){
   }
   var n = document.getElementById('futN');
   if (n){
-    var bad = (FUT.partial || []).length;
-    n.textContent = futStatus() + (bad ? ' · 缺 ' + (FUT.partial || []).join('/') : '');
+    /* partial 里是内部键（spot / IO / IF …），直接拼给用户看是一串天书。
+       换成人话：缺的是哪一端，才解释得了对应那几列为什么是空的。 */
+    var PN = { spot: '现货指数', opt: '期权链', IO: 'IO 期权', MO: 'MO 期权', HO: 'HO 期权' };
+    var miss = (FUT.partial || []).map(function (k) {
+      return PN[k] || (k.length <= 2 ? k + ' 期货' : k);
+    }).join('、');
+    n.textContent = futStatus() + (miss ? ' · 缺 ' + miss : '');
     n.className = 'n' + (FUT.stale ? ' warn' : '');
   }
   stampN('futN', FUT.asof || FUT.ts);
@@ -8378,6 +8386,10 @@ function renderFutBasis(){
   if (!box) return;
   var list = FUT.fut || [];
   if (!list.length){ box.innerHTML = '<div class="empty">没有合约数据</div>'; return; }
+
+  /* 基差 = 期货 − 现货。现货整批缺失时三列会同时变空，而期货价照常有值，
+     看上去像「这个时点算不出来」。说清楚缺的是哪一端，别让人以为是计算错误。 */
+  var noSpot = Object.keys(FUT.spot || {}).length < 3;
 
   var order = ['IF', 'IH', 'IC', 'IM'], byP = {};
   for (var i = 0; i < list.length; i++){
@@ -8436,6 +8448,10 @@ function renderFutBasis(){
     }
   }
   h += '</tbody></table>';
+  if (noSpot){
+    h = '<div class="futnospot">现货指数这一轮没取到，基差、基差率、年化留空——期货价不受影响，'
+      + '下一轮自动重试。</div>' + h;
+  }
   box.innerHTML = h;
 }
 
