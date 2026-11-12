@@ -1440,8 +1440,124 @@ async function fetchCnbcMin(sid) {
   return { pre, pts };
 }
 
-/** 腾讯分时兜底：东财几个域都不可达时用。
+/* 北京日期（YYYY-MM-DD）。CNBC 的 tradeTime 一律是「美东时区表达的绝对时刻」，
+   分钟 bar 的日期要按北京算才不会在 23:00 之后串到前一天。 */
+function bjYmd(ts) {
+  const s = String(ts || '');
+  if (!/^\d{14}$/.test(s)) return '';
+  const y = +s.slice(0, 4), mo = +s.slice(4, 6), da = +s.slice(6, 8);
+  const t = new Date(Date.UTC(y, mo - 1, da, +s.slice(8, 10), +s.slice(10, 12))
+    + (usDst(y, mo, da) ? 12 : 13) * 3600e3);
+  return t.toISOString().slice(0, 10);
+}
+
+function bjToday() {
+  return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+}
+
+/** CNBC 日线：日经 225 与韩国 KOSPI 用。
  *
+ *  这两只在腾讯那边没有代码（`pv_none_match`），新浪的外盘日线也不认它们，
+ *  分时补了 CNBC，日线就同源同家地补——两处数字必须一套，否则图上收在
+ *  A、卡片写着 B。
+ *
+ *  range 用 `3M`：名字和实际窗口不一致（实测 485 根、约两年），但 1M 只有
+ *  240 根，而 /api/ovk 最多要 300 根，不够。按根数取尾部，不信 range 名字。
+ *
+ *  tradeTime 在日粒度上是 `YYYYMMDD000000`，日期部分就是本地交易日，不做时区
+ *  换算——换算（+13h）虽然也落在同一天，但没必要绕。
+ *
+ *  当天这根日线要等收盘后几小时才进序列，盘中打开日线会缺今天、和分时末点
+ *  对不上。所以末根不是今天就再拉一次 5D 分钟 bar，把今天聚成一根接上。 */
+async function fetchCnbcDaily(sid, lim) {
+  const sym = CNBC_MIN[sid];
+  if (!sym) return null;
+  const r = await fetch('https://ts-api.cnbc.com/harmony/app/charts/3M.json?symbol='
+    + encodeURIComponent(sym), {
+    headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('CNBC 日线 HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.barData && j.barData.priceBars;
+  if (!Array.isArray(rows) || rows.length < 20) throw new Error('CNBC 日线为空');
+
+  const bars = [];
+  for (const b of rows) {
+    const s = String((b && b.tradeTime) || '');
+    if (!/^\d{8}000000$/.test(s)) continue;      // 只要日粒度；5D 那档是分钟 bar
+    const o = +b.open, h = +b.high, l = +b.low, c = +b.close;
+    if (!(o > 0 && h > 0 && l > 0 && c > 0)) continue;
+    bars.push([s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8),
+      o, h, l, c, +(b.volume || 0)]);
+  }
+  if (bars.length < 20) throw new Error('CNBC 日线解析为空');
+
+  const today = bjToday();
+  if (bars[bars.length - 1][0] !== today) {
+    /* 先试报价接口：open/high/low/last/volume 一次给全，比把分钟 bar 聚成
+       一根省一次 RTT。只用 last_time 就是今天的——休市日（周末、当地假期）
+       报价里是上一个交易日的数，照补就会多出一根假蜡烛。 */
+    let added = false;
+    try {
+      const rq = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+        + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+        + '&fund=1&exthrs=1&output=json&events=1', {
+        headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (rq.ok) {
+        const jq = await rq.json();
+        const q0 = jq && jq.FormattedQuoteResult && jq.FormattedQuoteResult.FormattedQuote;
+        const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+        const num = (v) => parseFloat(String(v == null ? '' : v).replace(/[,%]/g, ''));
+        const qt = String((row && row.last_time) || '').slice(0, 10);   // '2026-11-12'
+        const o = num(row && row.open), h = num(row && row.high);
+        const l = num(row && row.low), c = num(row && row.last);
+        if (qt === today && o > 0 && c > 0) {
+          /* volume 要 ×1000：报价接口给的是「千股」（KOSPI 实测 233,733，
+             同一交易日的日线是 233,733,000，正好差一千倍），直接写进去
+             图上今天那根量柱会矮到看不见，像当天没成交。 */
+          bars.push([today, o, h > 0 ? h : Math.max(o, c), l > 0 ? l : Math.min(o, c),
+            c, (num(row && row.volume) || 0) * 1000]);
+          added = true;
+        }
+      }
+    } catch (e) { /* 退到分钟聚合 */ }
+
+    if (!added) {
+      try {
+        const rd = await fetch('https://ts-api.cnbc.com/harmony/app/charts/5D.json?symbol='
+          + encodeURIComponent(sym), {
+          headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+          signal: AbortSignal.timeout(7000),
+        });
+        if (rd.ok) {
+          const jd = await rd.json();
+          const mins = (jd && jd.barData && jd.barData.priceBars) || [];
+          let o = 0, h = 0, l = 0, c = 0, v = 0;
+          for (const b of mins) {
+            const s = String((b && b.tradeTime) || '');
+            if (/^\d{8}000000$/.test(s) || bjYmd(s) !== today) continue;
+            const px = +b.close;
+            if (!(px > 0)) continue;
+            if (!o) o = +b.open > 0 ? +b.open : px;
+            h = Math.max(h, +b.high > 0 ? +b.high : px);
+            l = l ? Math.min(l, +b.low > 0 ? +b.low : px) : (+b.low > 0 ? +b.low : px);
+            c = px;
+            v += +(b.volume || 0);
+          }
+          if (o > 0 && c > 0) bars.push([today, o, h, l, c, v]);
+        }
+      } catch (e) { /* 补不上今天就先只到昨天，不至于整条链失败 */ }
+    }
+  }
+
+  if (bars.length > lim) bars.splice(0, bars.length - lim);
+  return bars;
+}
+
+/** 腾讯分时兜底：东财几个域都不可达时用。 *
  *  A 股/港股走 minute/query，美股走 usMinute/query，返回都是
  *  "0930 4.145 42868 …" 这种以空格分隔的行——第三列是累计成交量，不是
  *  分钟量，所以只取前两列（价格），别照东财 trends2 的列序去理解。
@@ -1840,7 +1956,9 @@ async function serveOvProbe(url) {
 async function serveOvK(sid, n, env, ctx) {
   const cache = await getCache();
   const lim = Math.max(30, Math.min(300, n | 0));
-  const key = new Request('https://etf.internal/ovk/v1/' + sid + '/' + lim, { method: 'GET' });
+  /* v2：日经/韩国改走 CNBC 后，v1 里存的是「失败」和「今天量柱为 0」的旧结果，
+     边缘缓存 600 秒，不换键的话这段时间点开还是旧的。 */
+  const key = new Request('https://etf.internal/ovk/v2/' + sid + '/' + lim, { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
@@ -1883,7 +2001,19 @@ async function serveOvK(sid, n, env, ctx) {
         }
         return res2;
       }
-    } catch (e) { /* 三家都挂 */ }
+    } catch (e) { /* 下一档 */ }
+    /* 日经/韩国：腾讯没有代码、新浪外盘日线不认，只有 CNBC 这一条。
+       放在最后是因为它只对这两个 secid 生效，前面几档能覆盖的不必多打一次。 */
+    try {
+      const cb = await fetchCnbcDaily(sid, lim);
+      if (cb) {
+        const res2 = json({ ok: true, sid, bars: cb, ts: Date.now(), src: 'cnbc' }, 600);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+    } catch (e) { /* 四家都挂 */ }
     return json({ ok: false, error: 'K 线上游取不到：'
       + String((emErrK && emErrK.message) || '无数据') });
   }

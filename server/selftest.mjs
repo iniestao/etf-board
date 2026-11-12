@@ -570,6 +570,21 @@ async function runContracts(base, pass) {
     } else bad('/api/ovk ' + nm + ' 失败：' + r.text.slice(0, 140));
   }
 
+  /* 日经/韩国日线只靠 CNBC 一家（腾讯没这两个代码、新浪外盘日线不认它们），
+     回归时最容易静默失败——上一次就是分时补好了、日线漏着，点「K 线」直接
+     报「上游取不到」。这里钉死「根数够 + 末根有收盘价」。 */
+  for (const [sid, nm] of [['100.N225', '日经225'], ['100.KS11', '韩国KOSPI']]) {
+    r = await rawRequest(base, '/api/ovk?sid=' + sid + '&n=160', { cookie });
+    const kd = r.json();
+    if (kd && kd.ok) {
+      const bs = kd.bars || [];
+      const lastB = bs[bs.length - 1] || [];
+      ok('/api/ovk ' + nm + ' 日线 ' + bs.length + ' 根 · ' + (bs[0] || [''])[0] + ' → ' + (lastB[0] || ''));
+      if (bs.length < 60) bad('/api/ovk ' + nm + ' 日线太短（' + bs.length + '）');
+      if (!(lastB[4] > 0)) bad('/api/ovk ' + nm + ' 末根收盘价为空，像是聚合出错');
+    } else bad('/api/ovk ' + nm + ' 失败：' + r.text.slice(0, 140));
+  }
+
   // 期指基差：口径对不对，只能靠恒等式核对——基差 = 期货 − 现货，年化 = 基差率×365/天数
   r = await rawRequest(base, '/api/fut', { cookie });
   const fu = r.json();
