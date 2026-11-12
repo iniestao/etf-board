@@ -1468,7 +1468,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         <p>四个 A 股与港股指数为当日实时，日经 225 与韩国 KOSPI 为当日已收盘或正在交易的最新价。点条目查看最近一个交易时段的分时与日线。</p></div>
 
         <div class="hm"><h3>隔夜与亚太的数字为什么可能与别处不同</h3>
-        <p>这两行与条目弹窗的行情来自多个厂商，按覆盖范围分别取用：美股个股与三大指数、A 股与港股取腾讯，四个外盘期货与日经、韩国取新浪与 CNBC，A 股 ETF 自身的分时以交易所行情为主。同一条目在不同源的报价时点相差几秒到十几分钟，跨源时价格基准也可能不同——例如期货的涨跌以昨结算为基准，指数的涨跌以前收盘为基准。弹窗副标题会标出当次使用的源；卡片与图不一致时，以卡片上带时间戳的报价为准。</p></div>
+        <p>这两行与条目弹窗的行情按覆盖范围从多个厂商分别取用。同一条目在各家的报价时点相差几秒到十几分钟，跨源的价格基准也可能不同——期货的涨跌以昨结算为基准，指数的涨跌以前收盘为基准。卡片与分时图不一致时，以卡片上带时间戳的报价为准。</p></div>
 
         <div class="hm"><h3>板块地图</h3>
         <p>按跟踪指数聚合，同一指数只计一票（取成交额最大者）。若不去重，同指数发行数量多的板块会因权重堆叠而虚高，得到的是发行结构而不是资金轮动。A 股、港股、跨境分别计算分母。表内只含行业与主题类，宽基、债券、货币、商品不入表。附 250 个交易日占比曲线，用于判断当前占比处于扩张初期还是已过半程。</p></div>
@@ -7332,9 +7332,22 @@ var ON_USID = {
   BABA:'106.BABA', JD:'105.JD', PDD:'105.PDD', BIDU:'105.BIDU', NTES:'105.NTES',
   LLY:'106.LLY', MRK:'106.MRK', AZN:'106.AZN', NVO:'106.NVO', PFE:'106.PFE'
 };
-/* 美股 secid 前缀：弹窗里要把「北京时间」标出来，否则横轴 22:30 会被当成
-   早上开盘——东财给美股分时打的是北京时间标签（冬令时 22:30~05:00）。 */
-function isUsSid(sid){ return /^(105|106|107)\./.test(sid || ''); }
+/* 横轴是不是北京时间。A 股、港股本来就是；美股与日韩、外盘期货这几类在源端
+   有的是美东钟点（腾讯美股、CNBC）、有的是本地钟点，取数时统一换成了北京，
+   副标题要标出来——不标的话，纳指那条 22:30 起的线会被读成「早上开盘」，
+   形状全对、时间全错。日经/韩国本地 09:00 对应北京 08:00，同样需要这一句。
+   这里用字符串切分而不是正则：本文件整段是一层模板字面量，正则里的反斜杠
+   要先写两个才会剩一个，只写一个会被当成无效转义吃掉，正则退化成「任意字符」，
+   于是 /^[01]./ 连 100.NDX100 也命中，标签永远不出现。 */
+function needsBjTag(sid){
+  var s = String(sid || '');
+  var dot = s.indexOf('.');
+  if (dot < 1) return false;
+  var pre = s.slice(0, dot);
+  if (pre === '0' || pre === '1' || pre === '124') return false;   // 深市、沪市、港股
+  return pre === '100' || pre === '101' || pre === '102' || pre === '103'
+    || pre === '104' || pre === '105' || pre === '106' || pre === '107';
+}
 
 var ON_TRACKS = [
   { k:'chip',  n:'算力芯片',    us:['NVDA','AMD','AVGO','TSM','MRVL'],
@@ -7399,7 +7412,7 @@ function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
  *  old=true 表示这一只是上一轮抓到的值（服务端只在这一只的源断掉时才这么标），
  *  压淡 + 单独说明，别让它跟旁边几条实时值长得一样。 */
 function ovChip(n, chg, sid, old){
-  var tip = old ? '这一只是上次抓到的值（源端刚断）· 点看分时 / 日线' : '点看分时 / 日线';
+  var tip = old ? '这一只是上次抓到的值，当前未刷新 · 点看分时 / 日线' : '点看分时 / 日线';
   return '<span class="ovclk' + (old ? ' old' : '') + '" data-ovsid="' + sid
     + '" data-ovnm="' + esc(n) + '" title="' + tip + '">'
     + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
@@ -7411,9 +7424,6 @@ function ovChip(n, chg, sid, old){
 /* 弹窗状态：看的是谁、哪一档。切 tab 不重新 open，只换数据源，
    这样标题和滚动位置都稳。 */
 var OV = null;
-/* 分时源显示名。'em:push2his' 这种带域名的只取冒号前那一段——东财三个域对
-   读图的人没有区别，标出来只是噪音。 */
-var OV_SRC = { em: '东财', tencent: '腾讯', 'sina-fut': '新浪', cnbc: 'CNBC', snapshot: '上一份' };
 
 function ovOpen(sid, nm){
   // bars/win 一次打开内复用：切到分时再切回来，缩放过的窗口还在
@@ -7429,10 +7439,10 @@ function ovLoad(){
   var sid = OV.sid, nm = OV.nm, mode = OV.mode;
   var body = document.getElementById('ovBody');
   document.getElementById('ovTitle').textContent = nm;
-  /* 副标题里标时区。东财给美股分时打的是北京时间标签（22:30~05:00，冬令时），
-     不标的话横轴那个 22:30 会被读成「早上开盘」，图上形状全对、时间全错。 */
+  /* 副标题只写两件事：这是谁、横轴是什么时间基准。东财给美股分时打的是
+     北京时间标签（22:30~05:00，冬令时），不标会被读成「早上开盘」。 */
   var subBase = sid
-    + (mode === 'k' ? ' · 日线' : (isUsSid(sid) ? ' · 分时（北京时间）' : ''));
+    + (mode === 'k' ? ' · 日线' : (needsBjTag(sid) ? ' · 分时（北京时间）' : ''));
   document.getElementById('ovSub').textContent = subBase;
   var els = document.getElementById('ovTabs').getElementsByClassName('ovtab');
   for (var i=0;i<els.length;i++){
@@ -7454,27 +7464,26 @@ function ovLoad(){
     .then(function(j){
       if (!OV || OV.sid !== sid || OV.mode !== mode) return;
       if (!j.ok) throw new Error(j.error || '无数据');
-      /* 分时现在是四档源（东财 / 腾讯 / 新浪期货 / CNBC），同一只标的可能落到
-         不同的源上。标出源名不是为了炫技：跨源的报价口径偶尔差几百个点，
-         图上一眼看不出来，只有标了「源 CNBC」才解释得通。 */
-      var lab = OV_SRC[String(j.src || '').split(':')[0]];
-      if (lab){
-        document.getElementById('ovSub').textContent = subBase + ' · 源 ' + lab
-          + (j.stale ? ' · 上一份' : '');
-      }
+      /* 副标题不写源名。四档源是内部实现：用户看到「源 CNBC」既无法核对，
+         也没法据此做任何动作，反而会把注意力从「这只标的现在什么位置」上
+         挪开。数据是否陈旧由 body 里那行时间说明承担，不开源名。 */
       if (mode === 'k'){
         OV.bars = j.bars || [];
         if (!(OV.win > 0)) OV.win = Math.min(160, OV.bars.length);
         body.innerHTML = ovKlineHtml(OV.bars, OV.win);
       } else {
         /* 所有源都挂的时候服务端会回放「上一次成功的那份」，并把 stale 标出来。
-           不标的话，横轴上的 22:30 看着就是昨晚，其实可能是两小时前抓的。 */
+           不标的话，横轴上的 22:30 看着就是昨晚，其实可能是两小时前抓的。
+           时间带日期：隔夜条目在早八点看的是昨晚的图，只给 HH:MM 会让
+           「8:05 抓的」和「昨晚 8:05 抓的」看起来完全一样。 */
         var tip = '';
         if (j.stale){
           var d0 = new Date(j.ts || Date.now());
           var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
-          tip = '<div class="iotip" style="color:var(--txt3)">分时源当前无响应，'
-            + '这是 ' + pad(d0.getHours()) + ':' + pad(d0.getMinutes()) + ' 抓到的上一份</div>';
+          tip = '<div class="iotip" style="color:var(--txt3)">这张图是 '
+            + (d0.getMonth() + 1) + '-' + pad(d0.getDate())
+            + ' ' + pad(d0.getHours()) + ':' + pad(d0.getMinutes())
+            + ' 抓到的，之后没能刷新</div>';
         }
         body.innerHTML = tip + ovChartSvg(j.pts, j.pre);
       }
@@ -7875,7 +7884,7 @@ function renderOvernight(){
     }
     // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
     // 别让「几分钟前抓的数」顶着「今日实时」的名头
-    var asub = ON.asiaStale ? '源端无响应 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
+    var asub = ON.asiaStale ? '未刷新 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
     ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">' + asub + '</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
@@ -7884,7 +7893,7 @@ function renderOvernight(){
     // 空数组＝这一轮抓取失败（主源整批断连，备源也没中）。已经有上一轮的值就留着，
     // 只把副标题改掉——把内容抹掉会让整块凭空消失，比给旧值更糟
     var asn = document.getElementById('asN');
-    if (asn) asn.textContent = '源端无响应 · 显示上次的值';
+    if (asn) asn.textContent = '未刷新 · 显示上次的值';
   } else {
     ac.style.display = 'none';
   }
