@@ -3986,7 +3986,8 @@ export default {
     // /research 与首页共用同一个 HTML：前端按 pathname 决定是整页因子面板
     // 还是盯盘首页。一份模板，样式和渲染代码不会两边走偏。
     if (p === '/' || p === '/index.html'
-        || p === '/research' || p === '/research/' || p === '/r' || p === '/r/') {
+        || p === '/research' || p === '/research/' || p === '/r' || p === '/r/'
+        || p === '/help' || p === '/help/' || p === '/h' || p === '/h/') {
       const etag = htmlEtag();
       if (request.headers.get('If-None-Match') === etag) {
         return new Response(null, { status: 304, headers: { ETag: etag, Vary: 'Cookie', 'Cache-Control': 'private, no-cache' } });

@@ -3985,7 +3985,8 @@ export default {
     // /research 与首页共用同一个 HTML：前端按 pathname 决定是整页因子面板
     // 还是盯盘首页。一份模板，样式和渲染代码不会两边走偏。
     if (p === '/' || p === '/index.html'
-        || p === '/research' || p === '/research/' || p === '/r' || p === '/r/') {
+        || p === '/research' || p === '/research/' || p === '/r' || p === '/r/'
+        || p === '/help' || p === '/help/' || p === '/h' || p === '/h/') {
       const etag = htmlEtag();
       if (request.headers.get('If-None-Match') === etag) {
         return new Response(null, { status: 304, headers: { ETag: etag, Vary: 'Cookie', 'Cache-Control': 'private, no-cache' } });
@@ -4237,10 +4238,17 @@ background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--
 .dot.up i{background:var(--down);box-shadow:0 0 0 3px rgba(14,154,97,.16)}
 .dot.down i{background:var(--up);box-shadow:0 0 0 3px rgba(217,58,58,.16)}
 .dot.down{color:var(--up)}
-#btnRs{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);display:inline-block;
-text-decoration:none;
-background:var(--bg3)}
-#btnRs:hover{color:var(--txt);border-color:var(--accent)}
+#btnRs,#btnHelp{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);
+display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid transparent}
+#btnHelp{margin-left:6px}
+#btnRs:hover,#btnHelp:hover{color:var(--txt);border-color:var(--accent)}
+/* 窄屏 header 是 wrap 的，两个按钮会把「使用说明」挤到第二行最左，看着像掉出来的 */
+@media(max-width:560px){
+  header{gap:8px}
+  #btnRs,#btnHelp{font-size:10.5px;padding:2px 8px}
+  #btnHelp{margin-left:4px}
+  h1 em{font-size:11px}
+}
 /* 吸顶锚点导航：页面 7000px+，没有跳转每次找自选都要滚半天。
    top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
    --navH 由 JS 量出来，区块 scroll-margin-top 和表头 sticky 都引用它。 */
@@ -5009,6 +5017,23 @@ background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
 .iobar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
 .iobar .iom{font-size:11.5px;color:var(--txt3);margin-left:auto}
 
+/* ---- 使用说明（/help） ---- */
+.helpbody{max-width:720px;font-size:13.5px;line-height:1.85;color:var(--txt)}
+.helpbody h3{font-size:13px;font-weight:600;margin:22px 0 6px;color:var(--txt)}
+.helpbody h3:first-child{margin-top:4px}
+.helpbody p{margin:0 0 8px;color:var(--txt2)}
+.helpbody ul{margin:0 0 4px;padding-left:18px;color:var(--txt2)}
+.helpbody li{margin:2px 0}
+.helpbody b{color:var(--txt);font-weight:600}
+.helpbody code{font-family:var(--mono);font-size:12px;background:var(--bg3);
+  padding:1px 5px;border-radius:4px}
+.helpback{display:inline-block;margin:2px 0 14px;font-size:12.5px;color:var(--txt2);
+  text-decoration:none;border-bottom:1px dotted var(--line)}
+.helpback:hover{color:var(--accent)}
+/* 说明页只留页头和说明本身。首页那些区块有几个是裸 .sechd/.cards（没有外层容器），
+   逐个列 id 会漏，所以按「.wrap 的直接子元素」一刀切。 */
+body.hsmode .wrap > *:not(header):not(#helpSec){display:none!important}
+
 /* ---- 因子研究面板 ---- */
 #rsMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:70;display:none;
 align-items:center;justify-content:center;padding:18px}
@@ -5259,8 +5284,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <header>
   <h1><span class="mk"><i></i><i></i><i></i></span><span class="tag">ETF<b>盯盘</b></span><em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
-  <span class="dot" id="d-src"><i></i><span id="srcName">连接中</span></span>
   <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
+  <a id="btnHelp" href="/help" title="怎么看这个页面">使用说明</a>
 </header>
 
 <nav class="secnav" id="secNav" aria-label="区块导航">
@@ -5448,6 +5473,48 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <tbody id="listBody"><tr><td colspan="12" class="lskel"><i></i><i></i><i></i><span>正在取全市场行情…</span></td></tr></tbody>
   </table></div>
 </div>
+
+<section class="sec" id="helpSec" style="display:none">
+  <div class="sechd"><b>使用说明</b></div>
+  <div class="helpbody">
+    <a class="helpback" href="/">← 返回盯盘</a>
+
+    <h3>这是什么</h3>
+    <p>全市场 ETF 的日内盯盘面板。行情每 60 秒自刷一次，非交易时段显示上一交易日收盘。</p>
+
+    <h3>顶部两行</h3>
+    <p>第一行是页面名和时钟；第二行「隔夜 / 板块地图 / 自选 / 急涨急跌 / 衍生品 / 清单」在本页内跳转。右上角「因子研究」「使用说明」是独立页面。</p>
+
+    <h3>清单怎么用</h3>
+    <ul>
+      <li><b>排序</b>：点表头任意一列，再点一次反向，标题前的 ▲▼ 是当前排序列。空值永远排最后。</li>
+      <li><b>同指数去重</b>：跟踪同一指数的多只 ETF 默认只留成交额最大的一只，名字后的 <code>×N</code> 是同指数只数。点它看该指数全部成员，再点回到全部。</li>
+      <li><b>搜索</b>：输入代码或名称实时过滤，搜索时不去重。</li>
+      <li><b>申赎</b>：当日净申购金额（亿元）= 份额变化 × 收盘价，红为净申购、绿为净赎回。去重行显示同指数合计，数字后带「合」。点单元格看近 250 个交易日柱状图。</li>
+      <li><b>点行</b>：打开该只的 K 线、分时和份额明细。</li>
+    </ul>
+
+    <h3>自选与提醒</h3>
+    <ul>
+      <li>行尾 <code>+</code> 加入自选，<code>×</code> 移除。自选存在本机，也可以存云端（按本机匿名编号分桶），换设备用「导入/导出」搬。</li>
+      <li>页面开着时自选每 5 秒刷新，走浏览器直连腾讯行情。</li>
+      <li>「提醒」打开后，自选异动会发浏览器通知，需要授权；「范围」可切到全市场，按指数代表标的扫，只弹汇总和极端个股。</li>
+    </ul>
+
+    <h3>数据什么时候更新</h3>
+    <ul>
+      <li>交易日 <b>15:10</b> 抓日线，<b>21:00</b> 抓份额。沪市份额来自上交所报表，它发布比深交所晚，常常当晚 22:00 之后、甚至次日才齐，缺的那天会自动回补。</li>
+      <li>申赎用的是 <b>T 日盘后登记</b>的份额，所以盘中看到的是上一个交易日的数，表头标了日期。</li>
+      <li>溢价率需要 IOPV，只有东财源提供；回落到新浪源时这一列为空。</li>
+    </ul>
+
+    <h3>已知限制</h3>
+    <ul>
+      <li>指数归属来自基金档案，新上市的 ETF 可能还没归到某个指数下，这种按「无指数」处理，不参与去重。</li>
+      <li>部分债券 ETF 没有日线，K 线和申赎会是空的。</li>
+    </ul>
+  </div>
+</section>
 
 <footer>
   <span id="fTs">-</span><span id="fSrc">-</span><span id="fErr" class="err"></span>
@@ -10677,9 +10744,6 @@ function loadFull(){
     for (var z=0;z<items.length;z++) if (items[z].pre) nPre++;
     var preNote = nPre > items.length * 0.5 ? ' · 非交易时段，现价取昨收' : '';
 
-    var dst = document.getElementById('d-src');
-    dst.classList.remove('up','down'); dst.classList.add('up');
-    document.getElementById('srcName').textContent = j.src === 'eastmoney' ? '东财' : '新浪';
     document.getElementById('fSrc').textContent = '数据源: '
       + (j.src === 'eastmoney' ? '东方财富（含 IOPV）' : '新浪财经')
       + ' · ' + items.length + ' 只' + preNote;
@@ -13090,8 +13154,15 @@ document.addEventListener('visibilitychange', function(){ if (!document.hidden) 
    URL 直接可分享，也不占一个弹窗的注意力。 */
 var _pn = location.pathname;
 var RS_MODE = (_pn === '/research' || _pn === '/research/' || _pn === '/r' || _pn === '/r/');
+/* /help 同样共用这份 HTML：不拉任何行情，只把说明区块放出来，其余区块整块隐藏
+   （CSS 的 body.hsmode 那几条）。这样说明页不会因为接口挂了而白屏。 */
+var HELP_MODE = (_pn === '/help' || _pn === '/help/' || _pn === '/h' || _pn === '/h/');
 
-if (RS_MODE){
+if (HELP_MODE){
+  document.body.classList.add('hsmode');
+  document.title = '使用说明 · ETF 全市场';
+  document.getElementById('helpSec').style.display = '';
+} else if (RS_MODE){
   document.body.classList.add('rsmode');
   document.title = '因子研究 · ETF 全市场';
   renderRs();
