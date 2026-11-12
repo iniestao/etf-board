@@ -1091,6 +1091,116 @@ function isOvSid(sid) {
   return OV_SID_RE.test(sid) || ON_ASIA_SECIDS.some((x) => x[0] === sid);
 }
 
+/** 东财 secid → 腾讯代码。腾讯这套分钟接口对 A 股（sh/sz）、港股（hk）、
+ *  美股（us，不带 .OQ 后缀也认）都通；日经、韩国和中金所期货没有对应代码，
+ *  那几类只能留在东财。市场号 105/106/107 都是美股，实测统一用 us 即可。 */
+function txCodeOf(sid) {
+  const m = /^(\d+)\.([A-Za-z0-9.]+)$/.exec(String(sid || ''));
+  if (!m) return null;
+  const mkt = m[1], code = m[2];
+  if (mkt === '1') return 'sh' + code;
+  if (mkt === '0') return 'sz' + code;
+  if (mkt === '124') return 'hk' + code;
+  if (mkt === '105' || mkt === '106' || mkt === '107') return 'us' + code;
+  return null;
+}
+
+/** 腾讯分时兜底：东财 push2his 整段不可达时用。
+ *
+ *  A 股/港股走 minute/query，美股走 usMinute/query，返回都是
+ *  "0930 4.145 42868 …" 这种以空格分隔的行——第三列是累计成交量，不是
+ *  分钟量，所以只取前两列（价格），别照东财 trends2 的列序去理解。
+ *
+ *  域名必须是 proxy.finance.qq.com：同一套路径放在 web.ifzq.gtimg.cn 上
+ *  会被腾讯 WAF 拦成 501 拦截页（实测冷却后仍然拦），换域名就正常。
+ *
+ *  这个接口只在东财失败后才走，且外层有 120 秒缓存，打不到腾讯限流的频率。 */
+async function fetchTxMin(sid) {
+  const code = txCodeOf(sid);
+  if (!code) return null;
+  const us = code.slice(0, 2) === 'us';
+  const url = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/'
+    + (us ? 'usMinute' : 'minute') + '/query?code=' + code;
+  const r = await fetch(url, {
+    headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('腾讯分时 HTTP ' + r.status);
+  const j = await r.json();
+  const node = j && j.data && j.data[code];
+  const rows = node && node.data && node.data.data;
+  if (!Array.isArray(rows) || !rows.length) throw new Error('腾讯分时为空');
+
+  // 日期用响应里带的（美股是美东日期，和本地日期不是一回事）
+  const dd = String((node.data && node.data.date) || '');
+  const md = dd.length === 8 ? dd.slice(4, 6) + '-' + dd.slice(6, 8) : '';
+  const pts = [];
+  for (const s of rows) {
+    const a = String(s).split(' ');
+    const hm = a[0];
+    const p = +a[1];
+    if (!/^\d{4}$/.test(hm) || !(p > 0)) continue;
+    const t = (md ? md + ' ' : '') + hm.slice(0, 2) + ':' + hm.slice(2);
+    pts.push([t, p]);
+  }
+  if (!pts.length) throw new Error('腾讯分时解析为空');
+
+  // 昨收：qt 节点里是「~」分隔的快照，第 5 个字段是昨收。拿不到就交给前端
+  // 退回「较本时段开盘」的口径，不硬编一个假的 0 轴。
+  let pre = 0;
+  const qt = node && node.qt && node.qt[code];
+  if (Array.isArray(qt) && +qt[4] > 0) pre = +qt[4];
+  return { pre, pts };
+}
+
+/* 美股代码的交易所后缀（AAPL.OQ 这种）。腾讯的日线接口不认裸代码：
+   给 usAAPL 只会回「上市首日 + 最新」两条，加后缀才是完整序列。
+   后缀从 qt 快照的第 3 个字段取，一只只查过一次就记下来。 */
+const TX_US_SUFFIX = {};
+async function txUsSuffix(code) {
+  if (TX_US_SUFFIX[code]) return TX_US_SUFFIX[code];
+  try {
+    const r = await fetch('https://qt.gtimg.cn/q=us' + code, {
+      headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!r.ok) return null;
+    const t = new TextDecoder('gbk').decode(await r.arrayBuffer());
+    const m = /="([^"]*)"/.exec(t);
+    const f = m ? m[1].split('~') : [];
+    const full = f[2] || '';
+    if (full.indexOf('.') > 0) { TX_US_SUFFIX[code] = full; return full; }
+  } catch (e) { /* 下一轮再试 */ }
+  return null;
+}
+
+/** 腾讯日线兜底。A 股/港股走 newfqkline 的 qfqday，美股走 day（无复权）。
+ *  两边列序一致：日期,开,收,高,低,量 —— 和东财那边重排后的 o/h/l/c 正好对得上。 */
+async function fetchTxKline(sid, lim) {
+  let sym = txCodeOf(sid);
+  if (!sym) return null;
+  if (sym.slice(0, 2) === 'us') {
+    const suf = await txUsSuffix(sym.slice(2));
+    if (!suf) return null;
+    sym = 'us' + suf;
+  }
+  const url = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get'
+    + '?param=' + sym + ',day,,,' + lim + ',qfq';
+  const r = await fetch(url, {
+    headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error('腾讯 K 线 HTTP ' + r.status);
+  const j = await r.json();
+  const node = j && j.data && j.data[sym];
+  const rows = node && (node.qfqday || node.day);
+  if (!Array.isArray(rows) || !rows.length) throw new Error('腾讯 K 线为空');
+  const bars = rows.map((a) => [a[0], +a[1], +a[3], +a[4], +a[2], +a[5]])
+    .filter((b) => b[1] > 0 && b[4] > 0);
+  if (!bars.length) throw new Error('腾讯 K 线解析为空');
+  return bars;
+}
+
 async function serveOvMin(sid, env, ctx) {
   const cache = await getCache();
   // v2：响应多了 pre（昨收），旧缓存里没有，换个 key 免得前端拿到老格式
@@ -1105,7 +1215,8 @@ async function serveOvMin(sid, env, ctx) {
      一次就放弃的话，点开弹窗看到的是「读取失败」，比慢 400ms 差得多。
      失败也返回 JSON：抛出去会被外层兜成 500 纯文本，前端 JSON.parse 报
      「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。 */
-  let j;
+  let j = null;
+  let emErr = null;
   try {
     j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
       + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', {
@@ -1116,10 +1227,26 @@ async function serveOvMin(sid, env, ctx) {
       return r.json();
     }));
   } catch (e) {
-    return json({ ok: false, error: '分时上游取不到：' + String((e && e.message) || e) });
+    emErr = e;
   }
   const trends = j && j.data && j.data.trends;
-  if (!trends || !trends.length) return json({ ok: false, error: '没有分时数据' });
+  if (!trends || !trends.length) {
+    /* 东财这条链路对整个接口族一起抽（push2his 在 TLS 握手后被直接 RST），
+       重试救不回来。换厂商：腾讯的分钟接口覆盖 A 股/港股/美股，
+       日经、韩国、中金所期货没有对应代码，那几类仍然只能报错。 */
+    try {
+      const tb = await fetchTxMin(sid);
+      if (tb) {
+        const res2 = json({ ok: true, sid, pre: tb.pre, pts: tb.pts, ts: Date.now(), src: 'tencent' }, 120);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+    } catch (e) { /* 两家都挂，走下面的错误 */ }
+    return json({ ok: false, error: '分时上游取不到：'
+      + String((emErr && emErr.message) || (trends ? '没有分时数据' : '无数据')) });
+  }
   const pts = trends.map((s) => {
     const a = s.split(',');
     return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
@@ -1152,7 +1279,8 @@ async function serveOvK(sid, n, env, ctx) {
       if (hit) return hit;
     } catch (e) { /* 降级直连 */ }
   }
-  let j;
+  let j = null;
+  let emErrK = null;
   try {
     j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get'
       + '?secid=' + sid + '&klt=101&fqt=1&lmt=' + lim
@@ -1165,10 +1293,25 @@ async function serveOvK(sid, n, env, ctx) {
       return r.json();
     }));
   } catch (e) {
-    return json({ ok: false, error: 'K 线上游取不到：' + String((e && e.message) || e) });
+    emErrK = e;
   }
   const ks = j && j.data && j.data.klines;
-  if (!ks || !ks.length) return json({ ok: false, error: '没有 K 线数据' });
+  if (!ks || !ks.length) {
+    /* 和分时同一条链路，一起挂。换腾讯：A 股/港股/美股都能取到日线，
+       中金所期货和日经/韩国没有对应代码，仍然只能报错。 */
+    try {
+      const tb = await fetchTxKline(sid, lim);
+      if (tb) {
+        const res2 = json({ ok: true, sid, bars: tb, ts: Date.now(), src: 'tencent' }, 300);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+    } catch (e) { /* 两家都挂 */ }
+    return json({ ok: false, error: 'K 线上游取不到：'
+      + String((emErrK && emErrK.message) || (ks ? '没有 K 线数据' : '无数据')) });
+  }
   /* 字段顺序：日期,开,收,高,低,量,额。这里重排成 o/h/l/c 的顺序，
      前端画蜡烛不用再记一遍源头的列序（记错了就是高低画反，肉眼极难发现）。 */
   const bars = ks.map((s) => {

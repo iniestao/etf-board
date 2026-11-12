@@ -488,18 +488,27 @@ async function runContracts(base, pass) {
     const nv = (on.us || {}).usnvda;
     if (!nv || !isFinite(nv.chg)) bad('/api/overnight 缺英伟达或涨跌幅非法');
     if (nFut === 0) bad('/api/overnight 期货全空（东财+新浪两条都挂了，只影响期货行不影响主数据）');
-    if (nAsia < 6) bad('/api/overnight 亚太不足 6 个（上证/科创50/创业板指/恒生科技/日经/KOSPI，现 ' + nAsia + '）');
+    /* 亚太 6 只里只有 KOSPI 是单源：腾讯对新浪那套外盘代码一律 pv_none_match，
+       新浪 int_kospi 是空壳，能在东财之外给韩国指数报价的源没找到。所以判据拆开：
+       5 只是底线（上证/科创50/创业板指/恒生科技/日经，都有换厂商的备源），
+       第 6 只（KOSPI）缺失只记一行，不算失败。 */
+    if (nAsia < 5) bad('/api/overnight 亚太不足 5 个（现 ' + nAsia + '）');
+    else if (nAsia < 6) console.log('  · 亚太 5 只：韩国 KOSPI 只有东财一个源，这轮没取到');
   } else bad('/api/overnight 失败：' + r.text.slice(0, 160));
 
   // 分时代理：secid 白名单 + 最近一个完整时段
-  r = await rawRequest(base, '/api/ovmin?sid=100.N225', { cookie });
+  //
+  // 主用例用上证而不是日经：上证东财和腾讯都覆盖，能稳定回答「这条链路活着吗」。
+  // 日经只有东财一个源（腾讯没有日经代码，新浪外盘分时接口 404），东财整段抽风
+  // 时它会红，红得还不是代码的问题——降级成下面那条信息项。
+  r = await rawRequest(base, '/api/ovmin?sid=1.000001', { cookie });
   const ovm = r.json();
   if (ovm && ovm.ok) {
-    ok('/api/ovmin 日经分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）· 昨收 ' + ovm.pre);
-    // 阈值不能写死 50：日经 9:00（东京）开盘，早八点半跑自检只有个位数点，
-    // 每天早上都会红一次，红的还不是真问题。10 点 = 已交易满 50 分钟，够区分
-    // 「接口坏了」和「刚开盘」
-    if (!ovm.pts || ovm.pts.length < 10) bad('/api/ovmin 日经分时点数过少');
+    ok('/api/ovmin 上证分时 ' + (ovm.pts || []).length + ' 点（' + ((ovm.pts || [['']])[0][0] || '') + ' 起）· 昨收 ' + ovm.pre
+      + (ovm.src ? ' · 源 ' + ovm.src : ''));
+    // 阈值不能写死 50：早八点半跑自检时集合竞价刚结束，只有个位数点。
+    // 10 点 = 已交易满 10 分钟，够区分「接口坏了」和「刚开盘」
+    if (!ovm.pts || ovm.pts.length < 10) bad('/api/ovmin 分时点数过少');
     // 左轴涨跌幅要靠这个数当 0 轴，缺了就只能退回开盘价，和卡片上的涨跌幅对不上
     if (!(ovm.pre > 0)) bad('/api/ovmin 没带 pre（昨收），纵轴涨跌幅会退回「本时段开盘」口径');
     else {
@@ -507,6 +516,13 @@ async function runContracts(base, pass) {
       if (Math.abs(ovm.pre / fp - 1) > 0.25) bad('/api/ovmin pre 与首点偏离超过 25%，像是拿错了字段');
     }
   } else bad('/api/ovmin 失败：' + r.text.slice(0, 160));
+  // 信息项（不计入通过率）：日经只有一个源，挂了不代表接口有问题
+  r = await rawRequest(base, '/api/ovmin?sid=100.N225', { cookie });
+  {
+    const jp = r.json();
+    if (jp && jp.ok) console.log('  · 日经分时 ' + (jp.pts || []).length + ' 点');
+    else console.log('  · 日经分时不可用（该市场只有东财一个源）');
+  }
   // 白名单负例：A 股「个股」仍必须拒绝（指数已放行给亚太行，个股走 K 线面板）
   r = await rawRequest(base, '/api/ovmin?sid=1.600519', { cookie });
   if (r.status === 200 && r.json().ok) bad('/api/ovmin 白名单失效：A 股个股 secid 竟然放行了');
