@@ -3984,6 +3984,52 @@ async function fetchSinaSpot(secids) {
   return out;
 }
 
+/** 腾讯 A 股/ETF 快照，字段位置是「1~名称~代码~现价~昨收~今开…」那一套。
+ *  f[30] 是 YYYYMMDDHHMMSS，这里截成 YYYY-MM-DD，和下面新浪的 d 对齐——
+ *  前端用它标「行情日期」，两种格式混着会显示成一串数字。 */
+async function fetchTxSpot(secids) {
+  const syms = secids.map((s) => (s.slice(0, 1) === '1' ? 'sh' : 'sz') + s.slice(2));
+  const r = await fetch('https://qt.gtimg.cn/q=' + syms.join(','), {
+    headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('腾讯现货 HTTP ' + r.status);
+  const txt = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const out = {};
+  for (const line of txt.split('\n')) {
+    const m = /v_(?:sh|sz)(\d{6})="([^"]*)"/.exec(line.trim());
+    if (!m) continue;
+    const f = m[2].split('~');
+    const p = +f[3], p0 = +f[4];
+    if (!(p > 0)) continue;
+    const d = String(f[30] || '');
+    out[m[1]] = {
+      p, p0: p0 > 0 ? p0 : p,
+      chg: p0 > 0 ? +(((p / p0) - 1) * 100).toFixed(2) : 0,
+      d: d.length >= 8 ? d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8) : '',
+    };
+  }
+  return out;
+}
+
+/** ETF 期权标的的现价：新浪优先，缺的用腾讯补。
+ *
+ *  这张表以前只认新浪。新浪对数据中心出口会整段 403（本机实测全站 Forbidden），
+ *  一挂就是「现货缺失」→ 九个标的全部跳过，整张表变「期权链取不到」。
+ *  腾讯这条和美股同一个域名，稳定性好得多，缺多少补多少。 */
+async function fetchEtfSpot(secids) {
+  let out = {};
+  try { out = await fetchSinaSpot(secids); } catch (e) { out = {}; }
+  const miss = secids.filter((s) => !out[s.slice(2)]);
+  if (miss.length) {
+    try {
+      const more = await fetchTxSpot(miss);
+      for (const k of Object.keys(more)) if (!out[k]) out[k] = more[k];
+    } catch (e) { /* 两家都挂，上层按「现货缺」处理 */ }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** 合约清单（代码/行权价/剩余日）。只有东财给这份东西，但它的价不用。
  *  合约一天只变一次（新挂/摘牌/换月），缓存 6 小时——稳态下每次请求就只剩新浪那几批。 */
 async function fetchOptList(secid) {
@@ -4054,7 +4100,9 @@ async function fetchOptChain(secid, spt) {
   return out;
 }
 
-async function fetchEtfSpot(secids) {
+/** 东财版的标的现价（ulist 一次批量）。只在 serveFutOptEm 那条老链路里用——
+ *  那条链路本身就是「新浪一个价都没拿到」时的退路，拿东财的滞后价兜底。 */
+async function fetchEtfSpotEm(secids) {
   const arr = await emUlist(secids, 'f2,f3,f12,f14,f18');
   const out = {};
   for (const x of arr) {
@@ -4063,6 +4111,34 @@ async function fetchEtfSpot(secids) {
     if (p > 0 || p0 > 0) out[String(x.f12)] = { p, p0, chg: +(+x.f3 || 0).toFixed(2) };
   }
   return out;
+}
+
+/** 东财 + 腾讯混着取：东财能给就东财（带昨收），缺的补腾讯。
+ *  serveFutOptEm 那条链路在新浪整站 403 时被调用，若东财也挂，上一版会「现货缺失」
+ *  → 九个标的全跳过 → 整张表变「期权链取不到」，其实期权价那半截还好好的。 */
+async function fetchEtfSpotAny(secids) {
+  let out = {};
+  try { out = await fetchEtfSpotEm(secids); } catch (e) { out = {}; }
+  const miss = secids.filter((s) => !out[s.slice(2)]);
+  if (miss.length) {
+    try {
+      const more = await fetchTxSpot(miss);
+      for (const k of Object.keys(more)) if (!out[k]) out[k] = more[k];
+    } catch (e) { /* 两家都挂，上层按「现货缺」处理 */ }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** ETF 期权按「第几档」对齐 Δ 基准：档位按剩余天数排，今天 8 天、昨天 9 天，
+ *  键对不上但合约没变，所以只能按顺序对。档数不一致就不给——某一档今天没配出来
+ *  时按索引对会整体错位，宁可空着。 */
+function applyEtfBpc(months, code, optB) {
+  const base = optB && optB.byCode && optB.byCode[code];
+  if (!base || base.length !== months.length) return;
+  for (let k = 0; k < months.length; k++) {
+    months[k].bpc = (base[k] != null && months[k].bp != null)
+      ? +(months[k].bp - base[k]).toFixed(3) : null;
+  }
 }
 
 function calcEtfMonths(rows, S) {
@@ -4136,7 +4212,7 @@ async function serveFutOpt(url, env, ctx) {
   const diag = {};
   const partial = [];
 
-  const spotP = fetchSinaSpot(list.map((x) => x[0])).catch((e) => {
+  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch((e) => {
     diag.spot = String((e && e.message) || e);
     return null;
   });
@@ -4187,16 +4263,8 @@ async function serveFutOpt(url, env, ctx) {
       diag[code] = ['报价 ' + rows.length + '/' + l.length + '，配不出月份'];
       continue;
     }
-    /* Δ基差率：拿「第 i 档」对「上一交易日第 i 档」。档位按剩余天数排，今天 8 天、
-       昨天 9 天，键对不上但合约没变，所以只能按顺序对。档数不一致就不给——
-       某一档今天没配出来时按索引对会整体错位，宁可空着。 */
-    const base = optB.byCode[code];
-    if (base && base.length === months.length) {
-      for (let k = 0; k < months.length; k++) {
-        months[k].bpc = (base[k] != null && months[k].bp != null)
-          ? +(months[k].bp - base[k]).toFixed(3) : null;
-      }
-    }
+    /* Δ基差率：拿「第 i 档」对「上一交易日第 i 档」。 */
+    applyEtfBpc(months, code, optB);
     if (!td && s.d) td = s.d;
     items.push({ c: code, n: name, S: s.p, chg: s.chg, months, on: 'live' });
   }
@@ -4236,15 +4304,17 @@ async function serveFutOptEm(url, env, ctx) {
   // 分两批发：4 个标的的购 + 现货 = 5 个并发，回完再发 4 个沽。
   // 9 个一起发会撞 Cloudflare 对同 host 的连接数上限，后面的排队，
   // 单个请求的墙钟时间被顶到 5 秒以上（探针里 8 个并发最快那条也要 2.7s）
-  const spotP = fetchEtfSpot(list.map((x) => x[0])).catch((e) => {
+  const spotP = fetchEtfSpotAny(list.map((x) => x[0])).catch((e) => {
     diag.spot = String((e && e.message) || e);
     return null;
   });
-  const [spot, calls] = await Promise.all([
+  const [spot, calls, emLastSnap] = await Promise.all([
     spotP,
     Promise.all(list.map(([sid, code]) => grab(sid, code, 9))),
+    loadFutLast(env).catch(() => null),
   ]);
   const puts = await Promise.all(list.map(([sid, code]) => grab(sid, code, 10)));
+  const optBEm = optBaseFromLast(emLastSnap, futDataDate(emLastSnap));
   const chains = list.map(([, code], i) => ({ code, c: calls[i], p: puts[i] }));
 
   const partial = [];
@@ -4282,11 +4352,13 @@ async function serveFutOptEm(url, env, ctx) {
       diag[code] = ['rows ' + rows.length + ' 配不出月份'];
       continue;
     }
+    applyEtfBpc(months, code, optBEm);
     const name = (list.find((x) => x[1] === code) || [])[2] || code;
     items.push({ c: code, n: name, S, chg: useLive ? s.chg : 0, months, on: useLive ? 'live' : 'prev' });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial, src: 'em' };
+  out.optBaseTd = optBEm.baseTd;
   // live = 期权用当日最新价；prev = 只能拿到昨收，整块按昨收算；
   // none = 连昨收都不自洽（平价校验全挂），这时候不显示比显示错数好
   out.mode = !items.length ? 'none' : (items.some((x) => x.on === 'live') ? 'live' : 'prev');
