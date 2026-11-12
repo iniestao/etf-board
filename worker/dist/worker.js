@@ -3381,6 +3381,18 @@ async function serveFut(env, ctx) {
   if (!spotOk) partial.push('spot');
   if (spotOk) for (const k of Object.keys(spot)) spot[k].n = FUT_SPOT_NAME[k] || k;
 
+  /* 中金所那三份 quote_*.txt 在盘前和盘中偶发整段超时（8 秒 ×2 次重试也会挂），
+     期权一空，前端就只剩「期权链没读到」四个字。期货有新浪做秒级兜底，期权链没有
+     第二源（东财对云 IP 只回昨收，见 gen_etfopt 那段），所以退到日档里上一交易日
+     收盘算好的合成基差——旧的比空白强，optDaily 带上日期，前端会标出来。 */
+  let optFinal = optOut;
+  let optDaily = 0;
+  if (!optOut.length && last && Array.isArray(last.opt) && last.opt.length) {
+    optFinal = last.opt;
+    optDaily = optFinal.length;
+    if (partial.indexOf('opt') < 0) partial.push('opt');
+  }
+
   const out = {
     ok: true, ts: now, td, src, stale: 0,
     asof: now, age: 0, partial,
@@ -3391,7 +3403,8 @@ async function serveFut(env, ctx) {
     lastTd: (last && last.td) || null,
     spot: spotOk ? spot : {},
     fut: futOut,
-    opt: optOut,
+    opt: optFinal,
+    optDaily,
     cm,
     pos: posPrev || null,
   };
@@ -12555,8 +12568,21 @@ function renderFutBasis(){
 function renderFutOptIdx(){
   var box = document.getElementById('futOptIdx');
   if (!box) return;
-  var list = FUT.opt || [];
-  if (!list.length){ box.innerHTML = '<div class="empty">期权链没读到</div>'; return; }
+  var list = (FUT && FUT.opt) || [];
+  /* 中金所那三份 quote 文件盘中偶发整段超时，后端此时会退到日档里上一交易日的
+     合成基差（FUT.optDaily>0）。副标题带上那天，别让人拿隔夜的基差率当实时。 */
+  var sub = document.getElementById('futOptIdxSub');
+  if (sub) sub.textContent = 'IO/MO/HO'
+    + (FUT && FUT.optDaily ? ' · ' + (FUT.lastTd || FUT.td || '上一交易日') + ' 收盘' : '');
+  if (!list.length){
+    // 「还没回来」和「回来了但是空的」要分开：后者一直转圈会让人以为页面卡死
+    box.innerHTML = FUT
+      ? '<div class="empty">中金所期权链这轮没返回，下一轮自动重试</div>'
+      : (FUT_BUSY
+        ? '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>'
+        : '<div class="empty">行情接口没返回，下一轮自动重试</div>');
+    return;
+  }
 
   var h = '<table><thead><tr><th class="l">合约</th><th>合成期货</th>'
     + '<th title="合成期货 − 现货">基差率</th>'

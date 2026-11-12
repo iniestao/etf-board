@@ -149,7 +149,12 @@ async function fetchSZSE(day) {
     }
     if (!d) { log(`    （深交所第 ${pg} 页拿不到：${why}）`); break; }
     // 报表表头带日期，不是目标日说明当天还没发布
-    const stamp = String((d.metadata && d.metadata.subname) || '').trim();
+    /* 数据日期不在 subname 里——subname 是「报表的查询日」，永远是今天。
+       真正的日期写在 dqgm 列名上：`当前规模（万份）…（2026-11-11）`。
+       早先拿 subname 比，请求 T-1 时必然不等，历史日就永远抓不回来。 */
+    const colName = String((d.metadata && d.metadata.cols && d.metadata.cols.dqgm) || '');
+    const dm = /（(\d{4}-\d{2}-\d{2})）/.exec(colName);
+    const stamp = dm ? dm[1] : String((d.metadata && d.metadata.subname) || '').trim();
     if (pg === 1 && stamp && stamp !== day) {
       log(`    （深交所报表日期是 ${stamp}，不是 ${day}，当天还没发布）`);
       return null;
@@ -298,6 +303,48 @@ async function fetchAppend(mk) {
   }
 }
 
+/* ---------------------------------------------------------------- 修正末日
+
+   深交所 1945 报表的 dqgm 列自带一句：**「该字段 T 日晚间更新的 T 日规模仅供参考，
+   以 T+1 日早间更新的 T 日规模为准」**。也就是 T 日 21:00 那轮抓到的常常还是
+   上一日的副本。2026-11-11 就是：758 只深市标的里 754 只与 11-10 完全相同，
+   全市场申赎因此有 74% 显示 0.00 —— 数字没算错，是喂进去的两天份额一模一样。
+
+   所以 T+1 早上拿深交所重抓一次轴末日，与现值差异显著就整体覆盖。
+   沪市不用修：上交所收盘后发布的就是最终值（STAT_DATE 逐行校验过）。 */
+async function fixLastShares() {
+  log('\n[fix] 用深交所的 T+1 早间值修正轴末日');
+  for (const m of await loadShares()) {
+    if (m.mkt !== 'SZ') continue;
+    const i = m.d.length - 1;
+    const day = m.d[i];
+    const got = await fetchSZSE(day);
+    const n = got ? Object.keys(got).length : 0;
+    if (n < 500) { log(`  · SZ ${day}：深交所只给了 ${n} 只，跳过`); continue; }
+
+    let cmp = 0, big = 0;
+    for (const [code, arr] of Object.entries(m.c)) {
+      const a = arr[i], b = got[code];
+      if (a == null || b == null) continue;
+      cmp++;
+      if (Math.abs(b - a) / a > 1e-3) big++;
+    }
+    /* 深交所是「万份 + 两位小数」，与东财 f38 的「份」天然差几百份（相对 1e-8），
+       所以只有相对差 >0.1% 才算「值真的不一样」。10 只以上才动——否则为了
+       四舍五入把本来精确的东财值换成粗的，得不偿失。 */
+    if (big < 10) { log(`  · SZ ${day}：${cmp} 只比过，差异 >0.1% 的只有 ${big} 只，不动`); continue; }
+    let filled = 0;
+    for (const [code, b] of Object.entries(got)) {
+      if (!m.c[code]) { m.c[code] = new Array(m.d.length).fill(null); m.n[code] = ''; }
+      if (m.c[code][i] !== b) { m.c[code][i] = b; filled++; }
+    }
+    m.raw.c = m.c; m.raw.n = m.n;
+    m.raw.imported = new Date().toISOString();
+    if (!DRY) await writeSharesFile(SZ_F, m.raw);
+    log(`  ✓ SZ ${day} 修正 ${filled} 只（其中 ${big} 只原值与深交所差 >0.1%）`);
+  }
+}
+
 // ---------------------------------------------------------------- 价格与折算
 
 function openDb() {
@@ -391,6 +438,7 @@ async function main() {
     }
   } catch (e) { log(`  ! 读价格库失败（${e.message}），仍按 manifest 的日期`); }
 
+  if (flag('fix-last')) await fixLastShares();
   if (flag('fetch')) await fetchAppend(manifest);
 
   log('\n[1/5] 载入份额');

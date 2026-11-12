@@ -8395,8 +8395,21 @@ function renderFutBasis(){
 function renderFutOptIdx(){
   var box = document.getElementById('futOptIdx');
   if (!box) return;
-  var list = FUT.opt || [];
-  if (!list.length){ box.innerHTML = '<div class="empty">期权链没读到</div>'; return; }
+  var list = (FUT && FUT.opt) || [];
+  /* 中金所那三份 quote 文件盘中偶发整段超时，后端此时会退到日档里上一交易日的
+     合成基差（FUT.optDaily>0）。副标题带上那天，别让人拿隔夜的基差率当实时。 */
+  var sub = document.getElementById('futOptIdxSub');
+  if (sub) sub.textContent = 'IO/MO/HO'
+    + (FUT && FUT.optDaily ? ' · ' + (FUT.lastTd || FUT.td || '上一交易日') + ' 收盘' : '');
+  if (!list.length){
+    // 「还没回来」和「回来了但是空的」要分开：后者一直转圈会让人以为页面卡死
+    box.innerHTML = FUT
+      ? '<div class="empty">中金所期权链这轮没返回，下一轮自动重试</div>'
+      : (FUT_BUSY
+        ? '<div class="lskel"><i></i><i></i><i></i><span>读取中…</span></div>'
+        : '<div class="empty">行情接口没返回，下一轮自动重试</div>');
+    return;
+  }
 
   var h = '<table><thead><tr><th class="l">合约</th><th>合成期货</th>'
     + '<th title="合成期货 − 现货">基差率</th>'

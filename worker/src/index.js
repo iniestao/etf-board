@@ -3382,6 +3382,18 @@ async function serveFut(env, ctx) {
   if (!spotOk) partial.push('spot');
   if (spotOk) for (const k of Object.keys(spot)) spot[k].n = FUT_SPOT_NAME[k] || k;
 
+  /* 中金所那三份 quote_*.txt 在盘前和盘中偶发整段超时（8 秒 ×2 次重试也会挂），
+     期权一空，前端就只剩「期权链没读到」四个字。期货有新浪做秒级兜底，期权链没有
+     第二源（东财对云 IP 只回昨收，见 gen_etfopt 那段），所以退到日档里上一交易日
+     收盘算好的合成基差——旧的比空白强，optDaily 带上日期，前端会标出来。 */
+  let optFinal = optOut;
+  let optDaily = 0;
+  if (!optOut.length && last && Array.isArray(last.opt) && last.opt.length) {
+    optFinal = last.opt;
+    optDaily = optFinal.length;
+    if (partial.indexOf('opt') < 0) partial.push('opt');
+  }
+
   const out = {
     ok: true, ts: now, td, src, stale: 0,
     asof: now, age: 0, partial,
@@ -3392,7 +3404,8 @@ async function serveFut(env, ctx) {
     lastTd: (last && last.td) || null,
     spot: spotOk ? spot : {},
     fut: futOut,
-    opt: optOut,
+    opt: optFinal,
+    optDaily,
     cm,
     pos: posPrev || null,
   };
