@@ -52,13 +52,18 @@ const SPOT_SECID = { '000300': '1.000300', '000905': '1.000905', '000016': '1.00
    - 深交所 ShowReport：txtDate 参数被忽略，subname 永远返回当天。
    - 上交所 commonQuery：试了三个 sqlId 段，total 恒为 0；改版后也没找到可用入口。
 
-   所以这 4 个品种只能从上线那天起逐日记录，之前的日子一律推 null 占位——
+   所以这些品种只能从上线那天起逐日记录，之前的日子一律推 null 占位——
    图上前半段会是空的，那是真的没有，不是抓失败了。 */
 const ETF_OPT = [
   ['1.510050', '510050', 'sh510050', '50ETF'],
   ['1.510300', '510300', 'sh510300', '300ETF'],
-  ['0.159919', '159919', 'sz159919', '300ETF深'],
+  ['1.510500', '510500', 'sh510500', '500ETF'],
   ['1.588000', '588000', 'sh588000', '科创50'],
+  ['1.588080', '588080', 'sh588080', '科创板50'],
+  ['0.159919', '159919', 'sz159919', '300ETF深'],
+  ['0.159922', '159922', 'sz159922', '500ETF深'],
+  ['0.159915', '159915', 'sz159915', '创业板'],
+  ['0.159901', '159901', 'sz159901', '深100'],
 ];
 const ETF_CODES = ETF_OPT.map((x) => x[1]);
 
@@ -693,7 +698,16 @@ async function main() {
     }
     // ETF 期权老日期没有数据，接口按同一批键推 null 占位，数组长度才和 hist.d 对得上
     for (const p of OPT_PRODS.concat(ETF_CODES)) {
-      const o = hist.opt[p] = hist.opt[p] || { b: [], bp: [], ann: [], cmp: [], pcr: [] };
+      let o = hist.opt[p];
+      if (!o) {
+        o = hist.opt[p] = { b: [], bp: [], ann: [], cmp: [], pcr: [] };
+        /* 新加的品种（ETF 清单从 4 个扩到 9 个）在老日档里没有这个键，若从空数组
+           开始逐日 push，长度会远远短于 hist.d。收尾那段按索引重排（idx.map）
+           会把今天这唯一一个值排到**最早那天**，整条曲线平移 200 多天。
+           先按已有天数补满 null，长度才对得上。 */
+        for (const k of Object.keys(o)) for (let i = 0; i < hist.d.length; i++) o[k].push(null);
+        log(`  ${p} 是新品种，先补 ${hist.d.length} 天 null 再记当天`);
+      }
       const l = day.opt.filter((x) => x.p === p && x.dte >= 0).sort((a, b) => a.dte - b.dte);
       const x = l[0] || {};
       o.b.push(x.basis == null ? null : x.basis);
