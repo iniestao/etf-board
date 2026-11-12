@@ -1143,7 +1143,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <button id="btnClear">清空</button>
     <span class="alertbar">
       <span class="abtn" id="btnAlert" title="在页面开着的时候，出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
-      <span class="abtn" id="btnScope" title="自选：逐只提醒，5 秒一刷。全市场：扫同指数去重后的代表标的（500 只上下，一只一个指数），只弹汇总和极端个股，60 秒一刷——一只不漏地逐只弹，一天几百条，弹到第二次就没人看了">范围 自选</span>
+      <span class="abtn" id="btnScope" title="自选逐只提醒；全市场按指数代表扫，只弹汇总和极端个股">范围 自选</span>
       <span class="aset" id="alertSet">
         涨跌≥<input id="aChg" value="2.0">%
         急变≥<input id="aSpd" value="0.8">%/3分
@@ -1282,7 +1282,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       <th class="l" data-sk="c" title="点击按代码排序">代码</th><th class="l" data-sk="n" title="点击按名称排序">名称</th>
       <th data-sk="p" title="点击按现价排序">现价</th><th data-sk="chg" title="点击按涨跌幅排序">涨跌%</th>
       <th class="ctr" data-sk="pm" title="点击按溢价率排序">溢价率</th><th data-sk="amt" title="点击按成交额排序">成交额</th>
-      <th class="ctr" data-sk="sh" data-shd title="点击按当日申赎排序。当日净申购金额（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。红=净申购，绿=净赎回。同指数去重时显示该指数全部成员的合计（数字后带「合」），点开看最近 250 个交易日的每日柱状图">申赎</th><th data-sk="tr" title="点击按换手率排序">换手</th>
+      <th class="ctr" data-sk="sh" data-shd title="点击排序。净申购=份额变化×收盘价（折算日已修正）；去重行显示同指数合计。点开看每日柱状图">申赎</th><th data-sk="tr" title="点击按换手率排序">换手</th>
       <th class="hide-sm" data-sk="amp" title="点击按振幅排序">振幅</th><th class="hide-sm" data-sk="hi" title="点击按最高价排序">最高</th><th class="hide-sm" data-sk="lo" title="点击按最低价排序">最低</th>
       <th class="ctr" style="width:36px"></th>
     </tr></thead>
@@ -2848,10 +2848,8 @@ function shCell(x){
   var v = ix ? shIxLast(ix) : (SH_F[x.c] == null ? null : SH_F[x.c]);
   var cls = (v == null || v === 0) ? '' : (v > 0 ? 'up' : 'down');
   var tip = ix
-    ? '跟踪「' + ix + '」的 ' + ixCount(ix) + ' 只合计净申赎（亿元），截至 ' + (SH_D || '-')
-      + '。份额跨基金不能相加，所以折成金额。点开看每日柱状图'
-    : '本只当日净申赎（亿元）= 份额变化 × 收盘价，折算日已按份额乘子纠正。截至 '
-      + (SH_D || '-') + '。点开看每日柱状图';
+    ? '「' + ix + '」' + ixCount(ix) + ' 只合计 · ' + (SH_D || '-') + ' · 点开看柱状图'
+    : '本只净申赎（亿元）· ' + (SH_D || '-') + ' · 点开看柱状图';
   return '<td class="ctr shcell ' + cls + '" data-sh="' + (ix || x.c) + '"'
     + (ix ? ' data-agg="1"' : '') + ' title="' + tip + '">'
     + shNum(v) + (ix ? '<i class="shagg">合</i>' : '') + '</td>';
@@ -2957,10 +2955,8 @@ function shFoot(v, d){
     + '<span>申购 <b style="color:var(--up)">' + pos + '</b> 天 / 赎回 <b style="color:var(--down)">' + neg + '</b> 天</span>'
     + (nCv ? '<span>含 ' + nCv + ' 次份额折算（已换算，柱子上方有小圆点）</span>' : '')
     + '</div>'
-    + '<div class="shnote">柱子 = 当日净申购金额（份额变化 × 收盘价），红为净申购、绿为净赎回。'
-    + '份额在 T 日盘后登记，价格 T+1 才反映折算，这里已经按份额乘子 k 对齐，'
-    + '所以折算日不会出现「凭空多出几百亿」。鼠标悬浮看具体数值。'
-    + (d.agg ? '合计按当前成员回溯，历史不重述——指数成分会调，早年的合计可能对不上当年的披露。' : '')
+    + '<div class="shnote">柱子 = 当日净申购金额（份额变化 × 收盘价），红申购绿赎回；折算日已按份额乘子对齐。'
+    + (d.agg ? '合计按当前成员回溯，历史不重算。' : '')
     + '</div>';
 }
 
@@ -3113,11 +3109,8 @@ function ixBadge(x){
   var n = ixCount(x.ix);
   if (!(n > 1)) return '';
   var mx = KEEP[x.ix] === x.c;
-  var gap = (IX_N[x.ix] || 0) - n;
-  return '<span class="ixb'+(mx?' mx':'')+'" data-ix="'+x.ix+'" title="跟踪 '+x.ix+' · 同指数 '+n+' 只有行情'
-    + (mx ? '，本只成交额最大' : '，本只成交额不是最大')
-    + (gap > 0 ? '（档案里还有 ' + gap + ' 只，今天没有行情：停牌、未上市或源没给）' : '')
-    + '。点击查看该指数全部 '+n+' 只' + '">×'+n+'</span>';
+  return '<span class="ixb'+(mx?' mx':'')+'" data-ix="'+x.ix+'" title="跟踪 '+x.ix+' · '+n+' 只'
+    + (mx ? ' · 代表' : '') + '">×'+n+'</span>';
 }
 
 function rowHtml(x, withDel){
@@ -3998,13 +3991,8 @@ function renderList(){
   syncSortUi();               // 表头箭头跟着 SORT 走，任何一次重绘都对得上
   var arr = DATA;
   if (IXF){
-    /* 展开单个指数：列出该指数在**当前快照**里的全部成员，标出哪只是代表。
-       计数用 arr.length 而不是 IX_N[IXF]——档案里有、今天没行情的成员
-       （停牌 / 新发未上市 / 已清盘但档案还挂着）本来就画不出行，
-       硬写「共 N 只」只会让人以为表格坏了。差额在后面单独说明。 */
+    /* 展开单个指数：列出该指数在**当前快照**里的全部成员，标出哪只是代表。 */
     var all = arr.filter(function(x){ return x.ix === IXF; });
-    var stat = IX_N[IXF] || all.length;
-    var miss = Math.max(0, stat - all.length);
     arr = sortRows(all);
     var body0 = document.getElementById('listBody');
     body0.innerHTML = arr.length
@@ -4012,11 +4000,9 @@ function renderList(){
           return '<tr class="hr' + (KEEP[IXF] === x.c ? ' rep' : '') + '" data-c="'+x.c+'">'
             + rowHtml(x, false) + '</tr>';
         }).join('')
-      : '<tr><td colspan="12" class="empty">该指数今天没有一只有行情（停牌或未上市）</td></tr>';
+      : '<tr><td colspan="12" class="empty">该指数今天没有行情</td></tr>';
     document.getElementById('listN').textContent =
-      '跟踪「' + IXF + '」的 ' + arr.length + ' 只'
-      + (miss ? '（档案里还有 ' + miss + ' 只今天没有行情：停牌、未上市，或行情源没给全）' : '')
-      + ' · 再点一次标签返回全部';
+      '「' + IXF + '」' + arr.length + ' 只';
     stampN('listN', DATA_TS);
     return;
   }
@@ -4027,7 +4013,6 @@ function renderList(){
       return x.c.indexOf(k2) >= 0 || x.n.toLowerCase().indexOf(k2) >= 0;
     });
   }
-  var beforeDedup = arr.length;
   // 搜索时不去重：用户搜"300"就是想看所有 300ETF，藏掉 28 只反而碍事
   if (DEDUP && !kw){
     arr = arr.filter(function(x){
@@ -4047,11 +4032,8 @@ function renderList(){
       buf.push('<tr class="hr" data-c="'+arr[i].c+'">'+rowHtml(arr[i], false)+'</tr>');
     body.innerHTML = buf.join('');
   }
-  var note = '';
-  if (DEDUP && !kw && beforeDedup > matched) note = '（同指数去重前 ' + beforeDedup + ' 只）';
-  else if (kw && DEDUP) note = '（搜索时显示全部，未去重）';
   document.getElementById('listN').textContent =
-    '显示 ' + arr.length + ' / 可用 ' + matched + ' 只' + note;
+    '显示 ' + arr.length + ' / 可用 ' + matched + ' 只';
   stampN('listN', DATA_TS);
 }
 
