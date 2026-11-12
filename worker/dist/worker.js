@@ -807,13 +807,15 @@ async function fetchFutEm() {
   return out;
 }
 
-/** 亚太指数：和期货同一个 ulist 批量接口，一组 secid 一次拿完 */
-async function fetchAsia() {
+/** 亚太指数：和期货同一个 ulist 批量接口，一组 secid 一次拿完
+ *  ms 由调用方按剩余预算给：这条链路最坏要走主源+备源+兜底，各自 8 秒加起来
+ *  能把隔夜卡拖到十几秒，卡着不动比少几只更难受。 */
+async function fetchAsia(ms) {
   const qs = ON_ASIA_SECIDS.map((x) => x[0]).join(',');
   const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2'
     + '&secids=' + qs + '&fields=f2,f3,f12,f14', {
     headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-    signal: AbortSignal.timeout(9000),
+    signal: AbortSignal.timeout(ms || 9000),
   });
   if (!r.ok) throw new Error('ASIA HTTP ' + r.status);
   const j = await r.json();
@@ -822,7 +824,9 @@ async function fetchAsia() {
   const out = [];
   for (const row of (Array.isArray(rows) ? rows : Object.values(rows))) {
     const hit = ON_ASIA_SECIDS.find((x) => x[0].split('.')[1] === row.f12);
-    if (hit && isFinite(+row.f3)) out.push({ sid: hit[0], n: row.f14 || hit[1], p: +row.f2, chg: +row.f3 });
+    // 名称固定用配置里的写法：东财对同一个指数会给出「恒生科技指数」「恒生科技」
+    // 两种叫法，换源时名字一跳，看着像换了标的
+    if (hit && isFinite(+row.f3)) out.push({ sid: hit[0], n: hit[1], p: +row.f2, chg: +row.f3 });
   }
   // 按配置顺序输出，不给上游排序自由
   out.sort((a, b) => ON_ASIA_SECIDS.findIndex((x) => x[0] === a.sid) - ON_ASIA_SECIDS.findIndex((x) => x[0] === b.sid));
@@ -839,8 +843,9 @@ async function fetchAsia() {
      韩国KOSPI                    → 东财单只 stock/get（ulist 挂了它通常还活着）
    涨跌幅一律用「现价 ÷ 昨收」自算，不赌上游的字段下标——腾讯 A 股 88 项、
    港股 78 项，靠下标取涨幅会搞错。 */
-async function fetchAsiaBackup(sids) {
+async function fetchAsiaBackup(sids, ms) {
   const want = new Set(sids);
+  const to = Math.max(500, ms || 8000);
   const out = [];
 
   const TX = [
@@ -852,7 +857,7 @@ async function fetchAsiaBackup(sids) {
     try {
       const r = await fetch('https://qt.gtimg.cn/q=' + txq.join(','), {
         headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(to),
       });
       if (r.ok) {
         const t = new TextDecoder('gbk').decode(await r.arrayBuffer());
@@ -864,7 +869,10 @@ async function fetchAsiaBackup(sids) {
           if (!hit || f.length < 6) continue;
           const p = +f[3], prev = +f[4];
           if (!(p > 0) || !(prev > 0)) continue;
-          out.push({ sid: hit[1], n: f[1] || hit[1], p, chg: (p / prev - 1) * 100 });
+          // 名字取配置里的写法，不用上游的：腾讯叫「恒生科技指数」、东财叫「恒生科技」，
+          // 源一换名字就跳，看着像换了标的
+          const nm = (ON_ASIA_SECIDS.find((x) => x[0] === hit[1]) || [])[1] || f[1] || hit[1];
+          out.push({ sid: hit[1], n: nm, p, chg: (p / prev - 1) * 100 });
         }
       }
     } catch (e) { /* 腾讯也挂了就走下面两个 */ }
@@ -874,34 +882,45 @@ async function fetchAsiaBackup(sids) {
     try {
       const r = await fetch('https://hq.sinajs.cn/list=int_nikkei', {
         headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(to),
       });
       if (r.ok) {
         const t = new TextDecoder('gbk').decode(await r.arrayBuffer());
         const m = /"([^"]*)"/.exec(t);
         const f = m ? m[1].split(',') : [];
         const p = +f[1], chg = +f[3];
-        if (p > 0 && isFinite(chg)) out.push({ sid: '100.N225', n: f[0] || '日经225', p, chg });
+        // 名字用配置里的固定写法：新浪叫「日经指数」、东财叫「日经225」，
+        // 不统一的话源一换名字就跳，看着像换了标的
+        if (p > 0 && isFinite(chg)) out.push({ sid: '100.N225', n: '日经225', p, chg });
       }
     } catch (e) { /* 日经缺了就先不显示这一只 */ }
   }
 
   if (want.has('100.KS11')) {
-    try {
-      const r = await fetch('https://push2.eastmoney.com/api/qt/stock/get?secid=100.KS11'
-        + '&fields=f43,f58,f169,f170', {
-        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (r.ok) {
-        const j = await r.json();
-        const d = j && j.data;
-        // 单只接口不传 fltt 时给的是放大 100 倍的整数
-        const p = d ? +d.f43 / 100 : 0;
-        const chg = d ? +d.f170 / 100 : NaN;
-        if (p > 0 && isFinite(chg)) out.push({ sid: '100.KS11', n: d.f58 || '韩国KOSPI', p, chg });
+    /* KOSPI 没有腾讯/新浪的可用代码（腾讯 pv_none_match、新浪 int_kospi 空壳），
+       只能留在东财。但 ulist 挂的时候单只 stock/get 往往还活着——两个域名都试，
+       单只接口比批量接口轻得多，限流阈值不在一个档上。
+       紧跟主源失败之后再打同一域名容易被连坐，所以给一轮 350ms 的退避重试。 */
+    for (let round = 0; round < 2 && !out.some((x) => x.sid === '100.KS11'); round++) {
+      if (round) await new Promise((r) => setTimeout(r, 350));
+      for (const host of ['push2delay', 'push2']) {
+        if (out.some((x) => x.sid === '100.KS11')) break;
+        try {
+          const r = await fetch('https://' + host + '.eastmoney.com/api/qt/stock/get?secid=100.KS11'
+            + '&fields=f43,f58,f169,f170', {
+            headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+            signal: AbortSignal.timeout(Math.max(400, Math.round(to / 2))),
+          });
+          if (!r.ok) continue;
+          const j = await r.json();
+          const d = j && j.data;
+          // 单只接口不传 fltt 时给的是放大 100 倍的整数
+          const p = d ? +d.f43 / 100 : 0;
+          const chg = d ? +d.f170 / 100 : NaN;
+          if (p > 0 && isFinite(chg)) out.push({ sid: '100.KS11', n: '韩国KOSPI', p, chg });
+        } catch (e) { /* 换下一个域名 */ }
       }
-    } catch (e) { /* 同上 */ }
+    }
   }
 
   return out;
@@ -990,15 +1009,33 @@ async function serveOvernight(env, ctx) {
      主源一次失败就是整批空，而这张卡只有「有数组」和「整块隐藏」两种状态，
      空着等于凭空少一块信息，所以不能像期货那样允许它空。 */
   const asiaP = (async () => {
+    const t0 = Date.now();
+    /* 整条链路给 3.6 秒总预算：最坏情况主源超时 + 备源三个源再各超时，能把隔夜卡
+       拖到十几秒，卡着不动比少几只难受得多。超预算就用手上的 + KV 补。 */
+    const left = (cap) => Math.max(400, Math.min(cap, 3600 - (Date.now() - t0)));
     let rows = [];
-    try { rows = await emRetry(fetchAsia); } catch (e) { rows = []; }
-    if (rows.length < ON_ASIA_SECIDS.length) {
+    try { rows = await emRetry(() => fetchAsia(left(2400))); } catch (e) { rows = []; }
+    if (rows.length < ON_ASIA_SECIDS.length && left(0) > 600) {
       const have = new Set(rows.map((x) => x.sid));
       const miss = ON_ASIA_SECIDS.map((x) => x[0]).filter((sid) => !have.has(sid));
       try {
-        const more = await fetchAsiaBackup(miss);
+        const more = await fetchAsiaBackup(miss, left(1400));
         if (more.length) rows = mergeAsia(rows, more);
       } catch (e) { /* 备源也挂，往下看 KV */ }
+    }
+    /* 还缺个别项（KOSPI 只有一个源，它挂了就缺这一只）时，用 KV 里这一只最近的
+       值补上，标 old——整行标红说「源端无响应」太重，5 只新的陪 1 只旧的，
+       只要把那只标出来就够了。超过 30 分钟的不补：那时候它已经不是「刚才的价」。 */
+    if (rows.length && rows.length < ON_ASIA_SECIDS.length) {
+      const snap0 = await asiaSnapFromKV(env);
+      const fresh = Date.now() - 30 * 60 * 1000;
+      if (snap0) {
+        const have0 = new Set(rows.map((x) => x.sid));
+        const fill = snap0.a
+          .filter((x) => !have0.has(x.sid) && (x.t || snap0.t || 0) >= fresh)
+          .map((x) => ({ sid: x.sid, n: x.n, p: x.p, chg: x.chg, old: true, t: x.t || snap0.t }));
+        if (fill.length) rows = mergeAsia(rows, fill);
+      }
     }
     if (rows.length >= 4) {
       const sig = rows.map((x) => x.sid + ':' + x.p.toFixed(2)).join('|');
@@ -1007,8 +1044,10 @@ async function serveOvernight(env, ctx) {
           && kvWriteAllowed('on-asia')) {
         asiaSnapAt = nowMs;
         asiaSnapSig = sig;
-        const put = env.WATCH.put(ASIA_KV, JSON.stringify({ a: rows, t: nowMs }),
-          { expirationTtl: 259200 });
+        // 每条带上自己的时间：补进来的旧值保留原时间，否则下一次会被当成刚抓的
+        const keep = { a: rows.map((x) => ({ sid: x.sid, n: x.n, p: x.p, chg: x.chg,
+          t: x.old ? (x.t || nowMs) : nowMs })), t: nowMs };
+        const put = env.WATCH.put(ASIA_KV, JSON.stringify(keep), { expirationTtl: 259200 });
         if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(Promise.resolve(put).catch(() => {}));
         else await Promise.resolve(put).catch(() => {});
       }
@@ -5128,6 +5167,9 @@ align-items:center;justify-content:center;padding:18px}
 /* 隔夜/亚太条目点击看分时：可点的条目加指针和悬停反馈 */
 .onfut span.ovclk{cursor:pointer}
 .onfut span.ovclk:hover,.ontrk:hover{border-color:var(--txt3)}
+/* 这一只是上次抓到的值（源端刚断，KOSPI 只有东财一个源）。整行加标记太重，
+   只把这一只压淡，鼠标移上去才说明原因。 */
+.onfut span.ovclk.old{opacity:.55}
 /* 赛道展开里的成分股同样是可点条目，但它外面是 .ous（一行挤 5~6 只），
    不给边框、只用虚下划线提示可点——加了边框会把这行撑成两行。 */
 .ondet .ous span.ovclk{cursor:pointer;border-bottom:1px dotted transparent}
@@ -11683,9 +11725,13 @@ var ON_SECID = { NDX:'100.NDX100', INX:'100.SPX', DJI:'100.DJIA',
 function onCls(v){ return v > 0.05 ? 'up' : (v < -0.05 ? 'down' : ''); }
 function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
 
-/** 可点分时的条目：名字 + 涨跌 + data-ovsid */
-function ovChip(n, chg, sid){
-  return '<span class="ovclk" data-ovsid="' + sid + '" data-ovnm="' + esc(n) + '" title="点看分时 / 日线">'
+/** 可点分时的条目：名字 + 涨跌 + data-ovsid
+ *  old=true 表示这一只是上一轮抓到的值（服务端只在这一只的源断掉时才这么标），
+ *  压淡 + 单独说明，别让它跟旁边几条实时值长得一样。 */
+function ovChip(n, chg, sid, old){
+  var tip = old ? '这一只是上次抓到的值（源端刚断）· 点看分时 / 日线' : '点看分时 / 日线';
+  return '<span class="ovclk' + (old ? ' old' : '') + '" data-ovsid="' + sid
+    + '" data-ovnm="' + esc(n) + '" title="' + tip + '">'
     + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
 }
 
@@ -12133,7 +12179,7 @@ function renderOvernight(){
     var ap = '';
     for (i=0;i<ON.asia.length;i++){
       q = ON.asia[i];
-      ap += ovChip(q.n, q.chg, q.sid);
+      ap += ovChip(q.n, q.chg, q.sid, q.old);
     }
     // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
     // 别让「几分钟前抓的数」顶着「今日实时」的名头

@@ -799,6 +799,9 @@ align-items:center;justify-content:center;padding:18px}
 /* 隔夜/亚太条目点击看分时：可点的条目加指针和悬停反馈 */
 .onfut span.ovclk{cursor:pointer}
 .onfut span.ovclk:hover,.ontrk:hover{border-color:var(--txt3)}
+/* 这一只是上次抓到的值（源端刚断，KOSPI 只有东财一个源）。整行加标记太重，
+   只把这一只压淡，鼠标移上去才说明原因。 */
+.onfut span.ovclk.old{opacity:.55}
 /* 赛道展开里的成分股同样是可点条目，但它外面是 .ous（一行挤 5~6 只），
    不给边框、只用虚下划线提示可点——加了边框会把这行撑成两行。 */
 .ondet .ous span.ovclk{cursor:pointer;border-bottom:1px dotted transparent}
@@ -7354,9 +7357,13 @@ var ON_SECID = { NDX:'100.NDX100', INX:'100.SPX', DJI:'100.DJIA',
 function onCls(v){ return v > 0.05 ? 'up' : (v < -0.05 ? 'down' : ''); }
 function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
 
-/** 可点分时的条目：名字 + 涨跌 + data-ovsid */
-function ovChip(n, chg, sid){
-  return '<span class="ovclk" data-ovsid="' + sid + '" data-ovnm="' + esc(n) + '" title="点看分时 / 日线">'
+/** 可点分时的条目：名字 + 涨跌 + data-ovsid
+ *  old=true 表示这一只是上一轮抓到的值（服务端只在这一只的源断掉时才这么标），
+ *  压淡 + 单独说明，别让它跟旁边几条实时值长得一样。 */
+function ovChip(n, chg, sid, old){
+  var tip = old ? '这一只是上次抓到的值（源端刚断）· 点看分时 / 日线' : '点看分时 / 日线';
+  return '<span class="ovclk' + (old ? ' old' : '') + '" data-ovsid="' + sid
+    + '" data-ovnm="' + esc(n) + '" title="' + tip + '">'
     + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
 }
 
@@ -7804,7 +7811,7 @@ function renderOvernight(){
     var ap = '';
     for (i=0;i<ON.asia.length;i++){
       q = ON.asia[i];
-      ap += ovChip(q.n, q.chg, q.sid);
+      ap += ovChip(q.n, q.chg, q.sid, q.old);
     }
     // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
     // 别让「几分钟前抓的数」顶着「今日实时」的名头
