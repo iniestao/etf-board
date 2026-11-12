@@ -7806,10 +7806,18 @@ function renderOvernight(){
       q = ON.asia[i];
       ap += ovChip(q.n, q.chg, q.sid);
     }
-    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">今日实时 · 点看分时 / 日线</span></div>'
+    // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
+    // 别让「几分钟前抓的数」顶着「今日实时」的名头
+    var asub = ON.asiaStale ? '源端无响应 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
+    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">' + asub + '</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
-    stampN('asN', ON.ts);
+    stampN('asN', ON.asiaStale ? (ON.asiaTs || ON.ts) : ON.ts);
+  } else if (ac.querySelector && ac.querySelector('.onfut')){
+    // 空数组＝这一轮抓取失败（主源整批断连，备源也没中）。已经有上一轮的值就留着，
+    // 只把副标题改掉——把内容抹掉会让整块凭空消失，比给旧值更糟
+    var asn = document.getElementById('asN');
+    if (asn) asn.textContent = '源端无响应 · 显示上次的值';
   } else {
     ac.style.display = 'none';
   }

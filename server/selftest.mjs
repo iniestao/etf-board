@@ -257,7 +257,9 @@ async function runContracts(base, pass) {
 
   // 清单第 12 列：份额（净申赎）。列头和单元格定位属性都在同一个 HTML 里，
   // 少一个就是「接口有数、页面不显示」，这种静默失败只能靠断言盯住。
-  const hasTh = r.text.includes('class="ctr" title="当日净申购金额');
+  // 认 data-sk="sh" 这根定位柱，不认 title 文案——标题改过两次，每次都把
+  // 断言带崩，而列其实一直在。
+  const hasTh = r.text.includes('data-sk="sh"') && r.text.includes('>申赎<');
   const hasTd = r.text.includes("data-sh=')") || r.text.includes('data-sh="');
   (hasTh && hasTd) ? ok('清单含「申赎」列（表头 + data-sh 单元格）')
     : bad('清单缺申赎列：表头 ' + hasTh + ' / 单元格 ' + hasTd);

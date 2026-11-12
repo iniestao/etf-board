@@ -829,6 +829,94 @@ async function fetchAsia() {
   return out;
 }
 
+/* 亚太备源。
+   主源是东财 ulist，一次请求拿 6 个 secid，好处是一致性好，坏处是**全有或全无**：
+   同出口短时间连打会被直接断连（实测同一 IP 连打 20 次只成功 1 次），一次失败
+   整批为空，前端那张卡就整块消失——这就是「亚太偶尔丢掉」的表现。
+   备源刻意换厂商，避免跟主源同生共死：
+     上证/科创50/创业板/恒生科技 → 腾讯 qt.gtimg（和美股那条链路同一个源）
+     日经225                      → 新浪 int_nikkei（int_ 系列里唯一稳定给值的）
+     韩国KOSPI                    → 东财单只 stock/get（ulist 挂了它通常还活着）
+   涨跌幅一律用「现价 ÷ 昨收」自算，不赌上游的字段下标——腾讯 A 股 88 项、
+   港股 78 项，靠下标取涨幅会搞错。 */
+async function fetchAsiaBackup(sids) {
+  const want = new Set(sids);
+  const out = [];
+
+  const TX = [
+    ['sh000001', '1.000001'], ['sh000688', '1.000688'],
+    ['sz399006', '0.399006'], ['hkHSTECH', '124.HSTECH'],
+  ];
+  const txq = TX.filter((x) => want.has(x[1])).map((x) => x[0]);
+  if (txq.length) {
+    try {
+      const r = await fetch('https://qt.gtimg.cn/q=' + txq.join(','), {
+        headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.ok) {
+        const t = new TextDecoder('gbk').decode(await r.arrayBuffer());
+        const re = /v_(\S+?)="([^"]*)"/g;
+        let m;
+        while ((m = re.exec(t))) {
+          const f = m[2].split('~');
+          const hit = TX.find((x) => x[0].toLowerCase() === m[1].toLowerCase());
+          if (!hit || f.length < 6) continue;
+          const p = +f[3], prev = +f[4];
+          if (!(p > 0) || !(prev > 0)) continue;
+          out.push({ sid: hit[1], n: f[1] || hit[1], p, chg: (p / prev - 1) * 100 });
+        }
+      }
+    } catch (e) { /* 腾讯也挂了就走下面两个 */ }
+  }
+
+  if (want.has('100.N225')) {
+    try {
+      const r = await fetch('https://hq.sinajs.cn/list=int_nikkei', {
+        headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.ok) {
+        const t = new TextDecoder('gbk').decode(await r.arrayBuffer());
+        const m = /"([^"]*)"/.exec(t);
+        const f = m ? m[1].split(',') : [];
+        const p = +f[1], chg = +f[3];
+        if (p > 0 && isFinite(chg)) out.push({ sid: '100.N225', n: f[0] || '日经225', p, chg });
+      }
+    } catch (e) { /* 日经缺了就先不显示这一只 */ }
+  }
+
+  if (want.has('100.KS11')) {
+    try {
+      const r = await fetch('https://push2.eastmoney.com/api/qt/stock/get?secid=100.KS11'
+        + '&fields=f43,f58,f169,f170', {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const d = j && j.data;
+        // 单只接口不传 fltt 时给的是放大 100 倍的整数
+        const p = d ? +d.f43 / 100 : 0;
+        const chg = d ? +d.f170 / 100 : NaN;
+        if (p > 0 && isFinite(chg)) out.push({ sid: '100.KS11', n: d.f58 || '韩国KOSPI', p, chg });
+      }
+    } catch (e) { /* 同上 */ }
+  }
+
+  return out;
+}
+
+/* 把主源已有的和备源补上的拼一起，按 ON_ASIA_SECIDS 的顺序输出，主源优先。 */
+function mergeAsia(primary, backup) {
+  const map = new Map();
+  for (const x of backup || []) map.set(x.sid, x);
+  for (const x of primary || []) map.set(x.sid, x);
+  const out = [];
+  for (const [sid] of ON_ASIA_SECIDS) if (map.has(sid)) out.push(map.get(sid));
+  return out;
+}
+
 /** 期货备源：新浪 hf_（f0 现价、f7 昨结算，涨跌基准是昨结算——期货的规矩） */async function fetchFutSina() {
   const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -851,7 +939,26 @@ async function fetchAsia() {
   return out;
 }
 
-async function serveOvernight() {
+/* 亚太最近一次成功的快照，主备源都挂时拿出来顶着。
+   和板块地图那份一个思路：宁给几分钟前的数，也不让整块内容凭空消失。
+   KV 键只存 6 个指数的数，几百字节，写也要节流（写额度是共享的）。 */
+const ASIA_KV = 'on-asia-v1';
+const ASIA_SNAP_GAP = 5 * 60 * 1000;   // 至少 5 分钟写一次
+let asiaSnapAt = 0;
+let asiaSnapSig = '';
+
+async function asiaSnapFromKV(env) {
+  if (!env || !env.WATCH) return null;
+  try {
+    const raw = await env.WATCH.get(ASIA_KV);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || !Array.isArray(j.a) || !j.a.length) return null;
+    return j;
+  } catch (e) { return null; }
+}
+
+async function serveOvernight(env, ctx) {
   const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -878,14 +985,50 @@ async function serveOvernight() {
   const futP = emRetry(fetchFutEm)
     .catch(() => fetchFutSina())
     .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
-  const asiaP = emRetry(fetchAsia).catch(() => []);   // 亚太失败同样只缺一行
 
-  const [us, fut, asia] = await Promise.all([usP, futP, asiaP]);
+  /* 亚太三档：主源 → 备源（换厂商）→ 上次成功的那份（KV）。
+     主源一次失败就是整批空，而这张卡只有「有数组」和「整块隐藏」两种状态，
+     空着等于凭空少一块信息，所以不能像期货那样允许它空。 */
+  const asiaP = (async () => {
+    let rows = [];
+    try { rows = await emRetry(fetchAsia); } catch (e) { rows = []; }
+    if (rows.length < ON_ASIA_SECIDS.length) {
+      const have = new Set(rows.map((x) => x.sid));
+      const miss = ON_ASIA_SECIDS.map((x) => x[0]).filter((sid) => !have.has(sid));
+      try {
+        const more = await fetchAsiaBackup(miss);
+        if (more.length) rows = mergeAsia(rows, more);
+      } catch (e) { /* 备源也挂，往下看 KV */ }
+    }
+    if (rows.length >= 4) {
+      const sig = rows.map((x) => x.sid + ':' + x.p.toFixed(2)).join('|');
+      const nowMs = Date.now();
+      if (env && env.WATCH && sig !== asiaSnapSig && nowMs - asiaSnapAt >= ASIA_SNAP_GAP
+          && kvWriteAllowed('on-asia')) {
+        asiaSnapAt = nowMs;
+        asiaSnapSig = sig;
+        const put = env.WATCH.put(ASIA_KV, JSON.stringify({ a: rows, t: nowMs }),
+          { expirationTtl: 259200 });
+        if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(Promise.resolve(put).catch(() => {}));
+        else await Promise.resolve(put).catch(() => {});
+      }
+      return { a: rows, stale: false, ts: nowMs };
+    }
+    const snap = await asiaSnapFromKV(env);
+    if (snap) return { a: snap.a, stale: true, ts: snap.t };
+    return { a: rows, stale: false, ts: Date.now() };
+  })();
+
+  const [us, fut, asiaR] = await Promise.all([usP, futP, asiaP]);
   /* 55 秒，不是 600。原先按「美股收盘后一整天都不动」设的 10 分钟，可亚太那张卡
      和它共用这份响应：日经、KOSPI、恒生在盘中每分钟都在动，10 分钟才换一次，
      跟旁边 60 秒一刷的板块地图差着两个数量级，看着就像卡死了。
      55 秒和全站其余接口同一档（比前端的 60 秒轮询短 5 秒，保证每轮都命中新的）。 */
-  return json({ ok: true, us, fut, asia, ts: Date.now() }, 55);
+  return json({
+    ok: true, us, fut,
+    asia: asiaR.a, asiaStale: asiaR.stale, asiaTs: asiaR.ts,
+    ts: Date.now(),
+  }, 55);
 }
 
 /* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
@@ -4087,7 +4230,7 @@ export default {
 
     if (p === '/api/overnight') {
       // 盘前卡：美股收盘 + 外盘期货 + 亚太指数。赛道→ETF 映射在前端用 IDX_GROUPS 做
-      return serveOvernight();
+      return serveOvernight(env, ctx);
     }
 
     if (p === '/api/ovmin') {
@@ -11992,10 +12135,18 @@ function renderOvernight(){
       q = ON.asia[i];
       ap += ovChip(q.n, q.chg, q.sid);
     }
-    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">今日实时 · 点看分时 / 日线</span></div>'
+    // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
+    // 别让「几分钟前抓的数」顶着「今日实时」的名头
+    var asub = ON.asiaStale ? '源端无响应 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
+    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">' + asub + '</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
-    stampN('asN', ON.ts);
+    stampN('asN', ON.asiaStale ? (ON.asiaTs || ON.ts) : ON.ts);
+  } else if (ac.querySelector && ac.querySelector('.onfut')){
+    // 空数组＝这一轮抓取失败（主源整批断连，备源也没中）。已经有上一轮的值就留着，
+    // 只把副标题改掉——把内容抹掉会让整块凭空消失，比给旧值更糟
+    var asn = document.getElementById('asN');
+    if (asn) asn.textContent = '源端无响应 · 显示上次的值';
   } else {
     ac.style.display = 'none';
   }
