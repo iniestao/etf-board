@@ -224,6 +224,17 @@ async function fetchAppend(mk) {
   const T = mk.last_trade_date;
   log(`\n[fetch] 目标日 ${T}`);
 
+  /* 盘中不许追加「今天」：东财 f38 在盘中给的是此刻的份额，晚上还会变，
+     把它写成「今天的收盘份额」等于拿半天数据冒充全天。早间批次的目标日是
+     昨天，不受这条影响；受影响的只有手动盘中触发。 */
+  const bj = new Date(Date.now() + 8 * 3600e3);
+  const bjDay = bj.toISOString().slice(0, 10);
+  const bjMin = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+  if (T >= bjDay && bjMin < 15 * 60 + 5) {
+    log(`  · 目标日 ${T} 就是今天且还没收盘（${String(Math.floor(bjMin / 60)).padStart(2, '0')}:${String(bjMin % 60).padStart(2, '0')}），不追加`);
+    return;
+  }
+
   /* 份额轴必须逐格对齐。原来只 push 一个 T：沪深两份文件是各追各的，某天
      只有一边抓成功（上交所报表比东财晚，或反向），那一份的 d 就少一天，
      而 c 数组按索引对应 —— 下次再 push，整条历史就永久错开一天，且看不出来。
