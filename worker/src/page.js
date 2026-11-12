@@ -857,28 +857,43 @@ background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
 .iobar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
 .iobar .iom{font-size:11.5px;color:var(--txt3);margin-left:auto}
 
-/* ---- 使用说明（/help） ---- */
-.helpbody{max-width:1180px;font-size:13.5px;line-height:1.85;color:var(--txt);
-  column-count:2;column-gap:46px}
+/* ---- 使用说明（/help） ----
+   版式与 /research 完全一致：整份页面切到独立页状态，主站 header 一起收起，
+   顶部换成自己的 sticky 栏 + 返回按钮。早先是保留首页外壳、只把说明区块放出来，
+   点进去还带着导航和状态灯，跟因子研究是两种观感。 */
+#hsMask{display:none}
+.hshd{display:flex;align-items:center;gap:10px;padding:12px 20px;
+  border-bottom:1px solid var(--line)}
+.hshd b{font-size:15px;white-space:nowrap;flex:0 0 auto}
+.hshd .sub{font-size:11.5px;color:var(--txt3);font-family:var(--mono);
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hsback{font-size:11.5px;color:var(--txt2);text-decoration:none;padding:2px 8px;
+  border:1px solid var(--line);border-radius:5px;white-space:nowrap}
+.hsback:hover{color:var(--txt)}
+body.hsmode{overflow:auto}
+body.hsmode .wrap{display:none}
+body.hsmode #hsMask{display:block;max-width:1120px;margin:0 auto}
+body.hsmode .hshd{position:sticky;top:0;z-index:5;background:var(--bg)}
+.hsbody{padding:18px 20px 60px}
+.helpbody{font-size:13.3px;line-height:1.8;color:var(--txt);column-count:2;column-gap:46px}
 .helpbody .hm{break-inside:avoid;page-break-inside:avoid}
-@media(max-width:900px){.helpbody{column-count:1;max-width:720px}}
-.helpbody h3{font-size:13px;font-weight:600;margin:16px 0 5px;color:var(--txt);
-  padding-top:13px;border-top:1px solid var(--line)}
-.helpbody h3:first-of-type{margin-top:6px;padding-top:0;border-top:0}
-.helpbody .hlead{margin:0 0 4px;font-size:14px;line-height:1.75;color:var(--txt);
-  column-span:all;padding-bottom:6px}
-.helpbody p{margin:0 0 8px;color:var(--txt2)}
-.helpbody ul{margin:0 0 4px;padding-left:18px;color:var(--txt2)}
+@media(max-width:900px){.helpbody{column-count:1}}
+@media(max-width:700px){
+  .hshd{flex-wrap:wrap;gap:4px 8px;padding:9px 12px}
+  .hshd .sub{flex:1 1 100%;order:9;white-space:normal}
+  .hsbody{padding:12px 12px 48px}
+}
+.helpbody h3{font-size:12.5px;font-weight:600;margin:15px 0 4px;color:var(--txt);
+  letter-spacing:.2px;padding-top:12px;border-top:1px solid var(--line)}
+.helpbody h3:first-of-type{margin-top:0;padding-top:0;border-top:0}
+.helpbody .hlead{margin:0 0 6px;font-size:13.3px;line-height:1.8;color:var(--txt);
+  column-span:all;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.helpbody p{margin:0 0 7px;color:var(--txt2)}
+.helpbody ul{margin:0 0 4px;padding-left:17px;color:var(--txt2)}
 .helpbody li{margin:2px 0}
 .helpbody b{color:var(--txt);font-weight:600}
 .helpbody code{font-family:var(--mono);font-size:12px;background:var(--bg3);
   padding:1px 5px;border-radius:4px}
-.helpback{display:inline-block;margin:2px 0 10px;font-size:12.5px;color:var(--txt2);
-  text-decoration:none;border-bottom:1px dotted var(--line)}
-.helpback:hover{color:var(--accent)}
-/* 说明页只留页头和说明本身。首页那些区块有几个是裸 .sechd/.cards（没有外层容器），
-   逐个列 id 会漏，所以按「.wrap 的直接子元素」一刀切。 */
-body.hsmode .wrap > *:not(header):not(#helpSec){display:none!important}
 
 /* ---- 因子研究面板 ---- */
 #rsMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:70;display:none;
@@ -1320,71 +1335,8 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   </table></div>
 </div>
 
-<section class="sec" id="helpSec" style="display:none">
-  <div class="sechd"><b>使用说明</b></div>
-  <div class="helpbody">
-    <a class="helpback" href="/">← 返回盯盘</a>
+<!-- 使用说明是独立页（/help），整块在 .wrap 之外，见文件后面的 #hsMask -->
 
-    <p class="hlead">行情软件回答「现在多少钱」。这一页回答另外四个问题：<b>钱往哪条线走</b>、<b>它站在什么位置</b>、<b>涨的是谁</b>、<b>外面发生了什么</b>。</p>
-
-    <div class="hm"><h3>隔夜</h3>
-    <p>美股收盘和外盘期货按赛道折算到 A 股 ETF。映射挂的是<b>跟踪指数</b>而不是代码，ETF 改名换代码不会失效。</p></div>
-
-    <div class="hm"><h3>板块地图</h3>
-    <p>按<b>跟踪指数</b>聚合，一个指数只出一票——否则权重会被「同指数发得多」的板块吃掉，看到的是发行数量而不是轮动。A 股、港股、跨境<b>各算各的分母</b>。附 250 日占比曲线，看资金是刚起来还是已经走了一半。只收行业主题，宽基、债、货币、商品不入表。</p></div>
-
-    <div class="hm"><h3>位置诊断</h3>
-    <p>全页唯一不看「今天涨跌」的一块，三个指标都来自因子研究里过了样本外检验的那几个：</p>
-    <ul>
-      <li><b>位置</b>：现价在近 250 日区间里的百分位，0 是一年新低、100 是一年新高。</li>
-      <li><b>路径效率</b>：20 日净涨幅 ÷ 20 日路径长度。接近 1 是单边拉上去的，接近 0 是震荡堆出来的，后者量能一断回吐更快。</li>
-      <li><b>量能倍数</b>：今日成交 ÷ 前 20 日均量，盘中按已交易分钟折算。</li>
-    </ul>
-    <p>三者交叉给一个动作标签。标签只是把数字翻成人话，不预测涨跌。</p></div>
-
-    <div class="hm"><h3>今日变化 / 组合体检</h3>
-    <p>只列<b>相比昨天变了什么</b>：新高新低、升破或跌破 80/20 分位、量能突变、贴新高 1% 以内、溢价异常。没发生事的标的不出现。</p>
-    <p>组合体检用最近 60 个交易日的日收益算两两相关，折成<b>有效独立仓位数</b> <code>n / (1 + (n−1)·ρ̄)</code>——10 只高相关自选，实际可能只等于 2 个仓位。</p></div>
-
-    <div class="hm"><h3>急涨急跌</h3>
-    <p>用分钟线自己回溯涨速。池子按成交额取 40 只并按指数去重，因为涨速榜的意义是「能下手的标的在动」。</p></div>
-
-    <div class="hm"><h3>全市场异动</h3>
-    <p>跳出自己的池子。收盘后算好的快照，一个指数只留流动性最好的那只，分七类：创新高、上穿 80 分位、贴新高、创新低、跌破 20 分位、放量、缩量。口径与「位置诊断」一致，数字可以直接横向比。</p></div>
-
-    <div class="hm"><h3>衍生品</h3>
-    <p>股指期货基差（期货 − 现货，负数为贴水）；期权用 <b>K + 购 − 沽</b> 合成一张期货再与同月期货对照，覆盖三个股指期权和 9 个 ETF 期权标的。年化按自然日折算，剩余不足 3 天不给。四象限是「持仓量变化 × 价格方向」的推断，不是交易所的多空数据。</p></div>
-
-    <div class="hm"><h3>全市场清单</h3>
-    <p>900 多只、12 列，点表头排序，再点反向。两件核心的事：</p>
-    <ul>
-      <li><b>同指数去重</b>：同一指数默认只留成交额最大的一只，名字后的 ×N 是<b>当前有行情的同指数只数</b>，点开就是这个数对应的那些行。</li>
-      <li><b>申赎</b>：当日净申购金额 = 份额变化 × 收盘价，红申购绿赎回，份额折算日已修正。去重行显示同指数合计，带「合」字；点开是近 250 个交易日柱状图，折算日柱顶有黄点。</li>
-    </ul></div>
-
-    <div class="hm"><h3>点开一只之后</h3>
-    <p>分时固定 240 格、午休不占位、以昨收为中心上下对称。日线近 500 天，带 MA、BOLL、RSI。成分穿透是季报口径的前 N 大持仓，<b>权重 × 涨跌 = 贡献</b>，加总与涨跌幅的差额来自未披露仓位、现金和折溢价，是残差不是算错。份额明细是单只的申赎历史。</p></div>
-
-    <div class="hm"><h3>因子研究</h3>
-    <p>独立页面：201 个因子的 IC 检验、样本外回测、PE 策略；另有一批先按指数去重再跑的因子，避免同指数多只 ETF 在横截面里重复投票、把 IC 稀释掉。</p></div>
-
-    <div class="hm"><h3>提醒</h3>
-    <p>页面开着时生效，走浏览器通知。范围可以是自选逐只，也可以是全市场按指数代表标的扫，后者只弹汇总和极端个股。</p></div>
-
-    <div class="hm"><h3>数据与口径</h3>
-    <ul>
-      <li>行情 60 秒一刷；日线交易日 15:10 入库；份额 21:00 入库，<b>沪市来自上交所报表，常当晚 22:00 后甚至次日才齐</b>，缺的那天自动回补。</li>
-      <li>申赎用的是 <b>T 日盘后登记</b>的份额，盘中看到的是上一交易日，表头标了日期。</li>
-      <li>涨红跌绿，美股数据进来也一样。溢价率需要 IOPV，只有东财源提供。</li>
-    </ul></div>
-
-    <div class="hm"><h3>已知限制</h3>
-    <ul>
-      <li>指数归属来自基金档案，新上市 ETF 可能还没归组，这类不参与去重。</li>
-      <li>部分债券 ETF 没有日线，K 线和申赎会是空的。</li>
-    </ul></div>
-  </div>
-</section>
 
 <footer>
   <span id="fTs">-</span><span id="fSrc">-</span><span id="fErr" class="err"></span>
@@ -1482,6 +1434,80 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
       <span class="ovtabs" id="ovTabs"><span class="ovtab on" data-ovt="min">分时</span><span class="ovtab" data-ovt="k">K 线</span></span>
       <button class="hx" id="ovClose" title="关闭 (Esc)">×</button></div>
     <div class="iobody" id="ovBody"><div class="iotip">读取中…</div></div>
+  </div>
+</div>
+
+<!-- 使用说明页（/help）。与 #rsMask 同一套版式：整块在 .wrap 之外，hsmode 时
+     连首页外壳一起收起，只留自己的 sticky 标题栏 + 返回。 -->
+<div id="hsMask">
+  <div class="hspanel">
+    <div class="hshd">
+      <a class="hsback" href="/">← 盯盘</a>
+      <b>使用说明</b>
+      <span class="sub">指标口径 · 数据来源 · 已知限制</span>
+    </div>
+    <div class="hsbody">
+      <div class="helpbody">
+        <p class="hlead">本页说明各区块的指标定义、计算口径与数据来源。指标均基于收盘后的日线或当日分钟线计算。配色沿用 A 股惯例，涨红跌绿，外盘数据同样处理。</p>
+
+        <div class="hm"><h3>隔夜</h3>
+        <p>美股收盘与外盘期货按赛道折算为对应 A 股 ETF 的隐含涨跌。映射关系挂在跟踪指数上，ETF 变更代码或简称不影响折算结果。</p></div>
+
+        <div class="hm"><h3>板块地图</h3>
+        <p>按跟踪指数聚合，同一指数只计一票（取成交额最大者）。若不去重，同指数发行数量多的板块会因权重堆叠而虚高，得到的是发行结构而不是资金轮动。A 股、港股、跨境分别计算分母。表内只含行业与主题类，宽基、债券、货币、商品不入表。附 250 个交易日占比曲线，用于判断当前占比处于扩张初期还是已过半程。</p></div>
+
+        <div class="hm"><h3>位置诊断</h3>
+        <p>指标全部取自日线收盘，不依赖当日涨跌，且均已通过样本外检验：</p>
+        <ul>
+          <li><b>位置</b>：现价在近 250 个交易日区间内的百分位。0 为区间新低，100 为区间新高。</li>
+          <li><b>路径效率</b>：20 日净涨幅 ÷ 20 日累计路径长度。趋近 1 表示单边推进，趋近 0 表示区间震荡——后者在量能收缩时回吐更快。</li>
+          <li><b>量能倍数</b>：当日成交额 ÷ 前 20 日日均成交额，盘中按已交易分钟折算为全天口径。</li>
+        </ul>
+        <p>三项交叉输出动作标签。标签为固定映射，不含预测成分。</p></div>
+
+        <div class="hm"><h3>今日变化 / 组合体检</h3>
+        <p>只输出相对上一交易日发生变化的标的：创新高、创新低、上穿或下破 80/20 分位、量能突变、距新高 1% 以内、溢价异常。未发生变化的标的不占行。</p>
+        <p>组合体检取最近 60 个交易日日收益的两两相关系数，折算为有效独立仓位数 <code>n / (1 + (n−1)·ρ̄)</code>。10 只高相关标的，实际暴露可能仅相当于 2 个仓位。</p></div>
+
+        <div class="hm"><h3>急涨急跌</h3>
+        <p>用分钟线回溯涨速。样本池按成交额取前 40 只并按指数去重——涨速榜的增量信息在于可交易标的的异动，同指数多只重复上榜没有意义。</p></div>
+
+        <div class="hm"><h3>全市场异动</h3>
+        <p>覆盖范围不限于自选。收盘后生成快照，同一指数只保留流动性最好的一只，分七类：创新高、上穿 80 分位、距新高 1% 以内、创新低、下破 20 分位、放量、缩量。分位口径与位置诊断一致，两组数字可直接比较。</p></div>
+
+        <div class="hm"><h3>衍生品</h3>
+        <p>股指期货基差 = 期货 − 现货，负值为贴水。期权按 <b>K + 认购 − 认沽</b> 合成期货价格，与同月份期货对照，覆盖三个股指期权与九个 ETF 期权标的。年化收益按自然日折算，剩余期限不足 3 日不给值。四象限由持仓量变化与价格方向推断；中金所公布的是双边合计持仓，不构成多空归属。</p></div>
+
+        <div class="hm"><h3>全市场清单</h3>
+        <p>900 余只标的、12 列。点击表头排序，再次点击反向。两个口径需要单独说明：</p>
+        <ul>
+          <li><b>同指数去重</b>：同一指数默认只保留成交额最大的一只。名称后的 ×N 为当前有行情的同指数只数，点击展开对应行。</li>
+          <li><b>申赎</b>：当日净申购金额 = 份额变化 × 收盘价。红色为净申购，绿色为净赎回，份额折算日已做修正。去重行显示同指数合计并标注「合」字，点击查看近 250 个交易日柱状图，折算日柱顶标黄点。</li>
+        </ul></div>
+
+        <div class="hm"><h3>点开一只之后</h3>
+        <p>分时图固定 240 格，午休不占位，以昨收为中轴上下对称。日线近 500 个交易日，含 MA、BOLL、RSI。成分穿透为季报口径前十大持仓，权重 × 涨跌 = 贡献；加总与当日涨跌幅的差额来自未披露仓位、现金及折溢价，属残差项，不是计算错误。份额明细为该标的的申赎历史。</p></div>
+
+        <div class="hm"><h3>因子研究</h3>
+        <p>独立页面，含 201 个因子的 IC 检验、样本外回测与 PE 策略。另有一组先按指数去重再计算的因子，避免同指数多只 ETF 在横截面上重复投票、稀释 IC。</p></div>
+
+        <div class="hm"><h3>提醒</h3>
+        <p>页面保持打开时生效，通过浏览器通知投递。监控范围可选自选逐只，或全市场按指数代表标的扫描；后者仅推送汇总与极端个股。</p></div>
+
+        <div class="hm"><h3>数据与口径</h3>
+        <ul>
+          <li>行情 60 秒刷新；日线于交易日 15:10 入库；份额 21:00 入库。沪市份额来自上交所报表，通常在 22:00 之后至次日才齐备，缺失交易日自动回补。</li>
+          <li>申赎依据 T 日盘后登记的份额，盘中显示为上一交易日数据，表头标注日期。</li>
+          <li>溢价率依赖 IOPV，仅东财源提供。</li>
+        </ul></div>
+
+        <div class="hm"><h3>已知限制</h3>
+        <ul>
+          <li>指数归属取自基金档案，新上市 ETF 可能尚未归组，此类不参与去重。</li>
+          <li>部分债券 ETF 无日线数据，K 线与申赎为空。</li>
+        </ul></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -9043,14 +9069,13 @@ document.addEventListener('visibilitychange', function(){ if (!document.hidden) 
    URL 直接可分享，也不占一个弹窗的注意力。 */
 var _pn = location.pathname;
 var RS_MODE = (_pn === '/research' || _pn === '/research/' || _pn === '/r' || _pn === '/r/');
-/* /help 同样共用这份 HTML：不拉任何行情，只把说明区块放出来，其余区块整块隐藏
-   （CSS 的 body.hsmode 那几条）。这样说明页不会因为接口挂了而白屏。 */
+/* /help 也共用这份 HTML，但与 /research 走同一套独立页形态：hsmode 把 .wrap
+   整个收起，#hsMask 以静态流铺开。说明页不发任何行情请求，接口全挂也不会白屏。 */
 var HELP_MODE = (_pn === '/help' || _pn === '/help/' || _pn === '/h' || _pn === '/h/');
 
 if (HELP_MODE){
   document.body.classList.add('hsmode');
   document.title = '使用说明 · ETF 全市场';
-  document.getElementById('helpSec').style.display = '';
 } else if (RS_MODE){
   document.body.classList.add('rsmode');
   document.title = '因子研究 · ETF 全市场';
