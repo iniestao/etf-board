@@ -849,6 +849,12 @@ async function fetchAsiaBackup(sids, ms) {
   const to = Math.max(500, ms || 8000);
   const out = [];
 
+  /* KOSPI/日经的第三档：CNBC 报价。KOSPI 前面只有东财单只一条路，
+     东财一抽就整只消失（亚太行少一个格子），而 CNBC 的 .KS11 一直活着。
+     这个接口实测 2 秒才回（比前面几档慢一个数量级），所以**在函数开头就发出**，
+     末尾再收——挂在后面串行等的话，前面四只已经好了还要再多等两秒。 */
+  const cnbcP = fetchCnbcAsia(want, 4500).catch(() => []);
+
   const TX = [
     ['sh000001', '1.000001'], ['sh000688', '1.000688'],
     ['sz399006', '0.399006'], ['hkHSTECH', '124.HSTECH'],
@@ -879,7 +885,16 @@ async function fetchAsiaBackup(sids, ms) {
     } catch (e) { /* 腾讯也挂了就走下面两个 */ }
   }
 
-  if (want.has('100.N225')) {
+  /* 开头那笔 CNBC 请求到这里收。日经/KOSPI 优先用 CNBC：分时图也是它给的，
+     报价和图的基准同源，卡片写 -0.70%、图上也是 -0.70%，不会出现「图上写着
+     -0.70%、卡片写着 -0.90%」这种让人怀疑数据坏了的画面。
+     （新浪 int_nikkei 与 CNBC 在这两只上差 0.2 个百分点，价格差 35%——
+     哪个对先不论，同一张卡上不能同时出现两套数。） */
+  for (const x of await cnbcP) {
+    if (!out.some((o) => o.sid === x.sid)) out.push(x);
+  }
+
+  if (want.has('100.N225') && !out.some((x) => x.sid === '100.N225')) {
     try {
       const r = await fetch('https://hq.sinajs.cn/list=int_nikkei', {
         headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
@@ -924,7 +939,39 @@ async function fetchAsiaBackup(sids, ms) {
     }
   }
 
+  /* 开头那笔 CNBC 请求到这里收：前面几档没补上的才用它。
+     逐个 symbol 请求——多 symbol 拼在一个 URL 里返回的是嵌套结构，
+     解析要按两种形状分支，不如多打一次省掉这层判断。 */
+
   return out;
+}
+
+/* CNBC 亚太报价：.N225 / .KS11。last/prev 都带千分位逗号（"44,946.64"），
+   parseFloat 直接吃会得到 44——这一条差点把日经报价写成两位数。 */
+async function fetchCnbcAsia(want, ms) {
+  const LIST = [['.KS11', '100.KS11', '韩国KOSPI'], ['.N225', '100.N225', '日经225']]
+    .filter((x) => want.has(x[1]));
+  const rows = await Promise.all(LIST.map(async ([sym, sid, nm]) => {
+    try {
+      const r = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+        + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+        + '&fund=1&exthrs=1&output=json&events=1', {
+        headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+        signal: AbortSignal.timeout(ms || 4500),
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const q0 = j && j.FormattedQuoteResult && j.FormattedQuoteResult.FormattedQuote;
+      const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+      const num = (v) => parseFloat(String(v == null ? '' : v).replace(/[,%]/g, ''));
+      const p = num(row && row.last);
+      const prev = num(row && row.previous_day_closing);
+      const chg = num(row && row.change_pct);
+      if (!(p > 0)) return null;
+      return { sid, n: nm, p, chg: isFinite(chg) ? chg : (prev > 0 ? (p / prev - 1) * 100 : NaN) };
+    } catch (e) { return null; }
+  }));
+  return rows.filter(Boolean);
 }
 
 /* 把主源已有的和备源补上的拼一起，按 ON_ASIA_SECIDS 的顺序输出，主源优先。 */
@@ -956,6 +1003,24 @@ function mergeAsia(primary, backup) {
     const hit = ON_FUT_SECIDS.find((x) => x[1] === m[1]);
     out[m[1]] = { n: hit ? hit[2] : (f[13] || m[1]), p, chg: (p / base - 1) * 100 };
   }
+  return out;
+}
+
+/* 期货第三档：用外盘期货分钟线的最后一点当现价。
+   `hq.sinajs.cn/list=hf_*` 挂了的时候，`stock2` 这条（同一家的另一套接口）
+   往往还活着——分时的最后一根就是此刻的价，配日线昨收算涨跌幅。
+   四个品种各两次请求（分时 + 日线），只在前两档全空时才走到这里。 */
+async function fetchFutSinaMinQuote() {
+  const out = {};
+  await Promise.all(ON_FUT_SECIDS.map(async ([sid, key, nm]) => {
+    try {
+      const m = await fetchSinaFutMin(sid);
+      if (!m || !m.pts.length || !(m.pre > 0)) return;
+      const p = m.pts[m.pts.length - 1][1];
+      if (!(p > 0)) return;
+      out[key] = { n: nm, p, chg: (p / m.pre - 1) * 100 };
+    } catch (e) { /* 这一只缺就先不显示 */ }
+  }));
   return out;
 }
 
@@ -1004,6 +1069,11 @@ async function serveOvernight(env, ctx) {
 
   const futP = emRetry(fetchFutEm)
     .catch(() => fetchFutSina())
+    /* 第三档：新浪的两个接口是分开挂的。`hq.sinajs.cn/list=hf_*` 对数据中心出口
+       常常直接 403，而同一家的 `stock2.finance.sina.com.cn` 外盘期货接口一直活着
+       ——它给的是分钟线，最后一个点就是现价，配上日线昨收就能算出涨跌幅。
+       多花 8 个子请求，换的是「东财一抽，隔夜卡上四个期货全消失」不再发生。 */
+    .then((r) => (r && Object.keys(r).length ? r : fetchFutSinaMinQuote()))
     .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
 
   /* 亚太三档：主源 → 备源（换厂商）→ 上次成功的那份（KV）。
@@ -1075,6 +1145,58 @@ async function serveOvernight(env, ctx) {
   }, 55);
 }
 
+/* ------------------------------------------------------------ 十年美债收益率
+   隔夜卡的最后一块拼图：美股为什么涨、成长股为什么杀估值，那个早上最直接的
+   解释变量就是它。两个口径上的讲究：
+     - 数值用收益率本身（4.99%），不是债券价格——价格涨=收益率跌，混着看必错；
+     - 变动用 bp（1bp = 0.01 个百分点）。「从 4.99 涨到 5.02」说「涨 0.6%」
+       在债券里没人这么讲，说「+3bp」才是行话。
+   源：CNBC 的 US10Y（Tradeweb 行情，带前收和变动两个字段，不用自己减）。
+   东财也有这只（100.UST10Y），但 100 号段最近连分时都不给，先只挂验证过的源；
+   300 秒缓存：收益率日内动得慢，没必要跟着 55 秒的隔夜卡一起刷。 */
+async function serveBond() {
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/bond/v1', { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 降级直连 */ }
+  }
+  let out = null;
+  try {
+    const r = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+      + '?symbols=US10Y&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json&events=1', {
+      headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw new Error('美债 HTTP ' + r.status);
+    const j = await r.json();
+    const q0 = j && j.FormattedQuoteResult && j.FormattedQuoteResult.FormattedQuote;
+    const q = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+    const p = parseFloat(String((q && q.last) || '').replace('%', ''));
+    const prev = parseFloat(String((q && q.previous_day_closing) || '').replace('%', ''));
+    const d = parseFloat(q && q.change);
+    if (p > 0.2 && p < 20) {
+      out = {
+        p, prev: isFinite(prev) ? prev : 0,
+        // change 是百分点（+0.003），乘 100 换成 bp，前端只负责加单位
+        bp: isFinite(d) ? d * 100 : (isFinite(prev) ? (p - prev) * 100 : 0),
+        t: String((q && q.last_time) || ''),
+        src: 'cnbc',
+      };
+    }
+  } catch (e) {
+    return json({ ok: false, error: '美债上游取不到：' + String((e && e.message) || e) });
+  }
+  if (!out) return json({ ok: false, error: '美债解析为空' });
+  const res = json({ ok: true, ...out, ts: Date.now() }, 300);
+  if (cache) {
+    try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
+  }
+  return res;
+}
+
 /* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
    完整交易时段——美股指数/期货拿到的是昨晚那场，亚太拿到的是今天（或最近
    半场）。secid 白名单限定全球/港股指数 + A 股指数 + 外盘期货市场号，
@@ -1098,14 +1220,227 @@ function txCodeOf(sid) {
   const m = /^(\d+)\.([A-Za-z0-9.]+)$/.exec(String(sid || ''));
   if (!m) return null;
   const mkt = m[1], code = m[2];
+  /* 100 号段（东财全球指数）在腾讯是另一套代码，一只只对出来的：
+     NDX100=纳指100（28374，和卡片同值）、SPX=标普500、DJIA=道指、
+     NDX=纳斯达克综合。别拿「NDX」去顶「纳斯达克100」——那是综合指，
+     价格差 10%，图上涨跌幅和旁边卡片对不上，这种错最难发现。 */
+  if (mkt === '100') return OV_TX_ALIAS[code] || null;
   if (mkt === '1') return 'sh' + code;
   if (mkt === '0') return 'sz' + code;
   if (mkt === '124') return 'hk' + code;
   if (mkt === '105' || mkt === '106' || mkt === '107') return 'us' + code;
   return null;
 }
+/* 东财全球指数代码 → 腾讯代码。日经、韩国、A50、外盘期货不在表里：
+   腾讯对它们要么 pv_none_match，要么返回空体，写了也是白写。 */
+const OV_TX_ALIAS = { NDX100: 'usNDX', SPX: 'usINX', DJIA: 'usDJI', NDX: 'usIXIC' };
 
-/** 腾讯分时兜底：东财 push2his 整段不可达时用。
+/* ------------------------------------------------------------ 东财域名分流
+   东财把行情拆在几个域上，同一个路径换个域就是另一套服务：
+     push2his   实时历史（A 股、港股、美股、大部分指数）——K 线、分时的正主
+     push2delay 延迟行情（全球指数、外盘期货、外汇、债券收益率）15 分钟延迟
+     push2      实时快照（ulist 那类批量接口）
+   2026-11-12 实测：secid 用错域不会回空 JSON，而是 TLS 握手后被直接断连，
+   Worker 侧只看到 `fetch failed`——和「整个东财挂了」长得一模一样，
+   于是隔夜卡上的纳指/标普/道指/四个期货点开全是「分时上游取不到」，
+   而同一时刻 105.NDX、1.000001、124.HSTECH 都正常出图。
+   前缀就是域的路由依据：100~104 是延迟行情（全球指数 100、黄金 101、
+   原油 102、期货 103、外汇/CFD 104），其余走实时域。两边都留作兜底：
+   延迟版好过空白，但只能排在首选之后。 */
+const EM_DELAY_RE = /^(100|101|102|103|104)\./;
+function emHostOrder(sid) {
+  return EM_DELAY_RE.test(sid)
+    ? ['push2delay', 'push2his', 'push2']
+    : ['push2his', 'push2delay', 'push2'];
+}
+
+/** 按 emHostOrder 逐个域尝试，第一个「有内容」的就返回。
+ *  pick(j) 返回 falsy 表示这个域回了 200 但没数据（空壳），继续试下一个——
+ *  对 100.* 这类 secid，空壳和断连都出现过，不能只按 HTTP 状态判断。
+ *  budget：整条链的总墙钟上限。三个域各等 7 秒最坏 21 秒，点开弹窗等到
+ *  用户关页面都出不来，所以按剩余时间递减，见底就收手报错。 */
+async function emTryHosts(sid, path, pick, budget) {
+  const t0 = Date.now();
+  const tried = [];
+  for (const h of emHostOrder(sid)) {
+    const left = (budget || 9000) - (Date.now() - t0);
+    if (left < 800) { tried.push(h + ':预算耗尽'); break; }
+    try {
+      const r = await fetch('https://' + h + '.eastmoney.com' + path, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(Math.min(left, 7000)),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const v = pick(await r.json());
+      if (v) return { v, host: h, tried };
+      tried.push(h + ':空');
+    } catch (e) {
+      tried.push(h + ':' + String((e && e.message) || e).slice(0, 40));
+    }
+  }
+  const err = new Error(tried.join(' / ') || '东财不可达');
+  err.tried = tried;
+  throw err;
+}
+
+/* 新浪外盘期货分时：（东财对 101/102/103/104 号段不提供 trends2，
+   push2his/push2delay/push2 三个域全是握手后被断连，实测 2026-11-12 多次复现。）
+   新浪这套 symbol 和东财的 secid 是两套命名，一只只对出来的：
+     NQ   纳指期货     GC   COMEX 黄金
+     CL   NYMEX 原油   CHA50CFD  富时 A50（新加坡）
+   返回的 minLine_1d 有两种行长：首条带日期/交易所/开盘（10 字段），
+   之后是 6 字段的 [时间, 价格, 量, 量, 均价, '完整日期时间']。
+   统一只认**最后一个字段的完整日期时间**和**第二个字段的价格**——
+   按位置数下标会在首条和后续两种行长之间错位，画出来就是首点乱飞。 */
+const SINA_FUT = {
+  '103.NQ00Y': 'NQ', '101.GC00Y': 'GC', '102.CL00Y': 'CL', '104.CN00Y': 'CHA50CFD',
+};
+
+async function fetchSinaFutMin(sid) {
+  const sym = SINA_FUT[sid];
+  if (!sym) return null;
+  const r = await fetch('https://stock2.finance.sina.com.cn/futures/api/openapi.php/'
+    + 'GlobalFuturesService.getGlobalFuturesMinLine?symbol=' + sym, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('新浪期货分时 HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.result && j.result.data && j.result.data.minLine_1d;
+  if (!Array.isArray(rows) || !rows.length) throw new Error('新浪期货分时为空');
+
+  const pts = [];
+  const seen = new Set();
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue;
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(String(row[row.length - 1] || ''));
+    const px = +row[1];
+    if (!m || !(px > 0)) continue;
+    const t = m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5];
+    if (seen.has(t)) continue;      // 首条和后续可能给同一个分钟
+    seen.add(t);
+    pts.push([t, px]);
+  }
+  if (pts.length < 2) throw new Error('新浪期货分时解析为空');
+
+  /* 昨收：分时首点是「电子盘开盘价」，不等于昨收（隔夜跳空全在这一点上），
+     拿它当 0 轴画出来，涨跌幅永远从 0 开始，和卡片上的 -0.91% 对不上。
+     日线接口的收盘价才是昨收；只读尾部 800 字节，不为两个数解析 340KB。 */
+  let pre = 0;
+  try {
+    const rd = await fetch('https://stock2.finance.sina.com.cn/futures/api/openapi.php/'
+      + 'GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=' + sym, {
+      headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (rd.ok) {
+      const tail = (await rd.text()).slice(-1200);
+      const all = tail.match(/"date":"[^"]+","open":"[^"]+","high":"[^"]+","low":"[^"]+","close":"[^"]+"/g) || [];
+      // 倒数第二根就是「上一个完整交易日」，最后一根是今天（可能还没收）
+      for (let i = all.length - 1; i >= 0 && !pre; i--) {
+        const mm = /"date":"(\d{4}-\d{2}-\d{2})".*?"close":"([\d.]+)"/.exec(all[i]);
+        if (!mm) continue;
+        const today = pts[0][0].slice(0, 5);
+        if (mm[1].slice(5) === today && i === all.length - 1) continue;
+        if (+mm[2] > 0) pre = +mm[2];
+      }
+    }
+  } catch (e) { /* 拿不到就交给前端退回「较本时段开盘」的口径 */ }
+  return { pre, pts };
+}
+
+/* 分时快照兜底：所有源都挂时，回放这只标的最近一次成功的那份，标明时间。
+   断网五分钟和断网五小时，对读图的人来说是两件事，所以超过 3 天的直接不用。 */
+const OV_SNAP_KV = 'ovmin-snap/v1/';
+const ovSnapDay = {};      // sid → 已写入的交易日，省掉每 35 秒一次的重复写
+
+async function ovSnapPut(env, sid, pre, pts) {
+  if (!env || !env.WATCH || !pts.length) return;
+  const day = String(pts[0][0] || '').slice(0, 5);
+  if (ovSnapDay[sid] === day) return;
+  ovSnapDay[sid] = day;
+  try {
+    await env.WATCH.put(OV_SNAP_KV + sid, JSON.stringify({ pre, pts, ts: Date.now() }));
+  } catch (e) { ovSnapDay[sid] = ''; }
+}
+
+async function ovSnapGet(env, sid) {
+  if (!env || !env.WATCH) return null;
+  try {
+    const raw = await env.WATCH.get(OV_SNAP_KV + sid);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || !Array.isArray(o.pts) || !o.pts.length) return null;
+    if (Date.now() - (o.ts || 0) > 3 * 86400e3) return null;
+    return o;
+  } catch (e) { return null; }
+}
+
+/* 日经 225 / 韩国 KOSPI 的分时：CNBC 的图表接口。
+   这两只是整张隔夜卡上最难的——东财对 100 号段（全球指数）连 trends2 都不给，
+   腾讯 pv_none_match，新浪的全球指数分时接口（GlobalService.getMinLine）
+   已经下线（线上实测返回 Service not found），Yahoo 在这个出口上稳定 429。
+   CNBC 的 ts-api 一次给 1 个交易日窗口的分钟 bar，实测覆盖 .N225 / .KS11，
+   顺带也覆盖 .NDX / .SPX / .DJI / @GC.1 / @CL.1 / US10Y。
+   两个坑：
+     1) tradeTime 是「美东时区表达的绝对时刻」——日经 09:00（东京）标成 19:00，
+        所以必须按美东→北京换算（+13h 冬令时），直接当时钟用会把横轴错 14 小时；
+     2) 1D 窗口是最近 24 小时，日经/韩股这种带午休的市场会带回前一个交易日的尾巴，
+        所以从最后一根往前回溯，遇到大于 3 小时的间隔就停，切出「当前这一场」。 */
+const CNBC_MIN = { '100.N225': '.N225', '100.KS11': '.KS11' };
+
+function cnbcMs(ts) {
+  const s = String(ts || '');
+  if (!/^\d{14}$/.test(s)) return 0;
+  return Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8),
+    +s.slice(8, 10), +s.slice(10, 12), +s.slice(12, 14));
+}
+
+async function fetchCnbcMin(sid) {
+  const sym = CNBC_MIN[sid];
+  if (!sym) return null;
+  const r = await fetch('https://ts-api.cnbc.com/harmony/app/charts/1D.json?symbol='
+    + encodeURIComponent(sym), {
+    headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error('CNBC 分时 HTTP ' + r.status);
+  const j = await r.json();
+  const bars = j && j.barData && j.barData.priceBars;
+  if (!Array.isArray(bars) || bars.length < 10) throw new Error('CNBC 分时为空');
+
+  let i = bars.length - 1;
+  while (i > 0 && cnbcMs(bars[i].tradeTime) - cnbcMs(bars[i - 1].tradeTime) <= 180 * 60000) i--;
+  const pts = [];
+  for (let k = i; k < bars.length; k++) {
+    const s = String(bars[k].tradeTime || '');
+    const px = +bars[k].close;
+    if (!/^\d{14}$/.test(s) || !(px > 0)) continue;
+    pts.push([etClockToBj(s.slice(0, 8), +s.slice(8, 10), +s.slice(10, 12)), px]);
+  }
+  if (pts.length < 10) throw new Error('CNBC 分时解析为空');
+
+  // 昨收：CNBC 报价接口里的 previous_day_closing，和分时同一套数据源
+  let pre = 0;
+  try {
+    const rq = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+      + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+      + '&fund=1&exthrs=1&output=json&events=1', {
+      headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (rq.ok) {
+      const q = await rq.json();
+      const q0 = q && q.FormattedQuoteResult && q.FormattedQuoteResult.FormattedQuote;
+      const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+      const v = parseFloat(String((row && row.previous_day_closing) || '').replace(/,/g, ''));
+      if (v > 0) pre = v;
+    }
+  } catch (e) { /* 拿不到就用本时段首点当基准，前端会标注 */ }
+  return { pre, pts };
+}
+
+/** 腾讯分时兜底：东财几个域都不可达时用。
  *
  *  A 股/港股走 minute/query，美股走 usMinute/query，返回都是
  *  "0930 4.145 42868 …" 这种以空格分隔的行——第三列是累计成交量，不是
@@ -1140,7 +1475,11 @@ async function fetchTxMin(sid) {
     const hm = a[0];
     const p = +a[1];
     if (!/^\d{4}$/.test(hm) || !(p > 0)) continue;
-    const t = (md ? md + ' ' : '') + hm.slice(0, 2) + ':' + hm.slice(2);
+    let t = (md ? md + ' ' : '') + hm.slice(0, 2) + ':' + hm.slice(2);
+    /* 腾讯给美股打的是**美东**钟点（09:31~16:00），东财给同一只打的是北京时间
+       （22:31~05:00）。两个源共用一个弹窗、一根横轴，不换算的话切一次源
+       整张图的时间就平移 13 小时——形状全对、时间全错，比空图更容易误读。 */
+    if (us && /^\d{8}$/.test(dd)) t = etClockToBj(dd, +hm.slice(0, 2), +hm.slice(2));
     pts.push([t, p]);
   }
   if (!pts.length) throw new Error('腾讯分时解析为空');
@@ -1151,6 +1490,31 @@ async function fetchTxMin(sid) {
   const qt = node && node.qt && node.qt[code];
   if (Array.isArray(qt) && +qt[4] > 0) pre = +qt[4];
   return { pre, pts };
+}
+
+/* 美东钟点 → 北京「MM-DD HH:MM」。
+   美东 09:30 = 北京 22:30（冬令时）/ 21:30（夏令时），美股一个交易日的分时
+   在横轴上正好跨过零点，所以日期必须跟着一起进位，不能只加小时。 */
+function etClockToBj(dd, hh, mm) {
+  const y = +dd.slice(0, 4), mo = +dd.slice(4, 6), da = +dd.slice(6, 8);
+  // 当作纯钟表时刻算（Date.UTC），再加时差；夏令时 +12h、冬令时 +13h
+  const t = new Date(Date.UTC(y, mo - 1, da, hh, mm) + (usDst(y, mo, da) ? 12 : 13) * 3600e3);
+  const p2 = (n) => (n < 10 ? '0' + n : '' + n);
+  return p2(t.getUTCMonth() + 1) + '-' + p2(t.getUTCDate()) + ' '
+    + p2(t.getUTCHours()) + ':' + p2(t.getUTCMinutes());
+}
+
+/* 美东是否在夏令时：3 月第二个周日 02:00 起，11 月第一个周日 02:00 止。
+   只按日期算，不精确到小时——分时横轴上差一小时只在换时令那两天出现，
+   而那两天本来就没有分时数据。 */
+function usDst(y, mo, da) {
+  if (mo < 3 || mo > 11) return false;
+  if (mo > 3 && mo < 11) return true;
+  const nthSun = (m, n) => {
+    const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+    return 1 + ((7 - first) % 7) + (n - 1) * 7;
+  };
+  return mo === 3 ? da >= nthSun(3, 2) : da < nthSun(11, 1);
 }
 
 /* 美股代码的交易所后缀（AAPL.OQ 这种）。腾讯的日线接口不认裸代码：
@@ -1179,10 +1543,13 @@ async function txUsSuffix(code) {
 async function fetchTxKline(sid, lim) {
   let sym = txCodeOf(sid);
   if (!sym) return null;
-  if (sym.slice(0, 2) === 'us') {
+  const isUs = sym.slice(0, 2) === 'us';
+  if (isUs) {
+    /* 个股必须带交易所后缀（AAPL.OQ），裸代码只回「上市首日 + 最新」两条；
+       指数反过来——usNDX/usINX/usDJI 裸代码就是完整序列，而快照里给的后缀是
+       「.NDX」这种点开头的串，拼成 us.NDX 多一层不确定性，不要。 */
     const suf = await txUsSuffix(sym.slice(2));
-    if (!suf) return null;
-    sym = 'us' + suf;
+    if (suf) sym = 'us' + suf;
   }
   const url = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get'
     + '?param=' + sym + ',day,,,' + lim + ',qfq';
@@ -1192,12 +1559,37 @@ async function fetchTxKline(sid, lim) {
   });
   if (!r.ok) throw new Error('腾讯 K 线 HTTP ' + r.status);
   const j = await r.json();
-  const node = j && j.data && j.data[sym];
+  const node = j && j.data && (j.data[sym] || j.data[Object.keys(j.data)[0]]);
   const rows = node && (node.qfqday || node.day);
   if (!Array.isArray(rows) || !rows.length) throw new Error('腾讯 K 线为空');
   const bars = rows.map((a) => [a[0], +a[1], +a[3], +a[4], +a[2], +a[5]])
     .filter((b) => b[1] > 0 && b[4] > 0);
-  if (!bars.length) throw new Error('腾讯 K 线解析为空');
+  // 裸代码的历史接口只给两条（首日 + 最新），那不是 K 线，别拿它充数
+  if (!bars.length || (isUs && bars.length < 10)) throw new Error('腾讯 K 线解析为空');
+  return bars;
+}
+
+/* 新浪外盘期货日线：四个期货标的的 K 线兜底。接口一次吐全历史（340KB），
+   只要最后 lim 根，所以按尾部字符串切，不做整份 JSON.parse——
+   Worker 免费版 10ms 的 CPU 预算，解析 340KB 会把它吃光。 */
+async function fetchSinaFutKline(sid, lim) {
+  const sym = SINA_FUT[sid];
+  if (!sym) return null;
+  const r = await fetch('https://stock2.finance.sina.com.cn/futures/api/openapi.php/'
+    + 'GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=' + sym, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error('新浪期货日线 HTTP ' + r.status);
+  const txt = await r.text();
+  const rows = txt.match(/"date":"\d{4}-\d{2}-\d{2}","open":"[\d.]+","high":"[\d.]+","low":"[\d.]+","close":"[\d.]+"/g) || [];
+  const bars = [];
+  for (const s of rows.slice(-lim)) {
+    const m = /"date":"([\d-]+)","open":"([\d.]+)","high":"([\d.]+)","low":"([\d.]+)","close":"([\d.]+)"/.exec(s);
+    if (!m) continue;
+    bars.push([m[1], +m[2], +m[3], +m[4], +m[5], 0]);
+  }
+  if (!bars.length) throw new Error('新浪期货日线解析为空');
   return bars;
 }
 
@@ -1214,54 +1606,230 @@ async function serveOvMin(sid, env, ctx) {
   /* 上游偶发直接 RST（沙箱实测一分钟内可能连着失败两次，隔几秒又正常）。
      一次就放弃的话，点开弹窗看到的是「读取失败」，比慢 400ms 差得多。
      失败也返回 JSON：抛出去会被外层兜成 500 纯文本，前端 JSON.parse 报
-     「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。 */
-  let j = null;
+     「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。
+     域按 secid 前缀选，见 emHostOrder。 */
+  let out = null;
   let emErr = null;
   try {
-    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
-      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', {
-      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-      signal: AbortSignal.timeout(8000),
-    }).then((r) => {
-      if (!r.ok) throw new Error('分时上游 HTTP ' + r.status);
-      return r.json();
-    }));
+    out = await emTryHosts(sid, '/api/qt/stock/trends2/get?secid=' + sid
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', (j) => {
+      const tr = j && j.data && j.data.trends;
+      if (!tr || !tr.length) return null;
+      /* 昨收一起带回去：前端左轴要画涨跌幅刻度，基准必须是昨收，
+         不能拿本时段第一个点凑——那画出来的「+0.00%」不是涨跌，
+         和卡片上的 +2.10% 对不上，看图的人反而更糊涂。
+         期货只有 preSettlement（昨结），指数/个股才有 preClose，依次退。 */
+      const d = j.data || {};
+      const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
+      return { trends: tr, pre };
+    }, 9000);
   } catch (e) {
     emErr = e;
   }
-  const trends = j && j.data && j.data.trends;
+  const trends = out && out.v.trends;
   if (!trends || !trends.length) {
-    /* 东财这条链路对整个接口族一起抽（push2his 在 TLS 握手后被直接 RST），
-       重试救不回来。换厂商：腾讯的分钟接口覆盖 A 股/港股/美股，
-       日经、韩国、中金所期货没有对应代码，那几类仍然只能报错。 */
+    /* 东财对 100~104 号段不给分时（三个域全断连），换厂商，按覆盖范围排：
+       腾讯 → A 股/港股/美股个股 + 美股三大指数（100.NDX100/SPX/DJIA）
+       新浪 → 四个外盘期货（NQ/GC/CL/CHA50CFD）
+       日经、韩国两边都没有可用代码，只能靠 KV 里上一次成功的那份。 */
+    const errs = ['东财 ' + String((emErr && emErr.message) || '无数据').slice(0, 60)];
     try {
       const tb = await fetchTxMin(sid);
       if (tb) {
+        await ovSnapPut(env, sid, tb.pre, tb.pts);
         const res2 = json({ ok: true, sid, pre: tb.pre, pts: tb.pts, ts: Date.now(), src: 'tencent' }, 120);
         if (cache) {
           try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
         }
         return res2;
       }
-    } catch (e) { /* 两家都挂，走下面的错误 */ }
-    return json({ ok: false, error: '分时上游取不到：'
-      + String((emErr && emErr.message) || (trends ? '没有分时数据' : '无数据')) });
+      errs.push('腾讯无此代码');
+    } catch (e) {
+      errs.push('腾讯 ' + String((e && e.message) || e).slice(0, 40));
+    }
+    try {
+      const sb = await fetchSinaFutMin(sid);
+      if (sb) {
+        await ovSnapPut(env, sid, sb.pre, sb.pts);
+        const res2 = json({ ok: true, sid, pre: sb.pre, pts: sb.pts, ts: Date.now(), src: 'sina-fut' }, 120);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+      errs.push('新浪无此代码');
+    } catch (e) {
+      errs.push('新浪 ' + String((e && e.message) || e).slice(0, 40));
+    }
+    try {
+      const cb = await fetchCnbcMin(sid);
+      if (cb) {
+        await ovSnapPut(env, sid, cb.pre, cb.pts);
+        const res2 = json({ ok: true, sid, pre: cb.pre, pts: cb.pts, ts: Date.now(), src: 'cnbc' }, 120);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+      errs.push('CNBC 无此代码');
+    } catch (e) {
+      errs.push('CNBC ' + String((e && e.message) || e).slice(0, 40));
+    }
+    const snap = await ovSnapGet(env, sid);
+    if (snap) {
+      /* stale 一定要标出来：图是能看的，但横轴上的时间可能已经是几小时前，
+         不标的话这段走势会被当成「今天怎么走的」。前端只压一行灰字，不弹窗。 */
+      return json({ ok: true, sid, pre: snap.pre, pts: snap.pts, ts: snap.ts,
+        stale: true, src: 'snapshot' }, 30);
+    }
+    // 三档各记一行：只报「取不到」等于把排障成本推给人，哪一档挂了一目了然
+    return json({ ok: false, error: '分时上游取不到：' + errs.join(' / ') });
   }
   const pts = trends.map((s) => {
     const a = s.split(',');
     return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
   });
-  /* 昨收一起带回去：前端左轴要画涨跌幅刻度，基准必须是昨收，
-     不能拿本时段第一个点凑——那画出来的「+0.00%」不是涨跌，
-     和卡片上的 +2.10% 对不上，看图的人反而更糊涂。
-     期货只有 preSettlement（昨结），指数/个股才有 preClose，依次退。 */
-  const d = j.data || {};
-  const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
-  const res = json({ ok: true, sid, pre, pts, ts: Date.now() }, 120);
+  await ovSnapPut(env, sid, out.v.pre, pts);
+  const res = json({ ok: true, sid, pre: out.v.pre, pts, ts: Date.now(),
+    src: 'em:' + out.host }, 120);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
   return res;
+}
+
+/* 行情源探针——只给排障用，不做缓存、不进前端。
+   GET /api/ovprobe?sids=100.NDX100,100.N225,103.NQ00Y
+       把每个 secid 在东财三个域上的 trends2 全打一遍：HTTP 码、点数、耗时。
+       「取不到分时」到底是域用错了、还是这只真没分时，一屏看完。
+   GET /api/ovprobe?snap=100.UST10Y,100.US10Y
+       用 ulist 批量打现价/涨跌，专门用来「找代码」：全球指数、外盘期货、
+       债券收益率这些 secid 是逐只试出来的，没有可推导的规则
+       （100.NDX 是纳斯达克综合、100.NDX100 才是纳指 100）。 */
+async function serveOvProbe(url) {
+  /* ?trial=1：日经/KOSPI 的分时源试打。这两只没有腾讯/新浪期货的对应代码，
+     唯一可能是新浪的全球指数接口——但它在当前出口上到底通不通、返回什么结构，
+     在部署环境里打一发比猜快。只放白名单 URL，不做通用转发。 */
+  if (url.searchParams.get('trial') === '1') {
+    const LIST = [
+      ['sina_json_v2', 'https://quotes.sina.cn/global/api/json_v2.php/GlobalService.getMinLine?symbol=int_nikkei'],
+      ['sina_openapi', 'https://quotes.sina.cn/global/api/openapi.php/GlobalService.getMinLine?symbol=int_nikkei'],
+      ['sina_jsonp', 'https://quotes.sina.cn/global/api/jsonp_v2.php/var%20t=/GlobalService.getMinLine?symbol=int_nikkei'],
+      ['sina_kline', 'https://quotes.sina.cn/global/api/openapi.php/GlobalService.getKLine?symbol=int_nikkei&day=1'],
+      ['sina_hq', 'https://hq.sinajs.cn/list=int_nikkei'],
+      ['sina_kospi', 'https://hq.sinajs.cn/list=int_kospi'],
+      /* Yahoo 是唯一一个同时覆盖日经、KOSPI、外盘期货、美债的免费源。
+         沙箱出口实测 429（Edge: Too Many Requests），线上出口未必同样待遇，
+         所以放到部署环境里打一发——通了就能一次性替掉四五个单点。 */
+      ['yahoo_n225', 'https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?interval=1m&range=1d'],
+      ['yahoo_ks11', 'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1m&range=1d'],
+      ['yahoo_nq', 'https://query2.finance.yahoo.com/v8/finance/chart/NQ%3DF?interval=1m&range=1d'],
+      ['yahoo_tnx', 'https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d'],
+    ];
+    const rows = await Promise.all(LIST.map(async ([k, u]) => {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+          signal: AbortSignal.timeout(7000),
+        });
+        const t = await r.text();
+        return { k, s: r.status, ms: Date.now() - t0, bytes: t.length, head: t.slice(0, 260) };
+      } catch (e) {
+        return { k, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 60) };
+      }
+    }));
+    return json({ ok: true, mode: 'trial', rows });
+  }
+  const snap = String(url.searchParams.get('snap') || '').trim();
+  if (snap) {
+    const sids = snap.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    if (!sids.length) return json({ ok: false, error: 'snap 为空' });
+    const out = [];
+    for (const host of ['push2delay', 'push2']) {
+      const t0 = Date.now();
+      try {
+        const r = await fetch('https://' + host + '.eastmoney.com/api/qt/ulist.np/get'
+          + '?fltt=2&invt=2&secids=' + sids.join(',')
+          + '&fields=f2,f3,f4,f12,f13,f14', {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(7000),
+        });
+        const j = await r.json().catch(() => null);
+        const diff = (j && j.data && j.data.diff) || [];
+        out.push({
+          host, s: r.status, ms: Date.now() - t0,
+          rows: (Array.isArray(diff) ? diff : Object.values(diff))
+            .map((x) => ({ secid: (x.f13 != null ? x.f13 + '.' : '') + x.f12, n: x.f14, p: x.f2, chg: x.f3, d: x.f4 })),
+        });
+      } catch (e) {
+        out.push({ host, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 80) });
+      }
+    }
+    return json({ ok: true, mode: 'snap', out });
+  }
+
+  const sids = String(url.searchParams.get('sids') || '').split(',')
+    .map((s) => s.trim()).filter((s) => isOvSid(s)).slice(0, 6);
+  if (!sids.length) return json({ ok: false, error: 'sids 需为逗号分隔的 secid（最多 6 个）' });
+  const hosts = String(url.searchParams.get('hosts') || 'push2his,push2delay,push2')
+    .split(',').map((s) => s.trim()).filter((h) => /^push2[a-z]*$/.test(h)).slice(0, 3);
+  const vs = String(url.searchParams.get('v') || '1,3')
+    .split(',').map((s) => +s).filter((n) => n >= 1 && n <= 4).slice(0, 4);
+
+  /* 变体：
+     1 trends2 原样（A 股/美股这条一直通）
+     2 trends2 + ut（缺 token 被拒时会回 200 空体，不报错，所以要和大写一起看）
+     3 kline klt=1 分钟线——分时拿不到时的替代路径，前端按点画折线即可
+     4 kline klt=101 日线（K 线弹窗同源） */
+  const PATHS = {
+    1: (s) => '/api/qt/stock/trends2/get?secid=' + s
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1',
+    2: (s) => '/api/qt/stock/trends2/get?secid=' + s
+      + '&ut=fa5fd1943c7b386f172d6893dbfba10b&fields1=f1,f2,f3,f4,f5,f6,f7,f8'
+      + '&fields2=f51,f53&iscr=0&iscca=0&ndays=1',
+    3: (s) => '/api/qt/stock/kline/get?secid=' + s + '&klt=1&fqt=1&lmt=400'
+      + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57',
+    4: (s) => '/api/qt/stock/kline/get?secid=' + s + '&klt=101&fqt=1&lmt=60'
+      + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57',
+  };
+
+  const jobs = [];
+  for (const sid of sids) {
+    for (const host of hosts) {
+      for (const v of vs) {
+        jobs.push((async () => {
+          const t0 = Date.now();
+          try {
+            const r = await fetch('https://' + host + '.eastmoney.com' + PATHS[v](sid), {
+              headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+              signal: AbortSignal.timeout(6000),
+            });
+            const j = await r.json().catch(() => null);
+            const arr = (j && j.data && (j.data.trends || j.data.klines)) || null;
+            const ref = v === 3 ? j && j.data && j.data.preClose : null;
+            return {
+              sid, host, v, s: r.status, ms: Date.now() - t0,
+              n: Array.isArray(arr) ? arr.length : 0,
+              pre: ref || (j && j.data && (j.data.preClose || j.data.preSettlement)) || 0,
+              head: Array.isArray(arr) && arr.length ? String(arr[arr.length - 1]).slice(0, 24) : '',
+            };
+          } catch (e) {
+            return { sid, host, v, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 50) };
+          }
+        })());
+      }
+    }
+  }
+  const rows = await Promise.all(jobs);
+  // 汇总成「每只一行、域×变体一列」的矩阵，比按请求顺序滚一遍好读
+  const bySid = {};
+  for (const r of rows) {
+    const k = r.host.replace('push2', 'p') + '/v' + r.v;
+    (bySid[r.sid] = bySid[r.sid] || []).push(
+      r.n ? k + '=' + r.n : (r.err ? k + '=✗' : k + '=[s' + r.s + ']'));
+  }
+  return json({ ok: true, mode: 'trends', rows, summary: bySid });
 }
 
 /* 隔夜/亚太条目的 K 线：同一个 secid，换成东财的日线接口。
@@ -1279,23 +1847,20 @@ async function serveOvK(sid, n, env, ctx) {
       if (hit) return hit;
     } catch (e) { /* 降级直连 */ }
   }
-  let j = null;
+  let out = null;
   let emErrK = null;
   try {
-    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get'
+    out = await emTryHosts(sid, '/api/qt/stock/kline/get'
       + '?secid=' + sid + '&klt=101&fqt=1&lmt=' + lim
       + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6'
-      + '&fields2=f51,f52,f53,f54,f55,f56,f57', {
-      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-      signal: AbortSignal.timeout(8000),
-    }).then((r) => {
-      if (!r.ok) throw new Error('K 线上游 HTTP ' + r.status);
-      return r.json();
-    }));
+      + '&fields2=f51,f52,f53,f54,f55,f56,f57', (j) => {
+      const k = j && j.data && j.data.klines;
+      return k && k.length ? k : null;
+    }, 9000);
   } catch (e) {
     emErrK = e;
   }
-  const ks = j && j.data && j.data.klines;
+  const ks = out && out.v;
   if (!ks || !ks.length) {
     /* 和分时同一条链路，一起挂。换腾讯：A 股/港股/美股都能取到日线，
        中金所期货和日经/韩国没有对应代码，仍然只能报错。 */
@@ -1308,9 +1873,19 @@ async function serveOvK(sid, n, env, ctx) {
         }
         return res2;
       }
-    } catch (e) { /* 两家都挂 */ }
+    } catch (e) { /* 下一档 */ }
+    try {
+      const sb = await fetchSinaFutKline(sid, lim);
+      if (sb) {
+        const res2 = json({ ok: true, sid, bars: sb, ts: Date.now(), src: 'sina-fut' }, 1800);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+    } catch (e) { /* 三家都挂 */ }
     return json({ ok: false, error: 'K 线上游取不到：'
-      + String((emErrK && emErrK.message) || (ks ? '没有 K 线数据' : '无数据')) });
+      + String((emErrK && emErrK.message) || '无数据') });
   }
   /* 字段顺序：日期,开,收,高,低,量,额。这里重排成 o/h/l/c 的顺序，
      前端画蜡烛不用再记一遍源头的列序（记错了就是高低画反，肉眼极难发现）。 */
@@ -1319,7 +1894,7 @@ async function serveOvK(sid, n, env, ctx) {
     return [a[0], +a[1], +a[3], +a[4], +a[2], +a[5]];
   }).filter((b) => b[1] > 0 && b[4] > 0);
   if (!bars.length) return json({ ok: false, error: 'K 线解析为空' });
-  const res = json({ ok: true, sid, bars, ts: Date.now() }, 300);
+  const res = json({ ok: true, sid, bars, ts: Date.now(), src: 'em:' + out.host }, 300);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
@@ -4621,6 +5196,16 @@ export default {
       const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
       if (!isOvSid(sid)) return json({ ok: false, error: 'sid 非法' });
       return serveOvMin(sid, env, ctx);
+    }
+
+    if (p === '/api/bond') {
+      // 十年美债收益率（隔夜卡用；单位 %，变动 bp）
+      return serveBond(env, ctx);
+    }
+
+    if (p === '/api/ovprobe') {
+      // 分时/K 线源排障：哪个域能出图、哪只真没分时、代码到底叫什么
+      return serveOvProbe(url);
     }
 
     if (p === '/api/ovk') {
