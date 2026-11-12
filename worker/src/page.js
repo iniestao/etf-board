@@ -858,16 +858,22 @@ background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
 .iobar .iom{font-size:11.5px;color:var(--txt3);margin-left:auto}
 
 /* ---- 使用说明（/help） ---- */
-.helpbody{max-width:720px;font-size:13.5px;line-height:1.85;color:var(--txt)}
-.helpbody h3{font-size:13px;font-weight:600;margin:22px 0 6px;color:var(--txt)}
-.helpbody h3:first-child{margin-top:4px}
+.helpbody{max-width:1180px;font-size:13.5px;line-height:1.85;color:var(--txt);
+  column-count:2;column-gap:46px}
+.helpbody .hm{break-inside:avoid;page-break-inside:avoid}
+@media(max-width:900px){.helpbody{column-count:1;max-width:720px}}
+.helpbody h3{font-size:13px;font-weight:600;margin:16px 0 5px;color:var(--txt);
+  padding-top:13px;border-top:1px solid var(--line)}
+.helpbody h3:first-of-type{margin-top:6px;padding-top:0;border-top:0}
+.helpbody .hlead{margin:0 0 4px;font-size:14px;line-height:1.75;color:var(--txt);
+  column-span:all;padding-bottom:6px}
 .helpbody p{margin:0 0 8px;color:var(--txt2)}
 .helpbody ul{margin:0 0 4px;padding-left:18px;color:var(--txt2)}
 .helpbody li{margin:2px 0}
 .helpbody b{color:var(--txt);font-weight:600}
 .helpbody code{font-family:var(--mono);font-size:12px;background:var(--bg3);
   padding:1px 5px;border-radius:4px}
-.helpback{display:inline-block;margin:2px 0 14px;font-size:12.5px;color:var(--txt2);
+.helpback{display:inline-block;margin:2px 0 10px;font-size:12.5px;color:var(--txt2);
   text-decoration:none;border-bottom:1px dotted var(--line)}
 .helpback:hover{color:var(--accent)}
 /* 说明页只留页头和说明本身。首页那些区块有几个是裸 .sechd/.cards（没有外层容器），
@@ -1319,40 +1325,64 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   <div class="helpbody">
     <a class="helpback" href="/">← 返回盯盘</a>
 
-    <h3>这是什么</h3>
-    <p>全市场 ETF 的日内盯盘面板。行情每 60 秒自刷一次，非交易时段显示上一交易日收盘。</p>
+    <p class="hlead">行情软件回答「现在多少钱」。这一页回答另外四个问题：<b>钱往哪条线走</b>、<b>它站在什么位置</b>、<b>涨的是谁</b>、<b>外面发生了什么</b>。</p>
 
-    <h3>顶部两行</h3>
-    <p>第一行是页面名和时钟；第二行「隔夜 / 板块地图 / 自选 / 急涨急跌 / 衍生品 / 清单」在本页内跳转。右上角「因子研究」「使用说明」是独立页面。</p>
+    <div class="hm"><h3>隔夜</h3>
+    <p>美股收盘和外盘期货按赛道折算到 A 股 ETF。映射挂的是<b>跟踪指数</b>而不是代码，ETF 改名换代码不会失效。</p></div>
 
-    <h3>清单怎么用</h3>
+    <div class="hm"><h3>板块地图</h3>
+    <p>按<b>跟踪指数</b>聚合，一个指数只出一票——否则权重会被「同指数发得多」的板块吃掉，看到的是发行数量而不是轮动。A 股、港股、跨境<b>各算各的分母</b>。附 250 日占比曲线，看资金是刚起来还是已经走了一半。只收行业主题，宽基、债、货币、商品不入表。</p></div>
+
+    <div class="hm"><h3>位置诊断</h3>
+    <p>全页唯一不看「今天涨跌」的一块，三个指标都来自因子研究里过了样本外检验的那几个：</p>
     <ul>
-      <li><b>排序</b>：点表头任意一列，再点一次反向，标题前的 ▲▼ 是当前排序列。空值永远排最后。</li>
-      <li><b>同指数去重</b>：跟踪同一指数的多只 ETF 默认只留成交额最大的一只，名字后的 <code>×N</code> 是同指数只数。点它看该指数全部成员，再点回到全部。</li>
-      <li><b>搜索</b>：输入代码或名称实时过滤，搜索时不去重。</li>
-      <li><b>申赎</b>：当日净申购金额（亿元）= 份额变化 × 收盘价，红为净申购、绿为净赎回。去重行显示同指数合计，数字后带「合」。点单元格看近 250 个交易日柱状图。</li>
-      <li><b>点行</b>：打开该只的 K 线、分时和份额明细。</li>
+      <li><b>位置</b>：现价在近 250 日区间里的百分位，0 是一年新低、100 是一年新高。</li>
+      <li><b>路径效率</b>：20 日净涨幅 ÷ 20 日路径长度。接近 1 是单边拉上去的，接近 0 是震荡堆出来的，后者量能一断回吐更快。</li>
+      <li><b>量能倍数</b>：今日成交 ÷ 前 20 日均量，盘中按已交易分钟折算。</li>
     </ul>
+    <p>三者交叉给一个动作标签。标签只是把数字翻成人话，不预测涨跌。</p></div>
 
-    <h3>自选与提醒</h3>
-    <ul>
-      <li>行尾 <code>+</code> 加入自选，<code>×</code> 移除。自选存在本机，也可以存云端（按本机匿名编号分桶），换设备用「导入/导出」搬。</li>
-      <li>页面开着时自选每 5 秒刷新，走浏览器直连腾讯行情。</li>
-      <li>「提醒」打开后，自选异动会发浏览器通知，需要授权；「范围」可切到全市场，按指数代表标的扫，只弹汇总和极端个股。</li>
-    </ul>
+    <div class="hm"><h3>今日变化 / 组合体检</h3>
+    <p>只列<b>相比昨天变了什么</b>：新高新低、升破或跌破 80/20 分位、量能突变、贴新高 1% 以内、溢价异常。没发生事的标的不出现。</p>
+    <p>组合体检用最近 60 个交易日的日收益算两两相关，折成<b>有效独立仓位数</b> <code>n / (1 + (n−1)·ρ̄)</code>——10 只高相关自选，实际可能只等于 2 个仓位。</p></div>
 
-    <h3>数据什么时候更新</h3>
-    <ul>
-      <li>交易日 <b>15:10</b> 抓日线，<b>21:00</b> 抓份额。沪市份额来自上交所报表，它发布比深交所晚，常常当晚 22:00 之后、甚至次日才齐，缺的那天会自动回补。</li>
-      <li>申赎用的是 <b>T 日盘后登记</b>的份额，所以盘中看到的是上一个交易日的数，表头标了日期。</li>
-      <li>溢价率需要 IOPV，只有东财源提供；回落到新浪源时这一列为空。</li>
-    </ul>
+    <div class="hm"><h3>急涨急跌</h3>
+    <p>用分钟线自己回溯涨速。池子按成交额取 40 只并按指数去重，因为涨速榜的意义是「能下手的标的在动」。</p></div>
 
-    <h3>已知限制</h3>
+    <div class="hm"><h3>全市场异动</h3>
+    <p>跳出自己的池子。收盘后算好的快照，一个指数只留流动性最好的那只，分七类：创新高、上穿 80 分位、贴新高、创新低、跌破 20 分位、放量、缩量。口径与「位置诊断」一致，数字可以直接横向比。</p></div>
+
+    <div class="hm"><h3>衍生品</h3>
+    <p>股指期货基差（期货 − 现货，负数为贴水）；期权用 <b>K + 购 − 沽</b> 合成一张期货再与同月期货对照，覆盖三个股指期权和 9 个 ETF 期权标的。年化按自然日折算，剩余不足 3 天不给。四象限是「持仓量变化 × 价格方向」的推断，不是交易所的多空数据。</p></div>
+
+    <div class="hm"><h3>全市场清单</h3>
+    <p>900 多只、12 列，点表头排序，再点反向。两件核心的事：</p>
     <ul>
-      <li>指数归属来自基金档案，新上市的 ETF 可能还没归到某个指数下，这种按「无指数」处理，不参与去重。</li>
+      <li><b>同指数去重</b>：同一指数默认只留成交额最大的一只，名字后的 ×N 是<b>当前有行情的同指数只数</b>，点开就是这个数对应的那些行。</li>
+      <li><b>申赎</b>：当日净申购金额 = 份额变化 × 收盘价，红申购绿赎回，份额折算日已修正。去重行显示同指数合计，带「合」字；点开是近 250 个交易日柱状图，折算日柱顶有黄点。</li>
+    </ul></div>
+
+    <div class="hm"><h3>点开一只之后</h3>
+    <p>分时固定 240 格、午休不占位、以昨收为中心上下对称。日线近 500 天，带 MA、BOLL、RSI。成分穿透是季报口径的前 N 大持仓，<b>权重 × 涨跌 = 贡献</b>，加总与涨跌幅的差额来自未披露仓位、现金和折溢价，是残差不是算错。份额明细是单只的申赎历史。</p></div>
+
+    <div class="hm"><h3>因子研究</h3>
+    <p>独立页面：201 个因子的 IC 检验、样本外回测、PE 策略；另有一批先按指数去重再跑的因子，避免同指数多只 ETF 在横截面里重复投票、把 IC 稀释掉。</p></div>
+
+    <div class="hm"><h3>提醒</h3>
+    <p>页面开着时生效，走浏览器通知。范围可以是自选逐只，也可以是全市场按指数代表标的扫，后者只弹汇总和极端个股。</p></div>
+
+    <div class="hm"><h3>数据与口径</h3>
+    <ul>
+      <li>行情 60 秒一刷；日线交易日 15:10 入库；份额 21:00 入库，<b>沪市来自上交所报表，常当晚 22:00 后甚至次日才齐</b>，缺的那天自动回补。</li>
+      <li>申赎用的是 <b>T 日盘后登记</b>的份额，盘中看到的是上一交易日，表头标了日期。</li>
+      <li>涨红跌绿，美股数据进来也一样。溢价率需要 IOPV，只有东财源提供。</li>
+    </ul></div>
+
+    <div class="hm"><h3>已知限制</h3>
+    <ul>
+      <li>指数归属来自基金档案，新上市 ETF 可能还没归组，这类不参与去重。</li>
       <li>部分债券 ETF 没有日线，K 线和申赎会是空的。</li>
-    </ul>
+    </ul></div>
   </div>
 </section>
 
