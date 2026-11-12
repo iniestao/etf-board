@@ -3004,10 +3004,23 @@ async function fetchCffex(path) {
       return await r.text();
     } catch (e) {
       lastErr = e;
-      if (k === 0) await new Promise((res) => setTimeout(res, 300));
+      if (k === 0) await new Promise((res) => setTimeout(res, 700));
     }
   }
   throw lastErr;
+}
+
+/* 中金所那七个 quote_*.txt 有个脾气：**并发打就挂**。
+   2026-11-12 实测，futprobe 串行跑 IO/MO/HO 全 200（各 55~62ms），
+   而 serveFut 里 4 个期货 + 3 个期权一起 Promise.all 发出去，三个期权全超时，
+   页面就只剩「期权链没读到」。所以在这里排一条队：一次只发一个，间隔 90ms。
+   七个文件串起来约 1 秒，相对 55 秒的缓存不算什么。 */
+let _cffexChain = Promise.resolve();
+function fetchCffexQueued(path) {
+  const run = () => fetchCffex(path);
+  const p = _cffexChain.then(run, run);
+  _cffexChain = p.catch(() => {}).then(() => new Promise((r) => setTimeout(r, 90)));
+  return p;
 }
 
 /** 新浪股指期货报价：秒级快照，一次请求拿全部合约。
@@ -3251,10 +3264,10 @@ async function serveFut(env, ctx) {
   // 三路并发：现货是东财，期货是中金所清单 + 新浪价，期权仍是中金所。
   // 串起来等会多一个 RTT，而这三者互不依赖。
   const spotP = fetchSpotIdx().catch(() => null);
-  const futP = Promise.all(FUT_PRODS.map((p) => fetchCffex('quote_' + p + '.txt')
+  const futP = Promise.all(FUT_PRODS.map((p) => fetchCffexQueued('quote_' + p + '.txt')
     .then((t) => ({ p, rows: parseFutCsv(t, p) }))
     .catch(() => ({ p, rows: null }))));
-  const optP = Promise.all(OPT_PRODS.map((p) => fetchCffex('quote_' + p + '.txt')
+  const optP = Promise.all(OPT_PRODS.map((p) => fetchCffexQueued('quote_' + p + '.txt')
     .then((t) => ({ p, rows: parseOptCsv(t, p) }))
     .catch(() => ({ p, rows: null }))));
 
