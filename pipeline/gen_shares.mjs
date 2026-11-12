@@ -170,34 +170,48 @@ async function fetchSZSE(day) {
   return out;
 }
 
+/* 返回 {st:'ok',data} / {st:'pending',at} / {st:'fail',why}。
+   区分「还没发布」和「抓不到」：上交所这份 ETF 规模报表常在 18:00 之后才发，
+   22:00 之后才齐是常态，21:00 那轮拿不到属于**正常**，次日 sse_hist.py 回补即可；
+   而 403/超时才是真故障。混成一句「抓取失败」会让人以为数据源坏了，去修不该修的东西。 */
 async function fetchSH(day) {
   const url = 'http://query.sse.com.cn/commonQuery.do'
     + '?sqlId=COMMON_SSE_ZQPZ_ETFZL_XXPL_ETFGM_SEARCH_L'
     + `&STAT_DATE=${day}&pageHelp.pageSize=5000&pageHelp.pageNo=1`;
+  let why = '';
   for (let k = 0; k < 4; k++) {
     try {
       const r = await fetch(url, {
         headers: { 'User-Agent': UA, Referer: 'http://www.sse.com.cn/', Accept: '*/*' },
       });
+      if (!r.ok) { why = 'HTTP ' + r.status; await sleep(1500 + k * 1000); continue; }
       const d = await r.json();
       const res = d.result || [];
-      if (!res.length) { await sleep(1500 + k * 1000); continue; }
+      /* 未发布日期上交所返回的是空表（实测 2026-11-13 → rows=0，HTTP 200）；
+         限流也长这样。连续两次空就当「还没发布」，别再当故障重试到天亮。 */
+      if (!res.length) {
+        why = '空表';
+        if (k >= 1) return { st: 'pending', at: '' };
+        await sleep(1500 + k * 1000);
+        continue;
+      }
       /* 日期不在顶层，在 result 的每一行上（顶层只有 pageHelp）。
          早先读的是 d.STAT_DATE，永远是 undefined，于是「该日还没发布」这道闸门
          从上线起就没生效过：请求一个还没发布的日期，上交所会把**上一日**的整张表
          原样返回，写进轴里就成了「当日零申赎」，静默错一天。2026-11-11 复盘发现。 */
       const dts = new Set(res.map((x) => String(x.STAT_DATE || '').slice(0, 10)));
-      if (dts.size !== 1 || !dts.has(day)) return null;      // 回显不是请求日 → 还没发布
+      // 回显不是请求日 → 该日还没发布，报表还停在上一日
+      if (dts.size !== 1 || !dts.has(day)) return { st: 'pending', at: [...dts].sort().pop() || '' };
       const out = {};
       for (const x of res) {
         const c = String(x.SEC_CODE || '').trim();
         const v = parseFloat(x.TOT_VOL);
         if (/^5\d{5}$/.test(c) && v > 0) out[c] = Math.round(v * 1e4);
       }
-      return Object.keys(out).length ? out : null;
-    } catch (e) { await sleep(1500 + k * 1000); }
+      return Object.keys(out).length ? { st: 'ok', data: out } : { st: 'fail', why: '表里没有沪市代码' };
+    } catch (e) { why = e.message; await sleep(1500 + k * 1000); }
   }
-  return null;
+  return { st: 'fail', why };
 }
 
 /** 把某天的份额追加到轴上；数据源没更新则不动。 */
@@ -234,13 +248,16 @@ async function fetchAppend(mk) {
         }
       }
     } else {
-      got = await fetchSH(T);
+      const r = await fetchSH(T);
+      if (r.st === 'ok') got = r.data;
+      else if (r.st === 'pending') log(`  · SH 上交所还没发布 ${T}${r.at ? '（报表仍停在 ' + r.at + '）' : '（返回空表）'}，正常，次日回补`);
+      else log(`  · SH 上交所抓不到（${r.why}），试东财`);
       if (!got) {
         const em = await emShares();
-        if (em && Object.keys(em.sh).length) { got = em.sh; srcNote = '（上交所没给，降级东财）'; }
+        if (em && Object.keys(em.sh).length) { got = em.sh; srcNote = '（上交所没能给，用东财 f38 顶上）'; }
       }
     }
-    if (!got) { log(`  ✗ ${m.mkt} 抓取失败/未发布，本轮不追加`); continue; }
+    if (!got) { log(`  ✗ ${m.mkt} 本轮没有份额（${m.mkt === 'SH' ? '上交所未发布且东财没给' : '东财与深交所都没给'}）`); continue; }
 
     // 防「数据源还没更新」：新值与最后一天 80% 以上完全相同 → 判定为陈旧快照
     const last = m.d.length - 1;
