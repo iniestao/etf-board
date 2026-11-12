@@ -383,7 +383,9 @@ jobs:
             head -c 120 /tmp/probe.bin 2>/dev/null | tr -d '\n'; echo
           done
           echo "--- 开始抓取 ---"
-          node pipeline/gen_shares.mjs --fetch
+          # --fix-last 先用深交所的 T+1 早间值修正轴末日（深市 T 日晚间的 dqgm
+          # 是「仅供参考」的上一日副本），再追加当天。
+          node pipeline/gen_shares.mjs --fix-last --fetch
           echo "--- 产物 ---"
           du -sh dist/shares | cut -f1
           ls dist/shares | wc -l

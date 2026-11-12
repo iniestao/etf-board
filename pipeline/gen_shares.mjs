@@ -269,7 +269,10 @@ async function fetchAppend(mk) {
     let same = 0, tot = 0;
     for (const [code, arr] of Object.entries(m.c)) {
       const v = arr[last];
-      if (v && got[code]) { tot++; if (Math.abs(got[code] - v) <= v * 1e-9) same++; }
+      /* 容差必须大于「万份级四舍五入」：深交所给的是万份 + 两位小数，与东财 f38
+         的「份」天然差几十到几百份（相对 1e-8 量级）。用 1e-9 严格比，参考值
+         就一路溜过这道闸门——2026-11-11 就是这样把 11-10 的份额当成 11-11 写进去的。 */
+      if (v && got[code]) { tot++; if (Math.abs(got[code] - v) <= v * 1e-6) same++; }
     }
     if (tot > 50 && same / tot > 0.8) {
       log(`  ✗ ${m.mkt} 新值与 ${m.d[last]} 有 ${(same / tot * 100).toFixed(0)}% 完全相同 → 数据源未更新，跳过`);

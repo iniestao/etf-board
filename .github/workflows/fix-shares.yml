@@ -1,0 +1,100 @@
+name: 补深市份额（T+1 早间）
+
+# 为什么单独一条流水线：
+# 深交所 1945 报表的 dqgm 列自己写着「该字段 T 日晚间更新的 T 日规模仅供参考，
+# 以 T+1 日早间更新的 T 日规模为准」。T 日 21:00 那轮抓到的因此常常还是上一日的
+# 副本——2026-11-11 就是 758 只深市标的里 754 只与 11-10 完全相同，页面上一整片
+# 申赎 0.00。这批在 T+1 开盘前重抓一次，把 T 日的真值补上、并覆盖掉可能已经写错的
+# 参考值，然后只替换 data 分支的 shares/（那份是 force push 重建的，不能整枝覆盖）。
+on:
+  schedule:
+    # UTC 00:45 = 北京 08:45，周二到周六（对应工作日 T+1）
+    - cron: '45 0 * * 2-6'
+  workflow_dispatch:
+
+# 和主流水线共用一把锁：两边都会 force push data 分支，撞上就白跑
+concurrency:
+  group: etf-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 份额只用到收盘价，但 gen_shares 读的是 sqlite 里的 etf_daily。
+      # 早间的库和昨晚那份内容一致（日线昨晚已入库），重建一遍最省事。
+      - name: 建价格库
+        working-directory: data
+        run: node import_etf.mjs --out etf.db --delay 60
+        env:
+          NODE_NO_WARNINGS: '1'
+
+      - name: 取 manifest
+        run: |
+          mkdir -p dist
+          curl -sSfL --retry 3 \
+            "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/data/manifest.json" \
+            -o dist/manifest.json
+          python3 -c "import json;m=json.load(open('dist/manifest.json'));print('manifest', m['last_trade_date'], m['items'].__len__(), '只')"
+
+      # --fix-last：把轴末日（多半是 T-1）用深交所最终值覆盖
+      # --fetch   ：把 T 日补上，此刻深交所给的已经是 T 日的最终值
+      - name: 修正与追加
+        run: node pipeline/gen_shares.mjs --fix-last --fetch
+        env:
+          NODE_NO_WARNINGS: '1'
+
+      - name: 发布 shares/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          for try in 1 2 3; do
+            rm -rf /tmp/pub
+            git clone -q --depth 1 -b data \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/pub || exit 1
+            rm -rf /tmp/pub/shares
+            cp -r dist/shares /tmp/pub/shares
+            cd /tmp/pub
+            git config user.name "etf-board-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            if git diff --cached --quiet; then
+              echo "份额与线上一致，不用提交"
+              exit 0
+            fi
+            git commit -q -m "shares fix $(date -u '+%Y-%m-%d %H:%M UTC')"
+            # 主流水线是 force push 重建的孤儿分支，这里只能前向推；被别人抢先就重来
+            if git push -q origin data; then
+              echo "已发布 $(git rev-parse --short HEAD)"
+              exit 0
+            fi
+            cd /
+            echo "第 ${try} 次推送被抢先，重来"
+            sleep 20
+          done
+          echo "::error::三次都没推上去，data 分支正被主流水线重建"
+          exit 1
+
+      - name: 自检
+        run: |
+          python3 - <<'PY'
+          import json
+          j = json.load(open('dist/shares/last.json'))
+          f = j['f']
+          zero = sum(1 for v in f.values() if v == 0)
+          print(f"末日 {j['d']}：有净流入 {len(f)} 只，其中 0 值 {zero} 只（{zero/len(f)*100:.0f}%）")
+          # 一半左右的 ETF 当天没有申赎是正常的；超过 70% 基本可以断定又拿到了
+          # 「上一日的副本」，那种情况宁可在日志里喊一声。
+          assert zero / len(f) < 0.7, f'0 值占比 {zero/len(f)*100:.0f}%，深市份额可能还是参考值'
+          PY
