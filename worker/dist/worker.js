@@ -3482,6 +3482,46 @@ async function loadFutLast(env) {
   } catch (e) { return null; }
 }
 
+/** 期权 Δ 的基准表：上一交易日的合成基差率。
+ *
+ *  两种取法，取决于日档停在哪天：
+ *   - 日档停在昨天（盘中）→ last.opt 就是那份，直接按「品种|月份」建索引；
+ *   - 日档已追平今天（16:35 之后）→ last.opt 是今天自己，减出来恒等于 0，
+ *     改读 pipeline 存下的 optPrev（前一交易日映射）。
+ *  两样都没有就返回空表，调用方据此撤掉 Δ 那一列——空着好过摆一排 0。
+ *
+ *  byCode 是给 ETF 期权用的「第几档」序列：它的档位按剩余天数排，今天 8 天、
+ *  昨天 9 天，键对不上但合约没变，只能按顺序对。 */
+function optBaseFromLast(last, td) {
+  const byKey = {};
+  const byCode = {};
+  let baseTd = null;
+  if (!last) return { byKey, byCode, baseTd };
+
+  if (last.td !== td && Array.isArray(last.opt)) {
+    baseTd = last.td;
+    for (const o of last.opt) {
+      if (o.bp == null) continue;
+      byKey[o.p + '|' + o.m] = o.bp;
+      (byCode[o.p] = byCode[o.p] || []).push(o.bp);
+    }
+    // day.opt 是排好序写的（同品种按 dte 升序），push 顺序即档位顺序
+  } else if (last.optPrev && typeof last.optPrev === 'object') {
+    baseTd = last.optPrevTd || null;
+    for (const p of Object.keys(last.optPrev)) {
+      const g = last.optPrev[p];
+      if (!g || typeof g !== 'object') continue;
+      byCode[p] = [];
+      for (const m of Object.keys(g)) {
+        if (g[m] == null) continue;
+        byKey[p + '|' + m] = g[m];
+        byCode[p].push(g[m]);
+      }
+    }
+  }
+  return { byKey, byCode, baseTd };
+}
+
 /** 盘中实时：期货 + 现货 + 股指期权，55 秒边缘缓存。
  *  期货全挂时才退到 fut_last.json（收盘日档），并把 stale 标出来——宁可显示
  *  「昨天收盘 + 日期」，也不要让整块卡片消失。 */
@@ -3581,6 +3621,14 @@ async function serveFut(env, ctx) {
   // 不该因为「td 相同」而丢掉——否则收盘后整张多空表永远是空的
   const posPrev = last && last.pos ? last.pos : null;
 
+  /* 期权合成基差的 Δ 基准：同品种同月份、上一交易日的合成基差率。
+     盘中日档停在昨天，last.opt 正好是那份；收盘后（16:35 之后）日档追平今天，
+     last.opt 就变成今天自己，减出来恒等于 0——这时改读 pipeline 存下的 optPrev。
+     两样都没有就不给，宁可这一列撤掉，也不摆一排 0。 */
+  const optB = optBaseFromLast(last, td);
+  const optBase = optB.byKey;
+  const optBaseTd = optB.baseTd;
+
   const futOut = [];
   const futPxByProd = {};
   for (const p of FUT_PRODS) {
@@ -3624,7 +3672,9 @@ async function serveFut(env, ctx) {
     const sp = spotOk ? spot[S] : null;
     if (!sp) { partial.push(p); continue; }
     for (const o of calcOptMonths(rows, sp.p, futPxByProd[fp] || {}, fp)) {
-      optOut.push({ p, u: S, ...o });
+      const base = optBase[p + '|' + o.m];
+      optOut.push({ p, u: S, ...o,
+        bpc: (base != null && o.bp != null) ? +(o.bp - base).toFixed(3) : null });
     }
   }
 
@@ -3656,6 +3706,9 @@ async function serveFut(env, ctx) {
     // 两者之间隔了几个交易日，就等于 Δ基差率跨了几天——任务被排到次日凌晨、
     // 日档慢一天时，这里会自己显示成两天，不用等用户觉得数字不对再回头查。
     prevTd,
+    // 期权那条 Δ 用哪天的收盘当基准。和 prevTd 通常同一天，但日档只到昨天、
+    // 期货那边可能已经用上 prev 里的存值，两个日期不一定同步，各标各的。
+    optBaseTd,
     lastTd: (last && last.td) || null,
     spot: spotOk ? spot : {},
     fut: futOut,
@@ -3947,7 +4000,10 @@ async function serveFutOpt(url, env, ctx) {
     (diag[code] = diag[code] || []).push('清单 ' + String((e && e.message) || e));
     return null;
   })));
-  const [spot, lists] = await Promise.all([spotP, listP]);
+  const lastP = loadFutLast(env).catch(() => null);
+  const [spot, lists, lastSnap] = await Promise.all([spotP, listP, lastP]);
+  // Δ 基准（上一交易日各标的的合成基差率），三处共用同一份取法
+  const optB = optBaseFromLast(lastSnap, futDataDate(lastSnap));
 
   const codes = [];
   for (const l of lists) if (l) for (const x of l) codes.push(x.code);
@@ -3987,11 +4043,22 @@ async function serveFutOpt(url, env, ctx) {
       diag[code] = ['报价 ' + rows.length + '/' + l.length + '，配不出月份'];
       continue;
     }
+    /* Δ基差率：拿「第 i 档」对「上一交易日第 i 档」。档位按剩余天数排，今天 8 天、
+       昨天 9 天，键对不上但合约没变，所以只能按顺序对。档数不一致就不给——
+       某一档今天没配出来时按索引对会整体错位，宁可空着。 */
+    const base = optB.byCode[code];
+    if (base && base.length === months.length) {
+      for (let k = 0; k < months.length; k++) {
+        months[k].bpc = (base[k] != null && months[k].bp != null)
+          ? +(months[k].bp - base[k]).toFixed(3) : null;
+      }
+    }
     if (!td && s.d) td = s.d;
     items.push({ c: code, n: name, S: s.p, chg: s.chg, months, on: 'live' });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial, td, src: 'sina' };
+  out.optBaseTd = optB.baseTd;
   out.mode = !items.length ? 'none' : 'live';
   if (DBG || partial.length) out.diag = diag;
   const res = json(out, ttl);
@@ -12891,8 +12958,12 @@ function renderFutOptIdx(){
   /* 中金所那三份 quote 文件盘中偶发整段超时，后端此时会退到日档里上一交易日的
      合成基差（FUT.optDaily>0）。副标题带上那天，别让人拿隔夜的基差率当实时。 */
   var sub = document.getElementById('futOptIdxSub');
-  if (sub) sub.textContent = 'IO/MO/HO'
-    + (FUT && FUT.optDaily ? ' · ' + (FUT.lastTd || FUT.td || '上一交易日') + ' 收盘' : '');
+  if (sub){
+    var bits = ['IO/MO/HO'];
+    if (FUT && FUT.optDaily) bits.push((FUT.lastTd || FUT.td || '上一交易日') + ' 收盘');
+    else if (FUT && FUT.optBaseTd) bits.push('Δ基准 ' + String(FUT.optBaseTd).slice(5));
+    sub.textContent = bits.join(' · ');
+  }
   if (!list.length){
     // 「还没回来」和「回来了但是空的」要分开：后者一直转圈会让人以为页面卡死
     box.innerHTML = FUT
@@ -12903,8 +12974,16 @@ function renderFutOptIdx(){
     return;
   }
 
+  /* Δ基差率：相对上一交易日同一合约的合成基差率，单位百分点。和期货那张表
+     同一套读法——贴水是在扩大还是修复，看这一列比看绝对值直接。
+     老日档没有 optPrev、日档又已追平今天时，这一列会整个撤掉，不挂一排「—」。 */
+  var hasBpc = false;
+  for (var q2 = 0; q2 < list.length; q2++) if (list[q2].bpc != null){ hasBpc = true; break; }
+
+  var ncol = 6 + (hasBpc ? 1 : 0);
   var h = '<table><thead><tr><th class="l">合约</th><th>合成期货</th>'
     + '<th title="合成期货 − 现货">基差率</th>'
+    + (hasBpc ? '<th title="相对上一交易日同一合约的合成基差率变化，单位百分点">Δ基差率</th>' : '')
     + '<th class="hide-sm">年化</th>'
     + '<th title="合成期货 − 同月期货。两个市场各算一遍，差得多就是套利空间">与期货差</th>'
     + '<th class="hide-sm" title="认沽成交量 ÷ 认购成交量">PCR</th>'
@@ -12914,13 +12993,14 @@ function renderFutOptIdx(){
   for (var k = 0; k < order.length; k++){
     var p = order[k], rows = byP[p];
     if (!rows || !rows.length) continue;
-    h += '<tr class="futgrp"><td class="l" colspan="6">' + p + ' · ' + esc(rows[0].u === '000300' ? '沪深300' : rows[0].u === '000016' ? '上证50' : '中证1000') + '</td></tr>';
+    h += '<tr class="futgrp"><td class="l" colspan="' + ncol + '">' + p + ' · ' + esc(rows[0].u === '000300' ? '沪深300' : rows[0].u === '000016' ? '上证50' : '中证1000') + '</td></tr>';
     for (var j = 0; j < rows.length; j++){
       var r = rows[j];
       h += '<tr>'
         + '<td class="l"><span class="nm">' + r.m + '</span><span class="code">剩 ' + r.dte + ' 天</span></td>'
         + '<td>' + fNum(r.syn, 2) + '</td>'
         + '<td class="' + fSign(r.bp) + '">' + fPct(r.bp, 3) + '</td>'
+        + (hasBpc ? '<td class="bpc ' + fSign(r.bpc) + '">' + fPct(r.bpc, 3) + '</td>' : '')
         + '<td class="hide-sm ' + fSign(r.ann) + '">' + fPct(r.ann, 2) + '</td>'
         + '<td class="' + fSign(r.fb) + '">' + (r.fb == null ? '—' : (r.fb > 0 ? '+' : '') + fNum(r.fb, 2)) + '</td>'
         + '<td class="hide-sm">' + fNum(r.pcr, 2) + '</td></tr>';
@@ -12949,8 +13029,20 @@ function renderFutOptEtf(){
       : '没有可用的期权链') + '</div>';
     return;
   }
+  /* Δ基差率对的是「近月那一档」，和表里主看的那列对齐；次月不给——
+     两档各挂一个 Δ 会把这张表撑成 8 列，而近月的 Δ 才是要盯的那个。 */
+  var hasBpc = false;
+  for (var q3 = 0; q3 < all.length; q3++){
+    if (((all[q3].months || [])[0] || {}).bpc != null){ hasBpc = true; break; }
+  }
+  var sub = document.getElementById('futOptEtfSub');
+  if (sub){
+    var bt = (FUTOPT.main && FUTOPT.main.optBaseTd) || (FUTOPT.rest && FUTOPT.rest.optBaseTd) || '';
+    sub.textContent = '沪深 9 个标的' + (hasBpc && bt ? ' · Δ基准 ' + String(bt).slice(5) : '');
+  }
   var h = '<table><thead><tr><th class="l">标的</th><th>现价</th>'
     + '<th title="最近到期那一档的合成期货基差率">近月</th>'
+    + (hasBpc ? '<th class="hide-sm" title="近月合成基差率相对上一交易日的变化，单位百分点">Δ基差率</th>' : '')
     + '<th class="hide-sm">年化</th>'
     + '<th class="hide-sm" title="第二个到期月">次月</th>'
     + '<th class="hide-sm" title="认沽 ÷ 认购 成交量">PCR</th>'
@@ -12962,6 +13054,7 @@ function renderFutOptEtf(){
       + '<td class="l"><span class="nm">' + esc(it.n) + '</span><span class="code">' + it.c + '</span></td>'
       + '<td>' + fNum(it.S, 3) + '</td>'
       + '<td class="' + fSign(m0.bp) + '">' + fPct(m0.bp, 3) + '</td>'
+      + (hasBpc ? '<td class="hide-sm bpc ' + fSign(m0.bpc) + '">' + fPct(m0.bpc, 3) + '</td>' : '')
       + '<td class="hide-sm ' + fSign(m0.ann) + '">' + fPct(m0.ann, 2) + '</td>'
       + '<td class="hide-sm ' + fSign(m1.bp) + '">' + fPct(m1.bp, 3) + '</td>'
       + '<td class="hide-sm">' + fNum(m0.pcr, 2) + '</td></tr>';

@@ -519,7 +519,7 @@ function buildDay(rows, spotMap, posObj) {
 // Worker 平时靠 last.td !== td 判断「这是昨天那份」，可日档一生成，last.td 就等于
 // 今天了，16:35 之后到次日 9:15 这十七个小时整表没有增减仓——偏偏那是收盘后
 // 最该看完整一天变化的时候。存一份 prev，两种情况就都能接上。
-function mkSnap(date, day, posObj, spotMap, prev, prevDate) {
+function mkSnap(date, day, posObj, spotMap, prev, prevDate, prevOpt, prevOptDate) {
   return {
     ok: true, td: date, ts: Date.now(),
     spot: Object.fromEntries(Object.entries(spotMap).map(([k, v]) => [k, { p: v }])),
@@ -530,9 +530,23 @@ function mkSnap(date, day, posObj, spotMap, prev, prevDate) {
     // 而这个日期正是页面用来判断「昨收基准是不是掉了队」的唯一依据。
     // 任务被 GitHub 排到次日凌晨是常态，日档会慢一天，慢多少得说得出具体日期。
     prevTd: prev ? (prevDate || null) : null,
+    // 期权的 Δ 基准：上一交易日 品种→{月份: 合成基差率}。和 prev 分开存，
+    // 因为两者可能只到一份（老快照没这么大，期权链也常缺一两个品种）。
+    optPrev: prevOpt || null,
+    optPrevTd: prevOpt ? (prevOptDate || null) : null,
     opt: day.opt,
     pos: posObj,
   };
+}
+
+/** 把一天的期权行收成 品种→{月份: 合成基差率}，给下一天当 Δ 基准用 */
+function optBpMap(optRows) {
+  const m = {};
+  for (const x of optRows) {
+    if (x.bp == null) continue;
+    (m[x.p] = m[x.p] || {})[x.m] = x.bp;
+  }
+  return m;
 }
 
 /** 把一天的期货行收成 code→{oi,bp}，给下一天当基准用 */
@@ -614,6 +628,16 @@ async function main() {
      的日期，拿今天的持仓去当它的昨收，算出来的增减仓全是错的，不如留空。 */
   let prevOiBp = null;
   let prevDate = null;
+  /* 期权同理：上一交易日「品种→{月份: 合成基差率}」。收盘后日档一追平今天，
+     Worker 那边就没有「昨天」可减了（拿今天减今天恒等于 0），只能靠这份。
+     不存的话，16:35 之后的 Δ基差率整列会消失。 */
+  let prevOptBp = null;
+  let prevOptDate = null;
+  if (todo.length && hist._last && hist._last.td && Array.isArray(hist._last.opt)
+      && hist._last.td === prevWeekdays(todo[0], 1)[0]) {
+    prevOptBp = optBpMap(hist._last.opt);
+    prevOptDate = hist._last.td;
+  }
   if (todo.length && hist._last && hist._last.td && Array.isArray(hist._last.fut)
       && hist._last.td === prevWeekdays(todo[0], 1)[0]) {
     prevOiBp = oiBpMap(hist._last.fut);
@@ -733,9 +757,10 @@ async function main() {
     hist.d.push(date);
 
     // 最新那份快照单独存：Worker 冷启动时只读 6KB，不必 parse 79KB 历史
-    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap, prevOiBp, prevDate);
+    if (!hist._last || date >= hist._last.td) hist._last = mkSnap(date, day, posObj, spotMap, prevOiBp, prevDate, prevOptBp, prevOptDate);
     // 本日收成下一天的「昨收」。空行不覆盖，免得某天数据不全把基准清空
     if (day.fut.length) { prevOiBp = oiBpMap(day.fut); prevDate = date; }
+    if (day.opt.length) { prevOptBp = optBpMap(day.opt); prevOptDate = date; }
     added++;
     log(`  ${date} 期货 ${day.fut.length} 行 / 期权 ${day.opt.length} 行` + (posObj ? ` / 持仓 ${posObj.rows.length} 行` : ''));
     await sleep(150);

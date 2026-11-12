@@ -3483,6 +3483,46 @@ async function loadFutLast(env) {
   } catch (e) { return null; }
 }
 
+/** 期权 Δ 的基准表：上一交易日的合成基差率。
+ *
+ *  两种取法，取决于日档停在哪天：
+ *   - 日档停在昨天（盘中）→ last.opt 就是那份，直接按「品种|月份」建索引；
+ *   - 日档已追平今天（16:35 之后）→ last.opt 是今天自己，减出来恒等于 0，
+ *     改读 pipeline 存下的 optPrev（前一交易日映射）。
+ *  两样都没有就返回空表，调用方据此撤掉 Δ 那一列——空着好过摆一排 0。
+ *
+ *  byCode 是给 ETF 期权用的「第几档」序列：它的档位按剩余天数排，今天 8 天、
+ *  昨天 9 天，键对不上但合约没变，只能按顺序对。 */
+function optBaseFromLast(last, td) {
+  const byKey = {};
+  const byCode = {};
+  let baseTd = null;
+  if (!last) return { byKey, byCode, baseTd };
+
+  if (last.td !== td && Array.isArray(last.opt)) {
+    baseTd = last.td;
+    for (const o of last.opt) {
+      if (o.bp == null) continue;
+      byKey[o.p + '|' + o.m] = o.bp;
+      (byCode[o.p] = byCode[o.p] || []).push(o.bp);
+    }
+    // day.opt 是排好序写的（同品种按 dte 升序），push 顺序即档位顺序
+  } else if (last.optPrev && typeof last.optPrev === 'object') {
+    baseTd = last.optPrevTd || null;
+    for (const p of Object.keys(last.optPrev)) {
+      const g = last.optPrev[p];
+      if (!g || typeof g !== 'object') continue;
+      byCode[p] = [];
+      for (const m of Object.keys(g)) {
+        if (g[m] == null) continue;
+        byKey[p + '|' + m] = g[m];
+        byCode[p].push(g[m]);
+      }
+    }
+  }
+  return { byKey, byCode, baseTd };
+}
+
 /** 盘中实时：期货 + 现货 + 股指期权，55 秒边缘缓存。
  *  期货全挂时才退到 fut_last.json（收盘日档），并把 stale 标出来——宁可显示
  *  「昨天收盘 + 日期」，也不要让整块卡片消失。 */
@@ -3582,6 +3622,14 @@ async function serveFut(env, ctx) {
   // 不该因为「td 相同」而丢掉——否则收盘后整张多空表永远是空的
   const posPrev = last && last.pos ? last.pos : null;
 
+  /* 期权合成基差的 Δ 基准：同品种同月份、上一交易日的合成基差率。
+     盘中日档停在昨天，last.opt 正好是那份；收盘后（16:35 之后）日档追平今天，
+     last.opt 就变成今天自己，减出来恒等于 0——这时改读 pipeline 存下的 optPrev。
+     两样都没有就不给，宁可这一列撤掉，也不摆一排 0。 */
+  const optB = optBaseFromLast(last, td);
+  const optBase = optB.byKey;
+  const optBaseTd = optB.baseTd;
+
   const futOut = [];
   const futPxByProd = {};
   for (const p of FUT_PRODS) {
@@ -3625,7 +3673,9 @@ async function serveFut(env, ctx) {
     const sp = spotOk ? spot[S] : null;
     if (!sp) { partial.push(p); continue; }
     for (const o of calcOptMonths(rows, sp.p, futPxByProd[fp] || {}, fp)) {
-      optOut.push({ p, u: S, ...o });
+      const base = optBase[p + '|' + o.m];
+      optOut.push({ p, u: S, ...o,
+        bpc: (base != null && o.bp != null) ? +(o.bp - base).toFixed(3) : null });
     }
   }
 
@@ -3657,6 +3707,9 @@ async function serveFut(env, ctx) {
     // 两者之间隔了几个交易日，就等于 Δ基差率跨了几天——任务被排到次日凌晨、
     // 日档慢一天时，这里会自己显示成两天，不用等用户觉得数字不对再回头查。
     prevTd,
+    // 期权那条 Δ 用哪天的收盘当基准。和 prevTd 通常同一天，但日档只到昨天、
+    // 期货那边可能已经用上 prev 里的存值，两个日期不一定同步，各标各的。
+    optBaseTd,
     lastTd: (last && last.td) || null,
     spot: spotOk ? spot : {},
     fut: futOut,
@@ -3948,7 +4001,10 @@ async function serveFutOpt(url, env, ctx) {
     (diag[code] = diag[code] || []).push('清单 ' + String((e && e.message) || e));
     return null;
   })));
-  const [spot, lists] = await Promise.all([spotP, listP]);
+  const lastP = loadFutLast(env).catch(() => null);
+  const [spot, lists, lastSnap] = await Promise.all([spotP, listP, lastP]);
+  // Δ 基准（上一交易日各标的的合成基差率），三处共用同一份取法
+  const optB = optBaseFromLast(lastSnap, futDataDate(lastSnap));
 
   const codes = [];
   for (const l of lists) if (l) for (const x of l) codes.push(x.code);
@@ -3988,11 +4044,22 @@ async function serveFutOpt(url, env, ctx) {
       diag[code] = ['报价 ' + rows.length + '/' + l.length + '，配不出月份'];
       continue;
     }
+    /* Δ基差率：拿「第 i 档」对「上一交易日第 i 档」。档位按剩余天数排，今天 8 天、
+       昨天 9 天，键对不上但合约没变，所以只能按顺序对。档数不一致就不给——
+       某一档今天没配出来时按索引对会整体错位，宁可空着。 */
+    const base = optB.byCode[code];
+    if (base && base.length === months.length) {
+      for (let k = 0; k < months.length; k++) {
+        months[k].bpc = (base[k] != null && months[k].bp != null)
+          ? +(months[k].bp - base[k]).toFixed(3) : null;
+      }
+    }
     if (!td && s.d) td = s.d;
     items.push({ c: code, n: name, S: s.p, chg: s.chg, months, on: 'live' });
   }
 
   const out = { ok: true, g, ts: Date.now(), items, partial, td, src: 'sina' };
+  out.optBaseTd = optB.baseTd;
   out.mode = !items.length ? 'none' : 'live';
   if (DBG || partial.length) out.diag = diag;
   const res = json(out, ttl);

@@ -8462,8 +8462,12 @@ function renderFutOptIdx(){
   /* 中金所那三份 quote 文件盘中偶发整段超时，后端此时会退到日档里上一交易日的
      合成基差（FUT.optDaily>0）。副标题带上那天，别让人拿隔夜的基差率当实时。 */
   var sub = document.getElementById('futOptIdxSub');
-  if (sub) sub.textContent = 'IO/MO/HO'
-    + (FUT && FUT.optDaily ? ' · ' + (FUT.lastTd || FUT.td || '上一交易日') + ' 收盘' : '');
+  if (sub){
+    var bits = ['IO/MO/HO'];
+    if (FUT && FUT.optDaily) bits.push((FUT.lastTd || FUT.td || '上一交易日') + ' 收盘');
+    else if (FUT && FUT.optBaseTd) bits.push('Δ基准 ' + String(FUT.optBaseTd).slice(5));
+    sub.textContent = bits.join(' · ');
+  }
   if (!list.length){
     // 「还没回来」和「回来了但是空的」要分开：后者一直转圈会让人以为页面卡死
     box.innerHTML = FUT
@@ -8474,8 +8478,16 @@ function renderFutOptIdx(){
     return;
   }
 
+  /* Δ基差率：相对上一交易日同一合约的合成基差率，单位百分点。和期货那张表
+     同一套读法——贴水是在扩大还是修复，看这一列比看绝对值直接。
+     老日档没有 optPrev、日档又已追平今天时，这一列会整个撤掉，不挂一排「—」。 */
+  var hasBpc = false;
+  for (var q2 = 0; q2 < list.length; q2++) if (list[q2].bpc != null){ hasBpc = true; break; }
+
+  var ncol = 6 + (hasBpc ? 1 : 0);
   var h = '<table><thead><tr><th class="l">合约</th><th>合成期货</th>'
     + '<th title="合成期货 − 现货">基差率</th>'
+    + (hasBpc ? '<th title="相对上一交易日同一合约的合成基差率变化，单位百分点">Δ基差率</th>' : '')
     + '<th class="hide-sm">年化</th>'
     + '<th title="合成期货 − 同月期货。两个市场各算一遍，差得多就是套利空间">与期货差</th>'
     + '<th class="hide-sm" title="认沽成交量 ÷ 认购成交量">PCR</th>'
@@ -8485,13 +8497,14 @@ function renderFutOptIdx(){
   for (var k = 0; k < order.length; k++){
     var p = order[k], rows = byP[p];
     if (!rows || !rows.length) continue;
-    h += '<tr class="futgrp"><td class="l" colspan="6">' + p + ' · ' + esc(rows[0].u === '000300' ? '沪深300' : rows[0].u === '000016' ? '上证50' : '中证1000') + '</td></tr>';
+    h += '<tr class="futgrp"><td class="l" colspan="' + ncol + '">' + p + ' · ' + esc(rows[0].u === '000300' ? '沪深300' : rows[0].u === '000016' ? '上证50' : '中证1000') + '</td></tr>';
     for (var j = 0; j < rows.length; j++){
       var r = rows[j];
       h += '<tr>'
         + '<td class="l"><span class="nm">' + r.m + '</span><span class="code">剩 ' + r.dte + ' 天</span></td>'
         + '<td>' + fNum(r.syn, 2) + '</td>'
         + '<td class="' + fSign(r.bp) + '">' + fPct(r.bp, 3) + '</td>'
+        + (hasBpc ? '<td class="bpc ' + fSign(r.bpc) + '">' + fPct(r.bpc, 3) + '</td>' : '')
         + '<td class="hide-sm ' + fSign(r.ann) + '">' + fPct(r.ann, 2) + '</td>'
         + '<td class="' + fSign(r.fb) + '">' + (r.fb == null ? '—' : (r.fb > 0 ? '+' : '') + fNum(r.fb, 2)) + '</td>'
         + '<td class="hide-sm">' + fNum(r.pcr, 2) + '</td></tr>';
@@ -8520,8 +8533,20 @@ function renderFutOptEtf(){
       : '没有可用的期权链') + '</div>';
     return;
   }
+  /* Δ基差率对的是「近月那一档」，和表里主看的那列对齐；次月不给——
+     两档各挂一个 Δ 会把这张表撑成 8 列，而近月的 Δ 才是要盯的那个。 */
+  var hasBpc = false;
+  for (var q3 = 0; q3 < all.length; q3++){
+    if (((all[q3].months || [])[0] || {}).bpc != null){ hasBpc = true; break; }
+  }
+  var sub = document.getElementById('futOptEtfSub');
+  if (sub){
+    var bt = (FUTOPT.main && FUTOPT.main.optBaseTd) || (FUTOPT.rest && FUTOPT.rest.optBaseTd) || '';
+    sub.textContent = '沪深 9 个标的' + (hasBpc && bt ? ' · Δ基准 ' + String(bt).slice(5) : '');
+  }
   var h = '<table><thead><tr><th class="l">标的</th><th>现价</th>'
     + '<th title="最近到期那一档的合成期货基差率">近月</th>'
+    + (hasBpc ? '<th class="hide-sm" title="近月合成基差率相对上一交易日的变化，单位百分点">Δ基差率</th>' : '')
     + '<th class="hide-sm">年化</th>'
     + '<th class="hide-sm" title="第二个到期月">次月</th>'
     + '<th class="hide-sm" title="认沽 ÷ 认购 成交量">PCR</th>'
@@ -8533,6 +8558,7 @@ function renderFutOptEtf(){
       + '<td class="l"><span class="nm">' + esc(it.n) + '</span><span class="code">' + it.c + '</span></td>'
       + '<td>' + fNum(it.S, 3) + '</td>'
       + '<td class="' + fSign(m0.bp) + '">' + fPct(m0.bp, 3) + '</td>'
+      + (hasBpc ? '<td class="hide-sm bpc ' + fSign(m0.bpc) + '">' + fPct(m0.bpc, 3) + '</td>' : '')
       + '<td class="hide-sm ' + fSign(m0.ann) + '">' + fPct(m0.ann, 2) + '</td>'
       + '<td class="hide-sm ' + fSign(m1.bp) + '">' + fPct(m1.bp, 3) + '</td>'
       + '<td class="hide-sm">' + fNum(m0.pcr, 2) + '</td></tr>';
