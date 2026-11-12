@@ -1014,12 +1014,16 @@ async function serveOvernight(env, ctx) {
        拖到十几秒，卡着不动比少几只难受得多。超预算就用手上的 + KV 补。 */
     const left = (cap) => Math.max(400, Math.min(cap, 3600 - (Date.now() - t0)));
     let rows = [];
-    try { rows = await emRetry(() => fetchAsia(left(2400))); } catch (e) { rows = []; }
-    if (rows.length < ON_ASIA_SECIDS.length && left(0) > 600) {
+    /* 主源只给 1.8 秒且不重试：同一个接口连打两次的命中率提升有限，却会把预算吃光，
+       让「换厂商的备源」根本轮不上——而备源才是真正能救命的那档。 */
+    try { rows = await fetchAsia(left(1800)); } catch (e) { rows = []; }
+    // 预算判断必须用「纯剩余量」。之前写成 left(0) > 600，而 left 有个 400 的保底，
+    // 结果恒等 400，备源一次都没跑过——主源一挂就直接掉到 KV。
+    if (rows.length < ON_ASIA_SECIDS.length && 3600 - (Date.now() - t0) > 600) {
       const have = new Set(rows.map((x) => x.sid));
       const miss = ON_ASIA_SECIDS.map((x) => x[0]).filter((sid) => !have.has(sid));
       try {
-        const more = await fetchAsiaBackup(miss, left(1400));
+        const more = await fetchAsiaBackup(miss, left(1600));
         if (more.length) rows = mergeAsia(rows, more);
       } catch (e) { /* 备源也挂，往下看 KV */ }
     }
