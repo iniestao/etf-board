@@ -2462,6 +2462,31 @@ async function serveMktProbe(url, env) {
     }
   }
 
+  /* 只打 push2delay、不重试、单次计时：上面那次 500 只要 11.6 秒，
+     得知道是上游本身慢，还是 emUlist 先试 push2 白等了两轮 8 秒超时。 */
+  if (t === 'ulist2') {
+    const out = [];
+    for (const n of [300, 500, 600, 800]) {
+      const codes = Object.keys(MKT_IND_OF).slice(0, n);
+      const q = codes.map((c) => (c[0] === '6' ? '1.' : '0.') + c).join(',');
+      const t0 = Date.now();
+      try {
+        const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get'
+          + '?fltt=2&invt=2&fields=f12,f3,f6,f124&secids=' + q, {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(9000),
+        });
+        const j = await r.json();
+        const d = (j && j.data && j.data.diff) || [];
+        const arr = Array.isArray(d) ? d : Object.values(d);
+        out.push({ n, urlLen: q.length, status: r.status, got: arr.length, ms: Date.now() - t0 });
+      } catch (e) {
+        out.push({ n, urlLen: q.length, error: String((e && e.message) || e).slice(0, 60), ms: Date.now() - t0 });
+      }
+    }
+    return json({ ok: true, t, clock, list: out });
+  }
+
   if (t === 'clist') {
     const fs = url.searchParams.get('fs') || MKT_FS_ALL;
     const pz = +(url.searchParams.get('pz') || 6000);
