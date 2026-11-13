@@ -753,6 +753,39 @@ async function runContracts(base, pass) {
     } else bad('/api/mkt 历史缺少 u/w 家数数组，横轴无法显示个股口径');
   } else bad('/api/mkt 失败：' + r.text.slice(0, 160));
 
+  /* 行业成分股：卡片上点那三个行业名弹出来的名单。
+     查的是「反向表和正向表是不是同一份」——名单里的票加起来如果对不上
+     行业成交额，说明两张表有一张过期了。 */
+  r = await rawRequest(base, '/api/ind?n=' + encodeURIComponent('集成电路'), { cookie });
+  const ind = r.json();
+  if (ind && ind.ok) {
+    const sum = (ind.mem || []).reduce((s, x) => s + x.a, 0);
+    ok('/api/ind ' + ind.ind + ' ' + ind.n + ' 只 · 成交 ' + ind.amt + ' 亿 · 加权 '
+      + ind.pct + '%（' + ind.up + ' 涨 ' + ind.dn + ' 跌）· 首位 ' + ind.mem[0].n
+      + ' ' + ind.mem[0].a + ' 亿');
+    if (ind.mem.length !== ind.n) bad('/api/ind 名单条数与 n 不一致：' + ind.mem.length + '/' + ind.n);
+    if (Math.abs(sum - ind.amt) > Math.max(1, ind.amt * 0.02)) {
+      bad('/api/ind 名单成交额合计 ' + sum.toFixed(1) + ' 亿，与行业 ' + ind.amt + ' 亿对不上');
+    }
+    if (ind.amt > 0 && !(ind.pct != null && Math.abs(ind.pct) < 30)) {
+      bad('/api/ind 加权涨跌幅越界 ' + ind.pct);
+    }
+    if (ind.up + ind.dn + ind.flat + ind.halt !== ind.n) {
+      bad('/api/ind 涨跌家数之和不等于成分股数：'
+        + (ind.up + ind.dn + ind.flat + ind.halt) + '/' + ind.n);
+    }
+    for (let i = 1; i < Math.min(ind.mem.length, 40); i++) {
+      if (ind.mem[i].a > ind.mem[i - 1].a) { bad('/api/ind 名单没按成交额降序'); break; }
+    }
+    const noName = ind.mem.filter((x) => !x.n).length;
+    if (noName > 2) bad('/api/ind 有 ' + noName + ' 只没有简称，界面会显示一串代码');
+  } else bad('/api/ind 失败：' + r.text.slice(0, 160));
+
+  r = await rawRequest(base, '/api/ind?n=' + encodeURIComponent('这个行业不存在'), { cookie });
+  const indBad = r.json();
+  if (indBad && indBad.ok === false) ok('/api/ind 未知行业正确拒绝');
+  else bad('/api/ind 未知行业应返回 ok:false');
+
   /* 聚合逻辑的离线自检：不碰上游，喂一段固定样本进去对数。
      5 条里 1 条停牌（f6=0、f3='-'）、1 条代码不在映射表里。
      有效 4 只、合计 150 亿、3 涨 1 跌 1 平 → b=2/3、p5=8e9/15e9。

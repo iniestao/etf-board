@@ -1,7 +1,7 @@
 import { HTML } from './page.js';
 import { IDX_GROUPS } from './idx_data.js';
 import { MKT_HIST } from './mkt_hist.js';
-import { MKT_IND_NAMES, MKT_IND_OF } from './mkt_ind.js';
+import { MKT_IND_NAMES, MKT_IND_OF, MKT_IND_MEM, MKT_STK_NAME } from './mkt_ind.js';
 
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
@@ -2244,6 +2244,7 @@ async function mktSinaBatch(codes) {
       f12: m[1],
       // 停牌时现价为 0：算成平盘，成交额也是 0，aggLive 会把它排除在 n 之外
       f3: (prev > 0 && last > 0) ? (last - prev) / prev * 100 : 0,
+      f2: last,     // 现价。全 A 聚合用不上，行业成分股那张表要显示，顺手带着
       f6: +f[9] || 0,
       f124: 0,      // 下面按批统一填，见 dsec
     });
@@ -2371,6 +2372,82 @@ function mktLiveOut(live, base) {
     n: live.n, p5: +live.p5.toFixed(2), amt: live.amt, top3: live.top3,
     inds: MKT_IND_NAMES.length, src: 'em', hist,
   };
+}
+
+/* ---------------------------------------------------------------- 行业成分股
+   卡片上「钱压在集成电路、电子元件、通信传输设备上」只是三个名字，回答不了
+   「这 21% 是哪几只票堆出来的」。点开就要看到名单，而且要带当日涨跌和成交额——
+   只给代码和简称，等于让人自己去一只只查。
+
+   一个行业最多 224 只（汽车零部件），中位只有 11 只，一次新浪批量就拉完
+   （实测 700 只 1.4 秒），不必走全 A 那条 8 批的路。所以这里是「按需现拉」，
+   而不是从 /api/mkt 的快照里切：好处是点哪个行业都只要一次子请求，
+   不受「刚才有没有人刷过全 A」的时序影响。
+
+   30 秒桶缓存，与 /api/mkt 同频：两张界面上的数字是同一时刻的。
+*/
+async function serveInd(q, ctx) {
+  const NI = MKT_IND_NAMES.length;
+  // 行业名里带「其他」「Ⅱ」这类字符，前端必须 encodeURIComponent 后再传
+  let i = -1;
+  if (/^[0-9]+$/.test(q)) i = +q;
+  else i = MKT_IND_NAMES.indexOf(q);
+  if (!(i >= 0 && i < NI)) return json({ ok: false, code: 'NO_IND', error: '没有这个行业：' + q });
+
+  const codes = MKT_IND_MEM[i] || [];
+  if (!codes.length) return json({ ok: false, code: 'EMPTY_IND', error: '这个行业没有成分股' });
+
+  const bucket = Math.floor(Date.now() / 30000);
+  const key = new Request('https://etf-board.internal/ind/v1/' + i + '/' + bucket, { method: 'GET' });
+  const cache = await getCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+  }
+
+  // 一次批量就够了，但仍重试一次：新浪偶发空回，重试比让用户再点一次便宜
+  let got = null;
+  for (let k = 0; k < 2 && !got; k++) {
+    got = await mktSinaBatch(codes).catch(() => null);
+    if (got && !got.rows.length) got = null;
+  }
+  if (!got) return json({ ok: false, code: 'UPSTREAM', error: '上游没返回，稍后再点一次' });
+
+  let amt = 0, wsum = 0, up = 0, dn = 0, flat = 0, halt = 0;
+  const mem = [];
+  for (const r of got.rows) {
+    const a = +r.f6 || 0;                 // 元
+    const p = +r.f3;
+    // 停牌 / 当日没成交：不给涨跌幅（0.00% 会被读成「平盘」，那是另一件事）
+    if (!(a > 0) || !isFinite(p)) {
+      halt++;
+      mem.push({ c: r.f12, n: MKT_STK_NAME[r.f12] || '', p: null, px: 0, a: 0 });
+      continue;
+    }
+    amt += a;
+    if (p > 0) up++; else if (p < 0) dn++; else flat++;
+    wsum += p * a;                        // 成交额加权：小票拉不动指数，也不该拉动这个数
+    mem.push({ c: r.f12, n: MKT_STK_NAME[r.f12] || '', p: +p.toFixed(2), px: +r.f2 || 0, a });
+  }
+  // 成交额降序：看「这个行业的钱集中在谁身上」时，第一屏就该是答案
+  mem.sort((x, y) => y.a - x.a);
+  for (const m of mem) m.a = +(m.a / 1e8).toFixed(2);
+
+  const out = {
+    ok: true,
+    ind: MKT_IND_NAMES[i], i, n: codes.length, day: got.day,
+    amt: +(amt / 1e8).toFixed(1),
+    pct: amt > 0 ? +(wsum / amt).toFixed(2) : null,
+    up, dn, flat, halt,
+    mem,
+  };
+  const res = json(out, 30);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    try { ctx.waitUntil(cache.put(key, res.clone())); } catch (e) { /* 写缓存失败不影响响应 */ }
+  }
+  return res;
 }
 
 let _mktLiveAt = 0;
@@ -5764,6 +5841,13 @@ export default {
     if (p === '/api/mkt') {
       // 全 A 个股口径的集中度 / 宽度：盘中现算，收盘后读回算好的日档
       return serveMkt(env, ctx);
+    }
+
+    if (p === '/api/ind') {
+      // 某个三级行业的成分股 + 当日涨跌成交额（卡片上点行业名时用）
+      const q = (url.searchParams.get('n') || url.searchParams.get('i') || '').trim();
+      if (!q) return json({ ok: false, code: 'NO_ARG', error: '缺少 n（行业名）或 i（下标）' });
+      return serveInd(q, ctx);
     }
 
     if (p === '/api/mktprobe') {

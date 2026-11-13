@@ -327,6 +327,13 @@ console.log(`${OUT}  ${(js.length / 1024).toFixed(1)} KB · ${dates.length} 天 
  * 它按「当天有成交的行业」排序，换个脚本算出来的下标就会整体错位。 */
 const indIdx = new Map(l3Names.map((n, i) => [n, i]));
 const indFlat = {};
+/* 反向表：行业下标 → 成分股代码数组。卡片上点「集成电路」要看这 110 只票，
+   与其在 Worker 里每次遍历 5223 条 indFlat 重建一次（免费版 CPU 10ms，
+   每个请求都做纯属浪费），不如在这里按天生成好。 */
+const indMem = l3Names.map(() => []);
+/* 代码 → 简称。行情接口只回代码和数字，界面上光看 688981 认不出是谁；
+   抓 emweb F10 时本来就带回了名字，顺手存下来，省得运行时再查一次。 */
+const stkName = {};
 let noL3 = 0;
 for (const [code, it] of Object.entries(indFile.items)) {
   const p = it && it.em ? it.em.split('-') : null;
@@ -335,13 +342,23 @@ for (const [code, it] of Object.entries(indFile.items)) {
   // 与历史口径一致（历史也是「有行业的算行业，没行业的只进分母」）
   if (k == null) { noL3++; continue; }
   indFlat[code] = k;
+  indMem[k].push(code);
+  if (it && it.n) stkName[code] = it.n;
 }
+// 每个行业内部按代码升序：列表默认按成交额排，但页面还没拿到行情时先按代码显示，
+// 顺序稳定的列表不会在两次刷新之间跳来跳去
+for (const a of indMem) a.sort();
 const indJs = '// 由 pipeline/gen_mkt_hist.mjs 生成，勿手改。\n'
   + '// EM2016 三级行业映射：MKT_IND_OF[6 位代码] = MKT_IND_NAMES 的下标。\n'
   + '// 顺序与 mkt_hist.js 的 MKT_INDS 严格一致（build.mjs 会断言）。\n'
   + `// ${Object.keys(indFlat).length} 只 / ${l3Names.length} 个行业`
   + `（${noL3} 只没有三级归属，只计入全市场分母）。\n`
   + 'export const MKT_IND_NAMES = ' + JSON.stringify(l3Names) + ';\n'
-  + 'export const MKT_IND_OF = ' + JSON.stringify(indFlat) + ';\n';
+  + 'export const MKT_IND_OF = ' + JSON.stringify(indFlat) + ';\n'
+  + '// 反向表：行业下标 → 成分股代码。给「点行业名看有哪些票」用。\n'
+  + 'export const MKT_IND_MEM = ' + JSON.stringify(indMem) + ';\n'
+  + '// 代码 → 简称。行情接口只有代码，界面上认不出是谁。\n'
+  + 'export const MKT_STK_NAME = ' + JSON.stringify(stkName) + ';\n';
 writeFileSync(IND_OUT, indJs);
-console.log(`${IND_OUT}  ${(indJs.length / 1024).toFixed(1)} KB · ${Object.keys(indFlat).length} 只映射`);
+console.log(`${IND_OUT}  ${(indJs.length / 1024).toFixed(1)} KB · ${Object.keys(indFlat).length} 只映射`
+  + ` · 最大行业 ${Math.max(...indMem.map((a) => a.length))} 只`);

@@ -770,6 +770,11 @@ font-size:10.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
 .scqe em{font-style:normal;font-size:10.5px;color:var(--txt3);line-height:1.45}
 .scqdesc{display:flex;flex-direction:column;gap:5px;padding-top:0;min-width:260px;flex:1;max-width:680px}
 .scqd{margin:0;font-size:12.5px;color:var(--txt2);line-height:1.7}
+/* 描述句里的行业名可点。用虚下划线而不是蓝色链接：这句话整体是叙述，
+   突然冒出三个蓝字会把「钱压在什么上」这件事切成三块，读起来更累。 */
+.indlk{font-weight:600;color:var(--txt);cursor:pointer;
+border-bottom:1px dotted var(--txt3);transition:border-color .12s}
+.indlk:hover{border-bottom-color:var(--txt);color:var(--txt)}
 .scqnote{margin:0;font-size:10.5px;color:var(--txt3);line-height:1.75}
 @media(max-width:820px){
   .scqbody{grid-template-columns:1fr;gap:4px}
@@ -854,6 +859,48 @@ letter-spacing:0}
 margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
 .shfoot b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
 .shnote{font-size:11px;color:var(--txt3);line-height:1.6;margin-top:8px}
+/* 行业成分股弹层。点卡片上那三个行业名进来——「TOP3 占 21%」只是个结论，
+   真正要回答的是「这 21% 是哪几只票堆出来的」。
+   z-index 比份额弹层(80)高一层：它是从卡片里点开的，被压在下面会看着像没反应。 */
+#indMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:82;display:none;
+align-items:center;justify-content:center;padding:18px}
+#indMask.on{display:flex}
+#indMask .iobox{max-width:640px;flex:0 1 640px}
+.indhd{display:flex;gap:5px 15px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3);
+padding-bottom:7px;margin-bottom:2px;border-bottom:1px solid var(--line)}
+.indhd b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
+.indwrap{max-height:min(62vh,520px);overflow:auto;margin:0 -4px;padding:0 4px}
+.indtb{width:100%;border-collapse:collapse;font-size:11.5px;font-variant-numeric:tabular-nums}
+/* 表头吸顶：一个行业最多 224 只，滚到一半还得知道右边那列是成交额还是占比 */
+.indtb th{position:sticky;top:0;z-index:1;background:var(--bg2);text-align:right;
+font-weight:500;color:var(--txt3);padding:5px 4px;border-bottom:1px solid var(--line);font-size:10.5px}
+.indtb th:first-child,.indtb td:first-child{text-align:left}
+.indtb td{padding:4px;border-bottom:1px solid var(--line);text-align:right;color:var(--txt2)}
+.indtb tbody tr{cursor:pointer}
+.indtb tbody tr:hover td{background:var(--bg3)}
+.indtb td.nm{color:var(--txt)}
+.indtb .cd{color:var(--txt3);font-size:10px;margin-left:5px;letter-spacing:.2px}
+.indtb td.up{color:var(--up)} .indtb td.down{color:var(--down)}
+/* 占比条：数字已经很密，条只是让「谁占大头」在扫视时先跳出来 */
+.indbar{display:inline-block;width:34px;height:3px;border-radius:2px;overflow:hidden;
+background:var(--line);vertical-align:middle;margin-right:5px}
+/* 每行的百分比都要占同样宽：不固定的话「12.2%」和「5.7%」宽度不同，
+   整列右对齐会让条形左右浮动，扫一眼像是错位。 */
+.indtb .pv{display:inline-block;min-width:38px;text-align:right;font-weight:400}
+.indbar i{display:block;height:100%;background:var(--txt3)}
+.indnote{font-size:10.5px;color:var(--txt3);line-height:1.65;margin:8px 0 0;
+padding-top:7px;border-top:1px solid var(--line)}
+/* 个股卡：从成分股列表点进来，同一层里换内容，不叠第二个弹窗 */
+.stkk{display:flex;gap:5px 18px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3);margin:0 0 4px}
+.stkk b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums;margin-left:4px}
+.stkk b.up{color:var(--up)} .stkk b.down{color:var(--down)}
+#indMin{margin-top:2px}
+#indMin svg{display:block;width:100%;height:auto}
+#indBack{margin:0 0 8px}
+@media(max-width:560px){
+  #indMask th:nth-child(4),#indMask td:nth-child(4){display:none}
+  .indtb th,.indtb td{padding:4px 3px}
+}
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 8px 28px rgba(23,32,54,.16);overflow:hidden}
@@ -1436,6 +1483,14 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <div class="iohd"><b id="shTitle">份额变化</b><span class="n" id="shSub" style="font-size:11.5px;color:var(--txt3)"></span>
       <button class="hx" id="shClose" title="关闭 (Esc)">×</button></div>
     <div class="iobody" id="shBody"><div class="iotip">读取中…</div></div>
+  </div>
+</div>
+
+<div id="indMask">
+  <div class="iobox">
+    <div class="iohd"><b id="indTitle">行业成分股</b><span class="n" id="indSub" style="font-size:11.5px;color:var(--txt3)"></span>
+      <button class="hx" id="indClose" title="关闭 (Esc)">×</button></div>
+    <div class="iobody" id="indBody"><div class="iotip">读取中…</div></div>
   </div>
 </div>
 
@@ -2309,7 +2364,16 @@ function secQuadCard(){
   // 行业口径抓行业抱团，这个抓个股抱团——单票吃下大份额时行业口径看不见它。
   var p5 = (now && now.p5 != null) ? now.p5 : (H.p5 ? H.p5[last] / 10 : null);
   var p53 = (p5 != null && H.p5) ? mktPct(H.p5, p5) : null;
-  var names = top3.length ? top3.join('、') : '前三大行业';
+  /* 行业名做成可点的：21.2% 只是一个结论，真正想知道的是「这 21% 是哪几只票
+     堆出来的」。点开就是那个三级行业的成分股，带当日涨跌和成交额——这是
+     「钱压在什么上」能落到具体标的上的最短路径。
+     用 <b> 而不是 <a>：这句是叙述，蓝色下划线会把句子切成三块。 */
+  var names = top3.length
+    ? top3.map(function(n){
+        return '<b class="indlk" data-n="' + esc(n) + '" role="button" tabindex="0">'
+          + esc(n) + '</b>';
+      }).join('、')
+    : '前三大行业';
   var upTxt = upN + '/' + (upN + dnN);
   // 描述里用「767 涨 4793 跌」而不是「767/5560 只在涨」——后者要读两遍才懂，
   // 而且分母到底是「全部股票」还是「涨+跌」在句子里看不清。
@@ -6512,6 +6576,7 @@ document.addEventListener('keydown', function(e){
   if (e.key !== 'Escape') return;
   if (document.getElementById('ioMask').classList.contains('on')) { ioClose(); return; }
   if (document.getElementById('trigMask').classList.contains('on')) { trigClose(); return; }
+  if (document.getElementById('indMask').classList.contains('on')) { indClose(); return; }
   if (document.getElementById('shMask').classList.contains('on')) { document.getElementById('shMask').classList.remove('on'); return; }
   if (document.getElementById('ovMask').classList.contains('on')) { ovClose(); return; }
   if (document.getElementById('rsMask').classList.contains('on')) { closeRs(); return; }
@@ -7574,14 +7639,156 @@ function ovKZoom(dir){
 }
 
 function ovClose(){ document.getElementById('ovMask').classList.remove('on'); }
+
+/* ---------- 行业成分股 ----------
+   卡片上「钱压在集成电路、电子元件、通信传输设备上」是三个名字，回答不了
+   「具体是哪几只票」。点进去看到名单 + 当日涨跌 + 成交额，才算落到能动手的层面。
+
+   数据按行业现拉（/api/ind 一次新浪批量，最多 224 只），不是从 /api/mkt 的
+   全 A 快照里切——后者要等「有人刚刷过全 A」，点哪个行业还得看时序。
+   30 秒桶缓存，和卡片上的集中度同频。 */
+var IND = null;          // 当前打开的那个行业（服务端原样返回）
+
+function indOpen(name){
+  var m = document.getElementById('indMask');
+  if (!m) return;
+  IND = null;
+  document.getElementById('indTitle').textContent = name;
+  document.getElementById('indSub').textContent = '读取中…';
+  document.getElementById('indBody').innerHTML = '<div class="iotip">读取中…</div>';
+  m.classList.add('on');
+  fetch('/api/ind?n=' + encodeURIComponent(name))
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j || !j.ok) throw new Error((j && j.error) || '读取失败');
+      IND = j;
+      indRender();
+    })
+    .catch(function(e){
+      document.getElementById('indSub').textContent = '';
+      document.getElementById('indBody').innerHTML =
+        '<div class="iotip">' + esc(String(e.message || e)) + '</div>';
+    });
+}
+
+function indClose(){
+  var m = document.getElementById('indMask');
+  if (m) m.classList.remove('on');
+  IND = null;
+}
+
+function indRender(){
+  if (!IND) return;
+  var j = IND, tot = j.amt > 0 ? j.amt : 1;
+  document.getElementById('indTitle').textContent = j.ind;
+  document.getElementById('indSub').textContent = j.n + ' 只 · ' + j.day;
+  var h = '<div class="indhd">'
+    + '<span>行业成交 <b>' + j.amt.toFixed(0) + ' 亿</b></span>'
+    + '<span>加权 <b class="' + cc(j.pct) + '">' + fpc(j.pct) + '</b></span>'
+    + '<span><b class="up">' + j.up + '</b> 涨 <b class="down">' + j.dn + '</b> 跌</span>'
+    + (j.halt ? '<span>' + j.halt + ' 只停牌/无成交</span>' : '')
+    + '</div><div class="indwrap"><table class="indtb"><thead><tr>'
+    + '<th>简称</th><th>涨跌幅</th><th>成交额（亿）</th><th>占行业</th>'
+    + '</tr></thead><tbody>';
+  for (var i = 0; i < j.mem.length; i++){
+    var x = j.mem[i];
+    var sh = x.a > 0 ? x.a / tot * 100 : 0;
+    h += '<tr data-stk="' + x.c + '">'
+      + '<td class="nm">' + esc(x.n || x.c) + '<span class="cd">' + x.c + '</span></td>'
+      + '<td class="' + (x.p == null ? '' : cc(x.p)) + '">'
+      + (x.p == null ? '—' : fpc(x.p)) + '</td>'
+      + '<td>' + (x.a > 0 ? x.a.toFixed(2) : '—') + '</td>'
+      + '<td>' + (sh > 0
+        ? '<span class="indbar"><i style="width:' + Math.max(2, Math.min(100, sh)).toFixed(0)
+          + '%"></i></span><b class="pv">' + sh.toFixed(1) + '%</b>'
+        : '—') + '</td>'
+      + '</tr>';
+  }
+  h += '</tbody></table></div>'
+    + '<p class="indnote">按成交额降序。行业归属取 EM2016 三级（东财 F10，每周刷新），'
+    + '当周新上市的几只不在名单里；北交所不在本表口径内。点任意一行看这只票的分时。</p>';
+  var body = document.getElementById('indBody');
+  body.innerHTML = h;
+  body.scrollTop = 0;
+}
+
+/* 个股卡：同一层里换内容，不叠第二个弹窗。返回按钮回到列表——
+   看行业时经常要连着点两三只，来回都关弹窗再重进太笨。 */
+function stkOpen(code){
+  if (!IND) return;
+  var x = null;
+  for (var i = 0; i < IND.mem.length; i++) if (IND.mem[i].c === code){ x = IND.mem[i]; break; }
+  if (!x) return;
+  var body = document.getElementById('indBody');
+  document.getElementById('indTitle').textContent = x.n || code;
+  document.getElementById('indSub').textContent = code + ' · ' + IND.ind;
+  body.innerHTML = '<button class="ovretry" id="indBack">← 返回 ' + esc(IND.ind) + '</button>'
+    + '<div class="stkk">'
+    + '<span>现价<b>' + (x.px > 0 ? x.px.toFixed(2) : '—') + '</b></span>'
+    + '<span>涨跌<b class="' + (x.p == null ? '' : cc(x.p)) + '">'
+    + (x.p == null ? '—' : fpc(x.p)) + '</b></span>'
+    + '<span>成交<b>' + (x.a > 0 ? x.a.toFixed(2) + ' 亿' : '—') + '</b></span>'
+    + '<span>占行业<b>' + (x.a > 0 ? (x.a / (IND.amt || 1) * 100).toFixed(1) + '%' : '—')
+    + '</b></span></div>'
+    + '<div id="indMin"><div class="iotip">读取中…</div></div>';
+  body.scrollTop = 0;
+  document.getElementById('indBack').onclick = indRender;
+
+  fetch('/api/min?code=' + code).then(function(r){ return r.json(); })
+    .then(function(j){
+      var box = document.getElementById('indMin');
+      if (!box) return;
+      if (!j || !j.ok || !j.pts || !j.pts.length) throw new Error((j && j.error) || '没有分时');
+      /* 昨收从「现价 ÷ (1 + 涨跌幅)」反推。两数同源，反推出来的基准线和列表里
+         那个涨跌幅永远一致；拿分时首点（开盘价）当基准的话，图上「0%」和卡片上
+         的 +1.2% 对不上，反而更让人怀疑哪个错了。 */
+      var pre = (x.px > 0 && x.p != null) ? x.px / (1 + x.p / 100) : 0;
+      box.innerHTML = ovChartSvg(j.pts, pre, 560);
+    })
+    .catch(function(e){
+      var box = document.getElementById('indMin');
+      if (box) box.innerHTML = '<div class="iotip">分时读取失败：' + esc(String(e.message || e)) + '</div>';
+    });
+}
+
+(function(){
+  var m = document.getElementById('indMask');
+  var c = document.getElementById('indClose');
+  if (c) c.onclick = indClose;
+  if (m) m.onclick = function(e){ if (e.target === m) indClose(); };
+  var b = document.getElementById('indBody');
+  if (b) b.addEventListener('click', function(e){
+    if (!e.target || !e.target.closest) return;
+    var tr = e.target.closest('tr[data-stk]');
+    if (!tr) return;
+    /* 必须截住冒泡：页面里另有一层委托按 [data-c] 找元素并打开「历史详情」
+       弹层，不拦的话点一行会同时弹出两层——底下那层还会盖住背景板，
+       看着像页面自己发疯了。 */
+    e.stopPropagation();
+    stkOpen(tr.getAttribute('data-stk'));
+  });
+  /* 卡片每次重绘都会换一批 .indlk 节点，绑定要放在 document 上。
+     绑在卡片上就得每次渲染后重绑，忘了就变成「点了没反应」。 */
+  document.addEventListener('click', function(e){
+    if (!e.target || !e.target.closest) return;
+    var t = e.target.closest('.indlk');
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    indOpen(t.getAttribute('data-n'));
+  });
+})();
 document.getElementById('ovClose').onclick = ovClose;
 document.getElementById('ovMask').onclick = function(e){ if (e.target === this) ovClose(); };
 
-function ovChartSvg(pts, pre){
+function ovChartSvg(pts, pre, cap){
   /* viewBox 宽度跟着窗口走。svg 是 width:100% 缩放的，固定 680 在手机上
      按 0.48 缩，10px 的字到屏上只剩 5px，纵轴加了也读不出来。让「画布宽
-     ≈ 容器宽」，屏幕上是 1:1，写多大就是多大。 */
-  var vw = Math.max(320, Math.min(720, (window.innerWidth || 900) - 76));
+     ≈ 容器宽」，屏幕上是 1:1，写多大就是多大。
+     cap 是给窄容器用的上限：同一个函数被隔夜弹窗(760px)和个股卡(640px)共用，
+     不传就按窗口算——在个股卡里会算出 720，塞进 600 的容器后被等比缩到 0.83，
+     右轴那串价格刚好压到边框上。 */
+  var vw = Math.max(320, Math.min(cap || 720, (window.innerWidth || 900) - 76));
   var W = vw, H = vw < 480 ? 200 : 236;
   var ml = vw < 480 ? 50 : 56, mr = vw < 480 ? 56 : 62, mt = 12, mb = 20;
   var plotW = W - ml - mr, plotH = H - mt - mb;

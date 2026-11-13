@@ -9,7 +9,7 @@ import { ALPHA_META } from './src/alpha_meta.js';
 import { LAB } from './src/lab_data.js';
 import { SEC_HIST } from './src/sec_hist.js';
 import { MKT_HIST, MKT_INDS } from './src/mkt_hist.js';
-import { MKT_IND_NAMES, MKT_IND_OF } from './src/mkt_ind.js';
+import { MKT_IND_NAMES, MKT_IND_OF, MKT_IND_MEM, MKT_STK_NAME } from './src/mkt_ind.js';
 
 /* 两份文件各自生成，唯一会悄悄错位的地方就是行业名的顺序：mkt_hist 里存的是
    每天 TOP3 的**下标**，mkt_ind 里存的是「代码 → 下标」。顺序一错，盘中算出来的
@@ -18,6 +18,31 @@ if (JSON.stringify(MKT_IND_NAMES) !== JSON.stringify(MKT_INDS)) {
   console.error('mkt_ind.js 的行业名顺序与 mkt_hist.js 不一致，'
     + '先跑 node pipeline/gen_mkt_hist.mjs 重新生成这一对');
   process.exit(1);
+}
+
+/* 反向表（行业 → 成分股）与正向表（代码 → 行业）必须互为逆映射。
+   点行业名弹出的名单如果和集中度用的分组不是同一份，就会出现
+   「这个行业成交 962 亿，但列表加起来只有 800 亿」这种谁也说不清的差。 */
+if (MKT_IND_MEM.length !== MKT_IND_NAMES.length) {
+  console.error('MKT_IND_MEM 的组数(' + MKT_IND_MEM.length + ')与行业数('
+    + MKT_IND_NAMES.length + ')不一致');
+  process.exit(1);
+}
+{
+  let bad = 0, tot = 0;
+  for (let k = 0; k < MKT_IND_MEM.length; k++) {
+    for (const c of MKT_IND_MEM[k]) { tot++; if (MKT_IND_OF[c] !== k) bad++; }
+  }
+  if (bad || tot !== Object.keys(MKT_IND_OF).length) {
+    console.error(`反向表与正向表不符：${tot} 条里 ${bad} 条下标错位；`
+      + `正向表 ${Object.keys(MKT_IND_OF).length} 条`);
+    process.exit(1);
+  }
+  if (Object.keys(MKT_STK_NAME).length < 4000) {
+    console.error('MKT_STK_NAME 只有 ' + Object.keys(MKT_STK_NAME).length
+      + ' 条，行业弹层会大面积显示代码而不是名字');
+    process.exit(1);
+  }
 }
 
 const page = readFileSync('src/page.js', 'utf8');
