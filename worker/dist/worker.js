@@ -2439,6 +2439,28 @@ async function serveMktProbe(url, env) {
     return json({ ok: true, t, clock, list: out });
   }
 
+  /* clist 的 pz 被硬卡在 100（matrix 实测 pz=6000 也只回 100，而且直接 502）。
+     5564 只按 100 翻页要 56 个子请求，免费版 50 就爆了。ulist 一次能带一批
+     secid，代码表本来就在 MKT_IND_OF 里——看一批能塞多少只。 */
+  if (t === 'ulist') {
+    const n = +(url.searchParams.get('n') || 500);
+    const codes = Object.keys(MKT_IND_OF).slice(0, n);
+    const secids = codes.map((c) => (c[0] === '6' ? '1.' : '0.') + c);
+    const t0 = Date.now();
+    try {
+      const rows = await emUlist(secids, 'f12,f3,f6,f124', 9000);
+      const t1 = Date.now();
+      const agg = aggLive(rows);
+      return json({ ok: true, t, n, got: rows.length, ms: t1 - t0,
+        urlLen: secids.join(',').length, dayMatch: !!(agg && agg.day === clock.day),
+        agg: agg && { day: agg.day, c: +agg.c.toFixed(2), b: +agg.b.toFixed(2),
+          n: agg.n, amt: agg.amt, top3: agg.top3 } });
+    } catch (e) {
+      return json({ ok: false, t, n, error: String((e && e.message) || e).slice(0, 120),
+        ms: Date.now() - t0 });
+    }
+  }
+
   if (t === 'clist') {
     const fs = url.searchParams.get('fs') || MKT_FS_ALL;
     const pz = +(url.searchParams.get('pz') || 6000);
