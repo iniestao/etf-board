@@ -2172,7 +2172,8 @@ function mktPack(h, src) {
 async function serveMktStatic(env, ctx, note) {
   const cache = await getCache();
   const key = new Request('https://etf-board.internal/mkt/static/v3', { method: 'GET' });
-  if (cache) {
+  // 带 note 的是诊断请求：不吃缓存，否则永远看不到这次失败的原因
+  if (!note && cache) {
     try {
       const hit = await cache.match(key);
       if (hit) return hit;
@@ -2516,6 +2517,32 @@ async function serveMktProbe(url, env) {
       }
     }
     return json({ ok: true, t, clock, list: out });
+  }
+
+  /* 把 serveMkt 的前半段拆开逐步计时：线上 /api/mkt 一直落 close，
+     而 raw 探针同样的 fetchAAll 是通的，差别只在前面多读了一次 mktBase。 */
+  if (t === 'live') {
+    const out = {};
+    const t0 = Date.now();
+    const base = await mktBase(env);
+    out.baseMs = Date.now() - t0;
+    out.baseDay = base && base.d.length ? base.d[base.d.length - 1] : '';
+    const t1 = Date.now();
+    try {
+      const got = await fetchAAll();
+      out.fetchMs = Date.now() - t1;
+      out.rows = got.rows.length;
+      const agg = aggLive(got.rows);
+      out.agg = agg && { day: agg.day, c: +agg.c.toFixed(2), b: +agg.b.toFixed(2),
+        n: agg.n, amt: agg.amt };
+      out.dayMatch = !!(agg && agg.day === clock.day);
+      out.live = !!(agg && agg.day === clock.day && agg.n >= 1500);
+    } catch (e) {
+      out.fetchMs = Date.now() - t1;
+      out.error = String((e && e.message) || e);
+      out.tried = e.tried || null;
+    }
+    return json({ ok: true, t, clock, ...out });
   }
 
   if (t === 'clist') {
