@@ -2207,28 +2207,54 @@ async function mktClist(host, fs, pz) {
   return { rows: Array.isArray(d.diff) ? d.diff : Object.values(d.diff), total: d.total || 0 };
 }
 
-/** 拿全 A 的当日快照。先按「一次拿全」试，条数不够说明 pz 被限流，改按板块分四次。
- *  任一段失败就整份丢弃——半份列表会让集中度凭空偏低，比拿不到更糟。 */
+/* 一批 500 只。实测（线上探针 ?t=ulist2）：500 只 370ms、600 只 1.3s、
+   800 只直接把 URL 顶到 7.2KB 被上游回 502，所以 500 是稳的上界。 */
+const MKT_BATCH = 500;
+const MKT_CONC = 4;   // 4 并发：东财对同一出口的短时连打会整批断连，别贪多
+
+async function mktUlistBatch(codes) {
+  const q = codes.map((c) => (c[0] === '6' ? '1.' : '0.') + c).join(',');
+  const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get'
+    + '?fltt=2&invt=2&fields=f12,f3,f6,f124&secids=' + q, {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  const d = (j && j.data && j.data.diff) || [];
+  return Array.isArray(d) ? d : Object.values(d);
+}
+
+/** 拿全 A 的当日快照。
+ *
+ * 为什么不是 clist：它的 pz 被硬卡在 100（要 6000 只也只回 100 条，而且直接 502），
+ * 5564 只按 100 翻页要 56 个子请求，免费版 50 就爆了。
+ * ulist 一次能带一批 secid，而代码表本来就在 MKT_IND_OF 里——5223 只分 11 批。
+ *
+ * 已知偏差：表是每周刷新的，当期新上市的几只不在里面，不进分母（占比影响 <0.1pt）。
+ * 北交所本来就不在表里，历史回算也剔了它，口径一致。
+ *
+ * 任一批失败就整份丢弃——半份列表会让集中度凭空偏低，比拿不到更糟。 */
 async function fetchAAll() {
-  const tried = [];
-  for (const host of ['push2delay', 'push2']) {
-    try {
-      const a = await mktClist(host, MKT_FS_ALL, 6000);
-      if (a.rows.length >= 4200) return { rows: a.rows, tried: tried.concat(host + ':一次 ' + a.rows.length) };
-      tried.push(host + ':只回 ' + a.rows.length + '/' + (a.total || '?'));
-      const parts = await Promise.all(MKT_FS.map((fs) => mktClist(host, fs, 3000).catch(() => null)));
-      if (parts.every((p) => p && p.rows.length >= 300)) {
-        const rows = [].concat(...parts.map((p) => p.rows));
-        return { rows, tried: tried.concat(host + ':分块 ' + rows.length) };
-      }
-      tried.push(host + ':分块不全');
-    } catch (e) {
-      tried.push(host + ':' + String((e && e.message) || e).slice(0, 40));
+  const codes = Object.keys(MKT_IND_OF);
+  const batches = [];
+  for (let i = 0; i < codes.length; i += MKT_BATCH) batches.push(codes.slice(i, i + MKT_BATCH));
+
+  const rows = [];
+  const t0 = Date.now();
+  for (let i = 0; i < batches.length; i += MKT_CONC) {
+    const group = batches.slice(i, i + MKT_CONC);
+    const part = await Promise.all(group.map((b) =>
+      mktUlistBatch(b).catch(() => mktUlistBatch(b).catch(() => null))));
+    const bad = part.findIndex((x) => !x || !x.length);
+    if (bad >= 0) {
+      const err = new Error('批量行情缺第 ' + (i + bad + 1) + ' 组（' + rows.length + ' 只已取）');
+      err.tried = ['ulist ' + batches.length + ' 批'];
+      throw err;
     }
+    for (const x of part) rows.push(...x);
   }
-  const err = new Error(tried.join(' / '));
-  err.tried = tried;
-  throw err;
+  return { rows, tried: ['ulist ' + batches.length + ' 批 / ' + rows.length + ' 只 / ' + (Date.now() - t0) + 'ms'] };
 }
 
 /** 纯聚合：一次遍历出 c / b / n / amt，再排一次出 p5。
@@ -2519,24 +2545,20 @@ async function serveMktProbe(url, env) {
     return json({ ok: true, t, clock, fixture: fixture.length, agg });
   }
 
-  const list = [];
-  for (const host of ['push2delay', 'push2']) {
-    const t0 = Date.now();
-    try {
-      const a = await mktClist(host, MKT_FS_ALL, 6000);
-      const t1 = Date.now();
-      const agg = aggLive(a.rows);
-      list.push({
-        host, pz: 6000, rows: a.rows.length, total: a.total,
-        fetchMs: t1 - t0, aggMs: Date.now() - t1,
-        dayMatch: !!(agg && agg.day === clock.day), agg,
-        sample: a.rows[0] || null,
-      });
-    } catch (e) {
-      list.push({ host, pz: 6000, error: String((e && e.message) || e).slice(0, 120), ms: Date.now() - t0 });
-    }
+  const t0 = Date.now();
+  try {
+    const got = await fetchAAll();
+    const t1 = Date.now();
+    const agg = aggLive(got.rows);
+    return json({ ok: true, t, clock, ver: MKT_CVER, rows: got.rows.length, tried: got.tried,
+      fetchMs: t1 - t0, aggMs: Date.now() - t1,
+      dayMatch: !!(agg && agg.day === clock.day),
+      agg: agg && { day: agg.day, c: +agg.c.toFixed(2), b: +agg.b.toFixed(2),
+        n: agg.n, amt: agg.amt, top3: agg.top3 } });
+  } catch (e) {
+    return json({ ok: false, t, clock, ver: MKT_CVER, error: String((e && e.message) || e),
+      tried: e.tried || null, ms: Date.now() - t0 });
   }
-  return json({ ok: true, t, clock, ver: MKT_CVER, hosts: list });
 }
 
 async function serveEvents(env, ctx) {
