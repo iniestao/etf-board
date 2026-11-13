@@ -2248,19 +2248,24 @@ async function fetchAAll() {
 
   const rows = [];
   const t0 = Date.now();
-  for (let i = 0; i < batches.length; i += MKT_CONC) {
-    const group = batches.slice(i, i + MKT_CONC);
-    const part = [];
-    for (const b of group) {
-      part.push(await mktUlistBatch(b).catch(() => mktUlistBatch(b).catch(() => null)));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < batches.length; i++) {
+    /* 每批之间留 220ms 空隙、失败最多试 3 次。连打 11 次东财会挑一批回 502
+       （实测 4 并发直接整批断、串行不间隔也会在第 2 组翻车），限的是频率不是容量。 */
+    let got = null;
+    for (let k = 0; k < 3 && !got; k++) {
+      if (k) await wait(500);
+      got = await mktUlistBatch(batches[i]).catch(() => null);
+      if (got && !got.length) got = null;
     }
-    const bad = part.findIndex((x) => !x || !x.length);
-    if (bad >= 0) {
-      const err = new Error('批量行情缺第 ' + (i + bad + 1) + ' 组（' + rows.length + ' 只已取）');
+    if (!got) {
+      const err = new Error('批量行情第 ' + (i + 1) + '/' + batches.length + ' 组三次都失败'
+        + '（已取 ' + rows.length + ' 只）');
       err.tried = ['ulist ' + batches.length + ' 批'];
       throw err;
     }
-    for (const x of part) rows.push(...x);
+    for (const x of got) rows.push(x);
+    if (i < batches.length - 1) await wait(220);
   }
   return { rows, tried: ['ulist ' + batches.length + ' 批 / ' + rows.length + ' 只 / ' + (Date.now() - t0) + 'ms'] };
 }
