@@ -2551,6 +2551,42 @@ async function serveMktProbe(url, env) {
     return json({ ok: true, t, clock, ...out });
   }
 
+  /* 东财 ulist 连打会被限流（第 1 组三次全 502）。新浪 hq 批量是老接口，
+     一次能带七八百只、返回纯文本，全网行情软件都在用，限流宽得多。
+     只需 昨收/现价/成交额/日期 四个位置，中文名乱码无所谓（GBK 双字节
+     不会落在 0x2C 逗号和 0x22 引号上，分隔符安全）。 */
+  if (t === 'sina') {
+    const n = +(url.searchParams.get('n') || 700);
+    const codes = Object.keys(MKT_IND_OF).slice(0, n);
+    const q = codes.map((c) => (c[0] === '6' ? 'sh' : 'sz') + c).join(',');
+    const t0 = Date.now();
+    try {
+      const r = await fetch('https://hq.sinajs.cn/list=' + q, {
+        headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn' },
+        signal: AbortSignal.timeout(8000),
+      });
+      const buf = await r.arrayBuffer();
+      const t1 = Date.now();
+      const txt = new TextDecoder('utf-8').decode(buf);
+      let cnt = 0, amt = 0, first = '';
+      const re = /hq_str_(?:sh|sz)(\d{6})="([^"]*)"/g;
+      let m;
+      while ((m = re.exec(txt))) {
+        const f = m[2].split(',');
+        if (f.length < 32) continue;
+        if (!first && /^\d{4}-\d{2}-\d{2}$/.test(f[30])) first = f[30];
+        cnt++;
+        amt += +f[9] || 0;
+      }
+      return json({ ok: true, t, n, urlLen: ('https://hq.sinajs.cn/list=' + q).length,
+        status: r.status, bytes: buf.byteLength, lines: cnt, day: first,
+        amt: Math.round(amt / 1e8), fetchMs: t1 - t0, parseMs: Date.now() - t1 });
+    } catch (e) {
+      return json({ ok: false, t, n, error: String((e && e.message) || e).slice(0, 100),
+        ms: Date.now() - t0 });
+    }
+  }
+
   if (t === 'clist') {
     const fs = url.searchParams.get('fs') || MKT_FS_ALL;
     const pz = +(url.searchParams.get('pz') || 6000);
