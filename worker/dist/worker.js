@@ -2097,6 +2097,9 @@ async function serveMkt(env, ctx) {
    */
   const cache = await getCache();
   const key = new Request('https://etf-board.internal/mkt/v2', { method: 'GET' });
+  // 集中度口径版本。管线和这里必须同时改，改了这里等于强制所有读者重取
+  // （缓存键 v2 只在响应结构变时才动）。
+  const MKT_CVER = 'em2016-l3';
   if (cache) {
     try {
       const hit = await cache.match(key);
@@ -2130,7 +2133,13 @@ async function serveMkt(env, ctx) {
       const a = await readAsset(env, 'mkt_hist.json');
       if (a) {
         const h = JSON.parse(await a.text());
-        if (h && Array.isArray(h.d) && h.d.length >= 60) out = pack(h, 'file');
+        /* 只认自家口径。data 分支上那份是上一次发布留下的，换口径的当天它还是旧的
+           （申万 128 个行业，c 中位 22.8%），而内联这份已经按新口径重算过。
+           不做这个校验，页面就会拿「昨天的旧口径 c」配「今天的新口径散点云」，
+           当天的点直接被甩到点云最顶上。cVer 不匹配就退到内联，等管线跑完自然切回。 */
+        if (h && Array.isArray(h.d) && h.d.length >= 60 && h.cVer === MKT_CVER) {
+          out = pack(h, 'file');
+        }
       }
     }
   } catch (e) { /* 读不到就走内联那份，卡片不能因此空掉 */ }
