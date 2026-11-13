@@ -698,7 +698,8 @@ async function runContracts(base, pass) {
     if (!b.kv) bad('/api/status 显示 KV 未绑定（自选不会持久）');
   } else bad('/api/status 失败：' + r.text.slice(0, 160));
 
-  // 全 A 集中度 × 宽度：宽度必须是逐只个股，不是 128 个行业
+  // 全 A 集中度 × 宽度：宽度必须是逐只个股，不是行业口径；
+  // 集中度按 EM2016 三级行业（244 个）加总，不再是申万二级那 128 个。
   r = await rawRequest(base, '/api/mkt', { cookie });
   const mk = r.json();
   if (mk && mk.ok) {

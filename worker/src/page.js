@@ -28,7 +28,7 @@ const LAB_JS = JSON.stringify(LAB);
 // 而「今天 39%」和「今天 39%、一年 96 分位」是两个完全不同的判断。
 const SEC_HIST_JS = JSON.stringify(SEC_HIST);
 
-// 全 A 行业口径的 250 日集中度 / 宽度（东财 128 个行业），6KB。
+// 全 A 个股口径的 250 日集中度 / 宽度（EM2016 三级行业，244 个），18KB。
 // 四象限用这份，不用 SEC_HIST——后者是 ETF 成交额口径，分母只有 18 个行业格，
 // TOP3 天然占一半以上（58.7%），测的是「ETF 资金分布」不是「市场结构」。
 const MKT_HIST_JS = JSON.stringify(MKT_HIST);
@@ -2021,10 +2021,11 @@ function loadSecBase(){
   }).catch(function(){ return null; });
 }
 
-/* 全 A 当天快照（集中度 / 宽度 / 涨跌行业数），给四象限卡片的「今天」那个点用。
-   60 秒边缘缓存，盘中不必秒级——这个数是「市场今天什么状态」，
-   不是「这一秒发生了什么」，一分钟的滞后不影响判断。
-   失败就保持 null：卡片退回基线最后一天，标日期，不留空白。 */
+/* 最近一个完整交易日的全 A 快照（集中度 / 宽度 / 涨跌家数），给四象限卡片的
+   「今天」那个点用。60 秒边缘缓存。
+   注意它不再是「盘中实时」：集中度要逐只个股按行业加总，Worker 端翻不完 56 页
+   个股列表，所以由管线在收盘后算一次，接口只读结果。盘中看到的是昨晚那根，
+   卡片上的日期标签会如实写成「11-12 收盘」。 */
 var MKT_REQ = false, MKT_RETRY = null;
 
 function loadMktSnap(){
@@ -2132,8 +2133,8 @@ function mktPct(arr, v){
   return n / arr.length * 100;
 }
 
-/* 当天的全 A 快照，来自 /api/mkt。null 的时候卡片退回基线最后一天，
-   并标注日期——宁可显示「截至 11-06」，也不要在页面上留一块空白。 */
+/* 最近完整交易日的全 A 快照，来自 /api/mkt。null 的时候卡片退回内联基线，
+   并标注日期——宁可显示「截至 11-12」，也不要在页面上留一块空白。 */
 var MKT_NOW = null;
 
 /* 散点的点阵（secQuadCard 填充）。250 个点若各做一个 <circle>，DOM 多 500 个节点、
@@ -2168,7 +2169,9 @@ function secQuadCard(){
   // （MKT_INDS 匹配不全时 /api/mkt 会直接抛错，这里再兜一层）。
   var upN = now ? now.stockUp : (H.u ? H.u[last] : 0);
   var dnN = now ? now.stockDn : (H.w ? H.w[last] : 0);
-  var nStk = now ? (now.stockN || (upN + dnN)) : (H.n ? H.n[last] : 0);
+  // n 是「当日有成交的个股数」，stockN 是「涨+跌」（不含平盘）。
+  // 文案写的是「有成交 X 只」，得用前者，否则平盘那几十只被悄悄漏掉。
+  var nStk = now ? (now.n || now.stockN || (upN + dnN)) : (H.n ? H.n[last] : 0);
   var top3 = (now && now.top3 && now.top3.length) ? now.top3 : (H.t3 || []);
   if (!(conc > 0) || !(upN + dnN >= 1000)) return '';
 
@@ -2332,8 +2335,8 @@ function secQuadCard(){
   return '<div class="scq">'
     + '<div class="scqhd"><span>全 A 集中度 × 宽度</span>'
     + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em>'
-    + '<span class="scqtag" title="全 A 个股口径：5563 只 A 股逐只统计涨跌，当日有成交的 '
-    + nStk + ' 只进样本。集中度按东财 128 个行业的个股成交额加总。'
+    + '<span class="scqtag" title="全 A 个股口径：5223 只 A 股逐只统计涨跌，当日有成交的 '
+    + nStk + ' 只进样本。集中度按 EM2016 三级行业（244 个）的个股成交额加总。'
     + '与下方 36 格（ETF 成交额，532 亿）不是同一套数据，差 30 倍是正常的。">'
     + nStk + ' 只 · ' + dayTag + '</span>'
     + '<i class="scqhelp" role="button" tabindex="0" title="四个象限是什么意思"'
@@ -2346,11 +2349,12 @@ function secQuadCard(){
     + '<div class="scqfoot"><div class="scqstats">'
     // 个股块紧挨着集中块：两个都是集中度，行业口径 24% vs 个股口径 43.5%，
     // 放一起才读得出「行业抱团」和「个股抱团」是两件事。放最后会被当成凑数的。
-    + '<div class="scqe" title="成交额最大的 3 个行业（东财 128 个行业口径）合计占全市场'
-    + '成交额的比重——抓「钱压在几个行业里」。高于近一年中位算高集中，虚线就是那条中位线。'
+    + '<div class="scqe" title="成交额最大的 3 个三级行业（EM2016，244 个）合计占全市场'
+    + '成交额的比重——抓「钱压在几个细分赛道里」。高于近一年中位算高集中，虚线就是那条中位线。'
     + '分位数＝今天这个数排在近一年第几：90 分位＝比一年里 90% 的日子都更集中。'
-    + '单看会误判：40% 可以是主线就在这儿，也可以是别的全塌了只剩它在成交，'
-    + '所以要配合右边「宽度」一起读。">'
+    + '单看会误判：25% 可以是主线就在这儿，也可以是别的全塌了只剩它在成交，'
+    + '所以要配合右边「宽度」一起读。2026-11 之前按申万二级 128 个行业算，'
+    + '行业更粗、数值偏高 5pt 左右，两段不要直接比。">'
     + '<span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 行业 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe" title="成交额最大的 5% 个股占全市场成交额的比重——上一行的「集中」'

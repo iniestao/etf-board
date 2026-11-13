@@ -193,6 +193,7 @@ jobs:
           # 内联进去的那份常量，不是运行时拉 json——于是页面永远停在最后一次
           # 手提交的那天（2026-11-11 体检报「散点停在 11-06」，Actions 天天跑着）。
           # 现在两个产物都生成，下面「回写内联快照」那步负责把它们送到 main。
+          node pipeline/gen_ind_map.mjs || echo "::warning::行业映射刷新失败，沿用仓库里那份"
           node pipeline/gen_sec_hist.mjs || echo "::warning::日档回算失败，沿用上一次发布的那份"
           node pipeline/gen_mkt_hist.mjs || echo "::warning::全A结构回算失败，沿用上一次发布的那份"
           python3 - <<'PY'
@@ -438,7 +439,7 @@ jobs:
         run: |
           git config user.name "etf-board-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          FILES="worker/src/mkt_hist.js worker/src/sec_hist.js"
+          FILES="worker/src/mkt_hist.js worker/src/sec_hist.js pipeline/ind_em2016.json"
           if git diff --quiet -- $FILES; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "内联快照无变化（回算失败时会走到这里，属正常降级）"
@@ -446,7 +447,7 @@ jobs:
           fi
           git diff --stat -- $FILES
           echo "--- 其它脏文件（rebase 会因它们失败）---"
-          git status --porcelain | grep -v -E 'src/(mkt_hist|sec_hist)\.js' | head -10 || true
+          git status --porcelain | grep -v -E '(src/(mkt_hist|sec_hist)\.js|pipeline/ind_em2016\.json)' | head -10 || true
           ( cd worker && node build.mjs && node --check dist/worker.js )
           git add $FILES worker/dist/worker.js
           git commit -q -m "chore(data): 内联快照跟随 $(date -u '+%Y-%m-%d') 回算结果"

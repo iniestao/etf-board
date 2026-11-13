@@ -1,5 +1,5 @@
 import { IDX_GROUPS } from './idx_data.js';
-import { MKT_INDS } from './mkt_hist.js';
+import { MKT_HIST } from './mkt_hist.js';
 
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
@@ -363,19 +363,12 @@ async function serveAll(env, ctx) {
    （A股和港股都有「医药」「消费」，只用板块名会互相覆盖）。 */
 
 const SEC_DAILY_KEY = 'sec-daily-v6';
-const MKT_LAST_KEY = 'mkt-last';   // /api/mkt 最近一次成功的结果，上游挂掉时兜底
 const SEC_DAILY_KEEP = 12;
 
-/* KV 免费额度是 1000 次写/天，而上面这份快照原来是「每次算完就写一份」。
-   页面 60 秒一刷、边缘缓存 TTL 也是 60 秒，等于每次都错过缓存、每次都写——
-   单个标签页开着 24 小时就是 1440 次写，一个人就把额度吃光。额度满了之后
-   KV 全线 429：自选存不上、PCF 预热停摆、失败兜底也读不到，页面看着就像挂了。
-   现在按「值变了 + 距上次写满 10 分钟」才落盘。这份快照的唯一用途是上游抽风时
-   退回上一次成功的结果，10 分钟的粒度远远够用（同一天里集中度不会十分钟就变个样）。
-   变量放模块级：同一个 isolate 内共享，isolate 被回收后最多多写一次，无妨。 */
-const MKT_SNAP_GAP = 30 * 60 * 1000;   // 30 分钟一次：一天 48 次，纯粹是兜底，不必更勤
-let mktSnapAt = 0;
-let mktSnapSig = '';
+/* 这里原本还有一份「/api/mkt 每次算完写 KV 快照，上游挂了退回上一次成功的结果」
+   的兜底（MKT_LAST_KEY / MKT_SNAP_GAP / mktSnapAt / mktSnapSig）。
+   现在 /api/mkt 改成读 mkt_hist.json，数据源是一个静态文件而不是会抽风的板块接口，
+   快照就没有存在的意义了——一并删掉，也省下每天几十次 KV 写。 */
 
 /**
  * 每日板块成交额日档。
@@ -848,6 +841,12 @@ async function fetchAsiaBackup(sids, ms) {
   const to = Math.max(500, ms || 8000);
   const out = [];
 
+  /* KOSPI/日经的第三档：CNBC 报价。KOSPI 前面只有东财单只一条路，
+     东财一抽就整只消失（亚太行少一个格子），而 CNBC 的 .KS11 一直活着。
+     这个接口实测 2 秒才回（比前面几档慢一个数量级），所以**在函数开头就发出**，
+     末尾再收——挂在后面串行等的话，前面四只已经好了还要再多等两秒。 */
+  const cnbcP = fetchCnbcAsia(want, 4500).catch(() => []);
+
   const TX = [
     ['sh000001', '1.000001'], ['sh000688', '1.000688'],
     ['sz399006', '0.399006'], ['hkHSTECH', '124.HSTECH'],
@@ -878,7 +877,16 @@ async function fetchAsiaBackup(sids, ms) {
     } catch (e) { /* 腾讯也挂了就走下面两个 */ }
   }
 
-  if (want.has('100.N225')) {
+  /* 开头那笔 CNBC 请求到这里收。日经/KOSPI 优先用 CNBC：分时图也是它给的，
+     报价和图的基准同源，卡片写 -0.70%、图上也是 -0.70%，不会出现「图上写着
+     -0.70%、卡片写着 -0.90%」这种让人怀疑数据坏了的画面。
+     （新浪 int_nikkei 与 CNBC 在这两只上差 0.2 个百分点，价格差 35%——
+     哪个对先不论，同一张卡上不能同时出现两套数。） */
+  for (const x of await cnbcP) {
+    if (!out.some((o) => o.sid === x.sid)) out.push(x);
+  }
+
+  if (want.has('100.N225') && !out.some((x) => x.sid === '100.N225')) {
     try {
       const r = await fetch('https://hq.sinajs.cn/list=int_nikkei', {
         headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
@@ -923,7 +931,39 @@ async function fetchAsiaBackup(sids, ms) {
     }
   }
 
+  /* 开头那笔 CNBC 请求到这里收：前面几档没补上的才用它。
+     逐个 symbol 请求——多 symbol 拼在一个 URL 里返回的是嵌套结构，
+     解析要按两种形状分支，不如多打一次省掉这层判断。 */
+
   return out;
+}
+
+/* CNBC 亚太报价：.N225 / .KS11。last/prev 都带千分位逗号（"44,946.64"），
+   parseFloat 直接吃会得到 44——这一条差点把日经报价写成两位数。 */
+async function fetchCnbcAsia(want, ms) {
+  const LIST = [['.KS11', '100.KS11', '韩国KOSPI'], ['.N225', '100.N225', '日经225']]
+    .filter((x) => want.has(x[1]));
+  const rows = await Promise.all(LIST.map(async ([sym, sid, nm]) => {
+    try {
+      const r = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+        + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+        + '&fund=1&exthrs=1&output=json&events=1', {
+        headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+        signal: AbortSignal.timeout(ms || 4500),
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      const q0 = j && j.FormattedQuoteResult && j.FormattedQuoteResult.FormattedQuote;
+      const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+      const num = (v) => parseFloat(String(v == null ? '' : v).replace(/[,%]/g, ''));
+      const p = num(row && row.last);
+      const prev = num(row && row.previous_day_closing);
+      const chg = num(row && row.change_pct);
+      if (!(p > 0)) return null;
+      return { sid, n: nm, p, chg: isFinite(chg) ? chg : (prev > 0 ? (p / prev - 1) * 100 : NaN) };
+    } catch (e) { return null; }
+  }));
+  return rows.filter(Boolean);
 }
 
 /* 把主源已有的和备源补上的拼一起，按 ON_ASIA_SECIDS 的顺序输出，主源优先。 */
@@ -955,6 +995,24 @@ function mergeAsia(primary, backup) {
     const hit = ON_FUT_SECIDS.find((x) => x[1] === m[1]);
     out[m[1]] = { n: hit ? hit[2] : (f[13] || m[1]), p, chg: (p / base - 1) * 100 };
   }
+  return out;
+}
+
+/* 期货第三档：用外盘期货分钟线的最后一点当现价。
+   `hq.sinajs.cn/list=hf_*` 挂了的时候，`stock2` 这条（同一家的另一套接口）
+   往往还活着——分时的最后一根就是此刻的价，配日线昨收算涨跌幅。
+   四个品种各两次请求（分时 + 日线），只在前两档全空时才走到这里。 */
+async function fetchFutSinaMinQuote() {
+  const out = {};
+  await Promise.all(ON_FUT_SECIDS.map(async ([sid, key, nm]) => {
+    try {
+      const m = await fetchSinaFutMin(sid);
+      if (!m || !m.pts.length || !(m.pre > 0)) return;
+      const p = m.pts[m.pts.length - 1][1];
+      if (!(p > 0)) return;
+      out[key] = { n: nm, p, chg: (p / m.pre - 1) * 100 };
+    } catch (e) { /* 这一只缺就先不显示 */ }
+  }));
   return out;
 }
 
@@ -1003,6 +1061,11 @@ async function serveOvernight(env, ctx) {
 
   const futP = emRetry(fetchFutEm)
     .catch(() => fetchFutSina())
+    /* 第三档：新浪的两个接口是分开挂的。`hq.sinajs.cn/list=hf_*` 对数据中心出口
+       常常直接 403，而同一家的 `stock2.finance.sina.com.cn` 外盘期货接口一直活着
+       ——它给的是分钟线，最后一个点就是现价，配上日线昨收就能算出涨跌幅。
+       多花 8 个子请求，换的是「东财一抽，隔夜卡上四个期货全消失」不再发生。 */
+    .then((r) => (r && Object.keys(r).length ? r : fetchFutSinaMinQuote()))
     .catch(() => ({}));   // 期货整体失败允许：返回空对象，前端隐藏该行
 
   /* 亚太三档：主源 → 备源（换厂商）→ 上次成功的那份（KV）。
@@ -1074,6 +1137,58 @@ async function serveOvernight(env, ctx) {
   }, 55);
 }
 
+/* ------------------------------------------------------------ 十年美债收益率
+   隔夜卡的最后一块拼图：美股为什么涨、成长股为什么杀估值，那个早上最直接的
+   解释变量就是它。两个口径上的讲究：
+     - 数值用收益率本身（4.99%），不是债券价格——价格涨=收益率跌，混着看必错；
+     - 变动用 bp（1bp = 0.01 个百分点）。「从 4.99 涨到 5.02」说「涨 0.6%」
+       在债券里没人这么讲，说「+3bp」才是行话。
+   源：CNBC 的 US10Y（Tradeweb 行情，带前收和变动两个字段，不用自己减）。
+   东财也有这只（100.UST10Y），但 100 号段最近连分时都不给，先只挂验证过的源；
+   300 秒缓存：收益率日内动得慢，没必要跟着 55 秒的隔夜卡一起刷。 */
+async function serveBond() {
+  const cache = await getCache();
+  const key = new Request('https://etf.internal/bond/v1', { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 降级直连 */ }
+  }
+  let out = null;
+  try {
+    const r = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+      + '?symbols=US10Y&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json&events=1', {
+      headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw new Error('美债 HTTP ' + r.status);
+    const j = await r.json();
+    const q0 = j && j.FormattedQuoteResult && j.FormattedQuoteResult.FormattedQuote;
+    const q = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+    const p = parseFloat(String((q && q.last) || '').replace('%', ''));
+    const prev = parseFloat(String((q && q.previous_day_closing) || '').replace('%', ''));
+    const d = parseFloat(q && q.change);
+    if (p > 0.2 && p < 20) {
+      out = {
+        p, prev: isFinite(prev) ? prev : 0,
+        // change 是百分点（+0.003），乘 100 换成 bp，前端只负责加单位
+        bp: isFinite(d) ? d * 100 : (isFinite(prev) ? (p - prev) * 100 : 0),
+        t: String((q && q.last_time) || ''),
+        src: 'cnbc',
+      };
+    }
+  } catch (e) {
+    return json({ ok: false, error: '美债上游取不到：' + String((e && e.message) || e) });
+  }
+  if (!out) return json({ ok: false, error: '美债解析为空' });
+  const res = json({ ok: true, ...out, ts: Date.now() }, 300);
+  if (cache) {
+    try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
+  }
+  return res;
+}
+
 /* 分时代理：隔夜/亚太条目点开画的线。东财 trends2，ndays=1 取最近一个
    完整交易时段——美股指数/期货拿到的是昨晚那场，亚太拿到的是今天（或最近
    半场）。secid 白名单限定全球/港股指数 + A 股指数 + 外盘期货市场号，
@@ -1097,15 +1212,344 @@ function txCodeOf(sid) {
   const m = /^(\d+)\.([A-Za-z0-9.]+)$/.exec(String(sid || ''));
   if (!m) return null;
   const mkt = m[1], code = m[2];
+  /* 100 号段（东财全球指数）在腾讯是另一套代码，一只只对出来的：
+     NDX100=纳指100（28374，和卡片同值）、SPX=标普500、DJIA=道指、
+     NDX=纳斯达克综合。别拿「NDX」去顶「纳斯达克100」——那是综合指，
+     价格差 10%，图上涨跌幅和旁边卡片对不上，这种错最难发现。 */
+  if (mkt === '100') return OV_TX_ALIAS[code] || null;
   if (mkt === '1') return 'sh' + code;
   if (mkt === '0') return 'sz' + code;
   if (mkt === '124') return 'hk' + code;
   if (mkt === '105' || mkt === '106' || mkt === '107') return 'us' + code;
   return null;
 }
+/* 东财全球指数代码 → 腾讯代码。日经、韩国、A50、外盘期货不在表里：
+   腾讯对它们要么 pv_none_match，要么返回空体，写了也是白写。 */
+const OV_TX_ALIAS = { NDX100: 'usNDX', SPX: 'usINX', DJIA: 'usDJI', NDX: 'usIXIC' };
 
-/** 腾讯分时兜底：东财 push2his 整段不可达时用。
+/* ------------------------------------------------------------ 东财域名分流
+   东财把行情拆在几个域上，同一个路径换个域就是另一套服务：
+     push2his   实时历史（A 股、港股、美股、大部分指数）——K 线、分时的正主
+     push2delay 延迟行情（全球指数、外盘期货、外汇、债券收益率）15 分钟延迟
+     push2      实时快照（ulist 那类批量接口）
+   2026-11-12 实测：secid 用错域不会回空 JSON，而是 TLS 握手后被直接断连，
+   Worker 侧只看到 `fetch failed`——和「整个东财挂了」长得一模一样，
+   于是隔夜卡上的纳指/标普/道指/四个期货点开全是「分时上游取不到」，
+   而同一时刻 105.NDX、1.000001、124.HSTECH 都正常出图。
+   前缀就是域的路由依据：100~104 是延迟行情（全球指数 100、黄金 101、
+   原油 102、期货 103、外汇/CFD 104），其余走实时域。两边都留作兜底：
+   延迟版好过空白，但只能排在首选之后。 */
+const EM_DELAY_RE = /^(100|101|102|103|104)\./;
+function emHostOrder(sid) {
+  return EM_DELAY_RE.test(sid)
+    ? ['push2delay', 'push2his', 'push2']
+    : ['push2his', 'push2delay', 'push2'];
+}
+
+/** 按 emHostOrder 逐个域尝试，第一个「有内容」的就返回。
+ *  pick(j) 返回 falsy 表示这个域回了 200 但没数据（空壳），继续试下一个——
+ *  对 100.* 这类 secid，空壳和断连都出现过，不能只按 HTTP 状态判断。
+ *  budget：整条链的总墙钟上限。三个域各等 7 秒最坏 21 秒，点开弹窗等到
+ *  用户关页面都出不来，所以按剩余时间递减，见底就收手报错。 */
+async function emTryHosts(sid, path, pick, budget) {
+  const t0 = Date.now();
+  const tried = [];
+  for (const h of emHostOrder(sid)) {
+    const left = (budget || 9000) - (Date.now() - t0);
+    if (left < 800) { tried.push(h + ':预算耗尽'); break; }
+    try {
+      const r = await fetch('https://' + h + '.eastmoney.com' + path, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(Math.min(left, 7000)),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const v = pick(await r.json());
+      if (v) return { v, host: h, tried };
+      tried.push(h + ':空');
+    } catch (e) {
+      tried.push(h + ':' + String((e && e.message) || e).slice(0, 40));
+    }
+  }
+  const err = new Error(tried.join(' / ') || '东财不可达');
+  err.tried = tried;
+  throw err;
+}
+
+/* 新浪外盘期货分时：（东财对 101/102/103/104 号段不提供 trends2，
+   push2his/push2delay/push2 三个域全是握手后被断连，实测 2026-11-12 多次复现。）
+   新浪这套 symbol 和东财的 secid 是两套命名，一只只对出来的：
+     NQ   纳指期货     GC   COMEX 黄金
+     CL   NYMEX 原油   CHA50CFD  富时 A50（新加坡）
+   返回的 minLine_1d 有两种行长：首条带日期/交易所/开盘（10 字段），
+   之后是 6 字段的 [时间, 价格, 量, 量, 均价, '完整日期时间']。
+   统一只认**最后一个字段的完整日期时间**和**第二个字段的价格**——
+   按位置数下标会在首条和后续两种行长之间错位，画出来就是首点乱飞。 */
+const SINA_FUT = {
+  '103.NQ00Y': 'NQ', '101.GC00Y': 'GC', '102.CL00Y': 'CL', '104.CN00Y': 'CHA50CFD',
+};
+
+async function fetchSinaFutMin(sid) {
+  const sym = SINA_FUT[sid];
+  if (!sym) return null;
+  const r = await fetch('https://stock2.finance.sina.com.cn/futures/api/openapi.php/'
+    + 'GlobalFuturesService.getGlobalFuturesMinLine?symbol=' + sym, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('新浪期货分时 HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.result && j.result.data && j.result.data.minLine_1d;
+  if (!Array.isArray(rows) || !rows.length) throw new Error('新浪期货分时为空');
+
+  const pts = [];
+  const seen = new Set();
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue;
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(String(row[row.length - 1] || ''));
+    const px = +row[1];
+    if (!m || !(px > 0)) continue;
+    const t = m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5];
+    if (seen.has(t)) continue;      // 首条和后续可能给同一个分钟
+    seen.add(t);
+    pts.push([t, px]);
+  }
+  if (pts.length < 2) throw new Error('新浪期货分时解析为空');
+
+  /* 昨收：分时首点是「电子盘开盘价」，不等于昨收（隔夜跳空全在这一点上），
+     拿它当 0 轴画出来，涨跌幅永远从 0 开始，和卡片上的 -0.91% 对不上。
+     日线接口的收盘价才是昨收；只读尾部 800 字节，不为两个数解析 340KB。 */
+  let pre = 0;
+  try {
+    const rd = await fetch('https://stock2.finance.sina.com.cn/futures/api/openapi.php/'
+      + 'GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=' + sym, {
+      headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (rd.ok) {
+      const tail = (await rd.text()).slice(-1200);
+      const all = tail.match(/"date":"[^"]+","open":"[^"]+","high":"[^"]+","low":"[^"]+","close":"[^"]+"/g) || [];
+      // 倒数第二根就是「上一个完整交易日」，最后一根是今天（可能还没收）
+      for (let i = all.length - 1; i >= 0 && !pre; i--) {
+        const mm = /"date":"(\d{4}-\d{2}-\d{2})".*?"close":"([\d.]+)"/.exec(all[i]);
+        if (!mm) continue;
+        const today = pts[0][0].slice(0, 5);
+        if (mm[1].slice(5) === today && i === all.length - 1) continue;
+        if (+mm[2] > 0) pre = +mm[2];
+      }
+    }
+  } catch (e) { /* 拿不到就交给前端退回「较本时段开盘」的口径 */ }
+  return { pre, pts };
+}
+
+/* 分时快照兜底：所有源都挂时，回放这只标的最近一次成功的那份，标明时间。
+   断网五分钟和断网五小时，对读图的人来说是两件事，所以超过 3 天的直接不用。 */
+const OV_SNAP_KV = 'ovmin-snap/v1/';
+const ovSnapDay = {};      // sid → 已写入的交易日，省掉每 35 秒一次的重复写
+
+async function ovSnapPut(env, sid, pre, pts) {
+  if (!env || !env.WATCH || !pts.length) return;
+  const day = String(pts[0][0] || '').slice(0, 5);
+  if (ovSnapDay[sid] === day) return;
+  ovSnapDay[sid] = day;
+  try {
+    await env.WATCH.put(OV_SNAP_KV + sid, JSON.stringify({ pre, pts, ts: Date.now() }));
+  } catch (e) { ovSnapDay[sid] = ''; }
+}
+
+async function ovSnapGet(env, sid) {
+  if (!env || !env.WATCH) return null;
+  try {
+    const raw = await env.WATCH.get(OV_SNAP_KV + sid);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || !Array.isArray(o.pts) || !o.pts.length) return null;
+    if (Date.now() - (o.ts || 0) > 3 * 86400e3) return null;
+    return o;
+  } catch (e) { return null; }
+}
+
+/* 日经 225 / 韩国 KOSPI 的分时：CNBC 的图表接口。
+   这两只是整张隔夜卡上最难的——东财对 100 号段（全球指数）连 trends2 都不给，
+   腾讯 pv_none_match，新浪的全球指数分时接口（GlobalService.getMinLine）
+   已经下线（线上实测返回 Service not found），Yahoo 在这个出口上稳定 429。
+   CNBC 的 ts-api 一次给 1 个交易日窗口的分钟 bar，实测覆盖 .N225 / .KS11，
+   顺带也覆盖 .NDX / .SPX / .DJI / @GC.1 / @CL.1 / US10Y。
+   两个坑：
+     1) tradeTime 是「美东时区表达的绝对时刻」——日经 09:00（东京）标成 19:00，
+        所以必须按美东→北京换算（+13h 冬令时），直接当时钟用会把横轴错 14 小时；
+     2) 1D 窗口是最近 24 小时，日经/韩股这种带午休的市场会带回前一个交易日的尾巴，
+        所以从最后一根往前回溯，遇到大于 3 小时的间隔就停，切出「当前这一场」。 */
+const CNBC_MIN = { '100.N225': '.N225', '100.KS11': '.KS11' };
+
+function cnbcMs(ts) {
+  const s = String(ts || '');
+  if (!/^\d{14}$/.test(s)) return 0;
+  return Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8),
+    +s.slice(8, 10), +s.slice(10, 12), +s.slice(12, 14));
+}
+
+async function fetchCnbcMin(sid) {
+  const sym = CNBC_MIN[sid];
+  if (!sym) return null;
+  const r = await fetch('https://ts-api.cnbc.com/harmony/app/charts/1D.json?symbol='
+    + encodeURIComponent(sym), {
+    headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error('CNBC 分时 HTTP ' + r.status);
+  const j = await r.json();
+  const bars = j && j.barData && j.barData.priceBars;
+  if (!Array.isArray(bars) || bars.length < 10) throw new Error('CNBC 分时为空');
+
+  let i = bars.length - 1;
+  while (i > 0 && cnbcMs(bars[i].tradeTime) - cnbcMs(bars[i - 1].tradeTime) <= 180 * 60000) i--;
+  const pts = [];
+  for (let k = i; k < bars.length; k++) {
+    const s = String(bars[k].tradeTime || '');
+    const px = +bars[k].close;
+    if (!/^\d{14}$/.test(s) || !(px > 0)) continue;
+    pts.push([etClockToBj(s.slice(0, 8), +s.slice(8, 10), +s.slice(10, 12)), px]);
+  }
+  if (pts.length < 10) throw new Error('CNBC 分时解析为空');
+
+  // 昨收：CNBC 报价接口里的 previous_day_closing，和分时同一套数据源
+  let pre = 0;
+  try {
+    const rq = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+      + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+      + '&fund=1&exthrs=1&output=json&events=1', {
+      headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (rq.ok) {
+      const q = await rq.json();
+      const q0 = q && q.FormattedQuoteResult && q.FormattedQuoteResult.FormattedQuote;
+      const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+      const v = parseFloat(String((row && row.previous_day_closing) || '').replace(/,/g, ''));
+      if (v > 0) pre = v;
+    }
+  } catch (e) { /* 拿不到就用本时段首点当基准，前端会标注 */ }
+  return { pre, pts };
+}
+
+/* 北京日期（YYYY-MM-DD）。CNBC 的 tradeTime 一律是「美东时区表达的绝对时刻」，
+   分钟 bar 的日期要按北京算才不会在 23:00 之后串到前一天。 */
+function bjYmd(ts) {
+  const s = String(ts || '');
+  if (!/^\d{14}$/.test(s)) return '';
+  const y = +s.slice(0, 4), mo = +s.slice(4, 6), da = +s.slice(6, 8);
+  const t = new Date(Date.UTC(y, mo - 1, da, +s.slice(8, 10), +s.slice(10, 12))
+    + (usDst(y, mo, da) ? 12 : 13) * 3600e3);
+  return t.toISOString().slice(0, 10);
+}
+
+function bjToday() {
+  return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+}
+
+/** CNBC 日线：日经 225 与韩国 KOSPI 用。
  *
+ *  这两只在腾讯那边没有代码（`pv_none_match`），新浪的外盘日线也不认它们，
+ *  分时补了 CNBC，日线就同源同家地补——两处数字必须一套，否则图上收在
+ *  A、卡片写着 B。
+ *
+ *  range 用 `3M`：名字和实际窗口不一致（实测 485 根、约两年），但 1M 只有
+ *  240 根，而 /api/ovk 最多要 300 根，不够。按根数取尾部，不信 range 名字。
+ *
+ *  tradeTime 在日粒度上是 `YYYYMMDD000000`，日期部分就是本地交易日，不做时区
+ *  换算——换算（+13h）虽然也落在同一天，但没必要绕。
+ *
+ *  当天这根日线要等收盘后几小时才进序列，盘中打开日线会缺今天、和分时末点
+ *  对不上。所以末根不是今天就再拉一次 5D 分钟 bar，把今天聚成一根接上。 */
+async function fetchCnbcDaily(sid, lim) {
+  const sym = CNBC_MIN[sid];
+  if (!sym) return null;
+  const r = await fetch('https://ts-api.cnbc.com/harmony/app/charts/3M.json?symbol='
+    + encodeURIComponent(sym), {
+    headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('CNBC 日线 HTTP ' + r.status);
+  const j = await r.json();
+  const rows = j && j.barData && j.barData.priceBars;
+  if (!Array.isArray(rows) || rows.length < 20) throw new Error('CNBC 日线为空');
+
+  const bars = [];
+  for (const b of rows) {
+    const s = String((b && b.tradeTime) || '');
+    if (!/^\d{8}000000$/.test(s)) continue;      // 只要日粒度；5D 那档是分钟 bar
+    const o = +b.open, h = +b.high, l = +b.low, c = +b.close;
+    if (!(o > 0 && h > 0 && l > 0 && c > 0)) continue;
+    bars.push([s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8),
+      o, h, l, c, +(b.volume || 0)]);
+  }
+  if (bars.length < 20) throw new Error('CNBC 日线解析为空');
+
+  const today = bjToday();
+  if (bars[bars.length - 1][0] !== today) {
+    /* 先试报价接口：open/high/low/last/volume 一次给全，比把分钟 bar 聚成
+       一根省一次 RTT。只用 last_time 就是今天的——休市日（周末、当地假期）
+       报价里是上一个交易日的数，照补就会多出一根假蜡烛。 */
+    let added = false;
+    try {
+      const rq = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+        + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+        + '&fund=1&exthrs=1&output=json&events=1', {
+        headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (rq.ok) {
+        const jq = await rq.json();
+        const q0 = jq && jq.FormattedQuoteResult && jq.FormattedQuoteResult.FormattedQuote;
+        const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+        const num = (v) => parseFloat(String(v == null ? '' : v).replace(/[,%]/g, ''));
+        const qt = String((row && row.last_time) || '').slice(0, 10);   // '2026-11-12'
+        const o = num(row && row.open), h = num(row && row.high);
+        const l = num(row && row.low), c = num(row && row.last);
+        if (qt === today && o > 0 && c > 0) {
+          /* volume 要 ×1000：报价接口给的是「千股」（KOSPI 实测 233,733，
+             同一交易日的日线是 233,733,000，正好差一千倍），直接写进去
+             图上今天那根量柱会矮到看不见，像当天没成交。 */
+          bars.push([today, o, h > 0 ? h : Math.max(o, c), l > 0 ? l : Math.min(o, c),
+            c, (num(row && row.volume) || 0) * 1000]);
+          added = true;
+        }
+      }
+    } catch (e) { /* 退到分钟聚合 */ }
+
+    if (!added) {
+      try {
+        const rd = await fetch('https://ts-api.cnbc.com/harmony/app/charts/5D.json?symbol='
+          + encodeURIComponent(sym), {
+          headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+          signal: AbortSignal.timeout(7000),
+        });
+        if (rd.ok) {
+          const jd = await rd.json();
+          const mins = (jd && jd.barData && jd.barData.priceBars) || [];
+          let o = 0, h = 0, l = 0, c = 0, v = 0;
+          for (const b of mins) {
+            const s = String((b && b.tradeTime) || '');
+            if (/^\d{8}000000$/.test(s) || bjYmd(s) !== today) continue;
+            const px = +b.close;
+            if (!(px > 0)) continue;
+            if (!o) o = +b.open > 0 ? +b.open : px;
+            h = Math.max(h, +b.high > 0 ? +b.high : px);
+            l = l ? Math.min(l, +b.low > 0 ? +b.low : px) : (+b.low > 0 ? +b.low : px);
+            c = px;
+            v += +(b.volume || 0);
+          }
+          if (o > 0 && c > 0) bars.push([today, o, h, l, c, v]);
+        }
+      } catch (e) { /* 补不上今天就先只到昨天，不至于整条链失败 */ }
+    }
+  }
+
+  if (bars.length > lim) bars.splice(0, bars.length - lim);
+  return bars;
+}
+
+/** 腾讯分时兜底：东财几个域都不可达时用。 *
  *  A 股/港股走 minute/query，美股走 usMinute/query，返回都是
  *  "0930 4.145 42868 …" 这种以空格分隔的行——第三列是累计成交量，不是
  *  分钟量，所以只取前两列（价格），别照东财 trends2 的列序去理解。
@@ -1139,7 +1583,11 @@ async function fetchTxMin(sid) {
     const hm = a[0];
     const p = +a[1];
     if (!/^\d{4}$/.test(hm) || !(p > 0)) continue;
-    const t = (md ? md + ' ' : '') + hm.slice(0, 2) + ':' + hm.slice(2);
+    let t = (md ? md + ' ' : '') + hm.slice(0, 2) + ':' + hm.slice(2);
+    /* 腾讯给美股打的是**美东**钟点（09:31~16:00），东财给同一只打的是北京时间
+       （22:31~05:00）。两个源共用一个弹窗、一根横轴，不换算的话切一次源
+       整张图的时间就平移 13 小时——形状全对、时间全错，比空图更容易误读。 */
+    if (us && /^\d{8}$/.test(dd)) t = etClockToBj(dd, +hm.slice(0, 2), +hm.slice(2));
     pts.push([t, p]);
   }
   if (!pts.length) throw new Error('腾讯分时解析为空');
@@ -1150,6 +1598,31 @@ async function fetchTxMin(sid) {
   const qt = node && node.qt && node.qt[code];
   if (Array.isArray(qt) && +qt[4] > 0) pre = +qt[4];
   return { pre, pts };
+}
+
+/* 美东钟点 → 北京「MM-DD HH:MM」。
+   美东 09:30 = 北京 22:30（冬令时）/ 21:30（夏令时），美股一个交易日的分时
+   在横轴上正好跨过零点，所以日期必须跟着一起进位，不能只加小时。 */
+function etClockToBj(dd, hh, mm) {
+  const y = +dd.slice(0, 4), mo = +dd.slice(4, 6), da = +dd.slice(6, 8);
+  // 当作纯钟表时刻算（Date.UTC），再加时差；夏令时 +12h、冬令时 +13h
+  const t = new Date(Date.UTC(y, mo - 1, da, hh, mm) + (usDst(y, mo, da) ? 12 : 13) * 3600e3);
+  const p2 = (n) => (n < 10 ? '0' + n : '' + n);
+  return p2(t.getUTCMonth() + 1) + '-' + p2(t.getUTCDate()) + ' '
+    + p2(t.getUTCHours()) + ':' + p2(t.getUTCMinutes());
+}
+
+/* 美东是否在夏令时：3 月第二个周日 02:00 起，11 月第一个周日 02:00 止。
+   只按日期算，不精确到小时——分时横轴上差一小时只在换时令那两天出现，
+   而那两天本来就没有分时数据。 */
+function usDst(y, mo, da) {
+  if (mo < 3 || mo > 11) return false;
+  if (mo > 3 && mo < 11) return true;
+  const nthSun = (m, n) => {
+    const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+    return 1 + ((7 - first) % 7) + (n - 1) * 7;
+  };
+  return mo === 3 ? da >= nthSun(3, 2) : da < nthSun(11, 1);
 }
 
 /* 美股代码的交易所后缀（AAPL.OQ 这种）。腾讯的日线接口不认裸代码：
@@ -1178,10 +1651,13 @@ async function txUsSuffix(code) {
 async function fetchTxKline(sid, lim) {
   let sym = txCodeOf(sid);
   if (!sym) return null;
-  if (sym.slice(0, 2) === 'us') {
+  const isUs = sym.slice(0, 2) === 'us';
+  if (isUs) {
+    /* 个股必须带交易所后缀（AAPL.OQ），裸代码只回「上市首日 + 最新」两条；
+       指数反过来——usNDX/usINX/usDJI 裸代码就是完整序列，而快照里给的后缀是
+       「.NDX」这种点开头的串，拼成 us.NDX 多一层不确定性，不要。 */
     const suf = await txUsSuffix(sym.slice(2));
-    if (!suf) return null;
-    sym = 'us' + suf;
+    if (suf) sym = 'us' + suf;
   }
   const url = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get'
     + '?param=' + sym + ',day,,,' + lim + ',qfq';
@@ -1191,12 +1667,37 @@ async function fetchTxKline(sid, lim) {
   });
   if (!r.ok) throw new Error('腾讯 K 线 HTTP ' + r.status);
   const j = await r.json();
-  const node = j && j.data && j.data[sym];
+  const node = j && j.data && (j.data[sym] || j.data[Object.keys(j.data)[0]]);
   const rows = node && (node.qfqday || node.day);
   if (!Array.isArray(rows) || !rows.length) throw new Error('腾讯 K 线为空');
   const bars = rows.map((a) => [a[0], +a[1], +a[3], +a[4], +a[2], +a[5]])
     .filter((b) => b[1] > 0 && b[4] > 0);
-  if (!bars.length) throw new Error('腾讯 K 线解析为空');
+  // 裸代码的历史接口只给两条（首日 + 最新），那不是 K 线，别拿它充数
+  if (!bars.length || (isUs && bars.length < 10)) throw new Error('腾讯 K 线解析为空');
+  return bars;
+}
+
+/* 新浪外盘期货日线：四个期货标的的 K 线兜底。接口一次吐全历史（340KB），
+   只要最后 lim 根，所以按尾部字符串切，不做整份 JSON.parse——
+   Worker 免费版 10ms 的 CPU 预算，解析 340KB 会把它吃光。 */
+async function fetchSinaFutKline(sid, lim) {
+  const sym = SINA_FUT[sid];
+  if (!sym) return null;
+  const r = await fetch('https://stock2.finance.sina.com.cn/futures/api/openapi.php/'
+    + 'GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=' + sym, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error('新浪期货日线 HTTP ' + r.status);
+  const txt = await r.text();
+  const rows = txt.match(/"date":"\d{4}-\d{2}-\d{2}","open":"[\d.]+","high":"[\d.]+","low":"[\d.]+","close":"[\d.]+"/g) || [];
+  const bars = [];
+  for (const s of rows.slice(-lim)) {
+    const m = /"date":"([\d-]+)","open":"([\d.]+)","high":"([\d.]+)","low":"([\d.]+)","close":"([\d.]+)"/.exec(s);
+    if (!m) continue;
+    bars.push([m[1], +m[2], +m[3], +m[4], +m[5], 0]);
+  }
+  if (!bars.length) throw new Error('新浪期货日线解析为空');
   return bars;
 }
 
@@ -1213,54 +1714,230 @@ async function serveOvMin(sid, env, ctx) {
   /* 上游偶发直接 RST（沙箱实测一分钟内可能连着失败两次，隔几秒又正常）。
      一次就放弃的话，点开弹窗看到的是「读取失败」，比慢 400ms 差得多。
      失败也返回 JSON：抛出去会被外层兜成 500 纯文本，前端 JSON.parse 报
-     「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。 */
-  let j = null;
+     「Unexpected token 'I'」，真正的原因（上游 HTTP 502 / 超时）全丢了。
+     域按 secid 前缀选，见 emHostOrder。 */
+  let out = null;
   let emErr = null;
   try {
-    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=' + sid
-      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', {
-      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-      signal: AbortSignal.timeout(8000),
-    }).then((r) => {
-      if (!r.ok) throw new Error('分时上游 HTTP ' + r.status);
-      return r.json();
-    }));
+    out = await emTryHosts(sid, '/api/qt/stock/trends2/get?secid=' + sid
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1', (j) => {
+      const tr = j && j.data && j.data.trends;
+      if (!tr || !tr.length) return null;
+      /* 昨收一起带回去：前端左轴要画涨跌幅刻度，基准必须是昨收，
+         不能拿本时段第一个点凑——那画出来的「+0.00%」不是涨跌，
+         和卡片上的 +2.10% 对不上，看图的人反而更糊涂。
+         期货只有 preSettlement（昨结），指数/个股才有 preClose，依次退。 */
+      const d = j.data || {};
+      const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
+      return { trends: tr, pre };
+    }, 9000);
   } catch (e) {
     emErr = e;
   }
-  const trends = j && j.data && j.data.trends;
+  const trends = out && out.v.trends;
   if (!trends || !trends.length) {
-    /* 东财这条链路对整个接口族一起抽（push2his 在 TLS 握手后被直接 RST），
-       重试救不回来。换厂商：腾讯的分钟接口覆盖 A 股/港股/美股，
-       日经、韩国、中金所期货没有对应代码，那几类仍然只能报错。 */
+    /* 东财对 100~104 号段不给分时（三个域全断连），换厂商，按覆盖范围排：
+       腾讯 → A 股/港股/美股个股 + 美股三大指数（100.NDX100/SPX/DJIA）
+       新浪 → 四个外盘期货（NQ/GC/CL/CHA50CFD）
+       日经、韩国两边都没有可用代码，只能靠 KV 里上一次成功的那份。 */
+    const errs = ['东财 ' + String((emErr && emErr.message) || '无数据').slice(0, 60)];
     try {
       const tb = await fetchTxMin(sid);
       if (tb) {
+        await ovSnapPut(env, sid, tb.pre, tb.pts);
         const res2 = json({ ok: true, sid, pre: tb.pre, pts: tb.pts, ts: Date.now(), src: 'tencent' }, 120);
         if (cache) {
           try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
         }
         return res2;
       }
-    } catch (e) { /* 两家都挂，走下面的错误 */ }
-    return json({ ok: false, error: '分时上游取不到：'
-      + String((emErr && emErr.message) || (trends ? '没有分时数据' : '无数据')) });
+      errs.push('腾讯无此代码');
+    } catch (e) {
+      errs.push('腾讯 ' + String((e && e.message) || e).slice(0, 40));
+    }
+    try {
+      const sb = await fetchSinaFutMin(sid);
+      if (sb) {
+        await ovSnapPut(env, sid, sb.pre, sb.pts);
+        const res2 = json({ ok: true, sid, pre: sb.pre, pts: sb.pts, ts: Date.now(), src: 'sina-fut' }, 120);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+      errs.push('新浪无此代码');
+    } catch (e) {
+      errs.push('新浪 ' + String((e && e.message) || e).slice(0, 40));
+    }
+    try {
+      const cb = await fetchCnbcMin(sid);
+      if (cb) {
+        await ovSnapPut(env, sid, cb.pre, cb.pts);
+        const res2 = json({ ok: true, sid, pre: cb.pre, pts: cb.pts, ts: Date.now(), src: 'cnbc' }, 120);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+      errs.push('CNBC 无此代码');
+    } catch (e) {
+      errs.push('CNBC ' + String((e && e.message) || e).slice(0, 40));
+    }
+    const snap = await ovSnapGet(env, sid);
+    if (snap) {
+      /* stale 一定要标出来：图是能看的，但横轴上的时间可能已经是几小时前，
+         不标的话这段走势会被当成「今天怎么走的」。前端只压一行灰字，不弹窗。 */
+      return json({ ok: true, sid, pre: snap.pre, pts: snap.pts, ts: snap.ts,
+        stale: true, src: 'snapshot' }, 30);
+    }
+    // 三档各记一行：只报「取不到」等于把排障成本推给人，哪一档挂了一目了然
+    return json({ ok: false, error: '分时上游取不到：' + errs.join(' / ') });
   }
   const pts = trends.map((s) => {
     const a = s.split(',');
     return [a[0].slice(5, 16), +a[1]];      // '11-06 22:30', 24602.48
   });
-  /* 昨收一起带回去：前端左轴要画涨跌幅刻度，基准必须是昨收，
-     不能拿本时段第一个点凑——那画出来的「+0.00%」不是涨跌，
-     和卡片上的 +2.10% 对不上，看图的人反而更糊涂。
-     期货只有 preSettlement（昨结），指数/个股才有 preClose，依次退。 */
-  const d = j.data || {};
-  const pre = +d.preClose > 0 ? +d.preClose : (+d.preSettlement > 0 ? +d.preSettlement : 0);
-  const res = json({ ok: true, sid, pre, pts, ts: Date.now() }, 120);
+  await ovSnapPut(env, sid, out.v.pre, pts);
+  const res = json({ ok: true, sid, pre: out.v.pre, pts, ts: Date.now(),
+    src: 'em:' + out.host }, 120);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
   return res;
+}
+
+/* 行情源探针——只给排障用，不做缓存、不进前端。
+   GET /api/ovprobe?sids=100.NDX100,100.N225,103.NQ00Y
+       把每个 secid 在东财三个域上的 trends2 全打一遍：HTTP 码、点数、耗时。
+       「取不到分时」到底是域用错了、还是这只真没分时，一屏看完。
+   GET /api/ovprobe?snap=100.UST10Y,100.US10Y
+       用 ulist 批量打现价/涨跌，专门用来「找代码」：全球指数、外盘期货、
+       债券收益率这些 secid 是逐只试出来的，没有可推导的规则
+       （100.NDX 是纳斯达克综合、100.NDX100 才是纳指 100）。 */
+async function serveOvProbe(url) {
+  /* ?trial=1：日经/KOSPI 的分时源试打。这两只没有腾讯/新浪期货的对应代码，
+     唯一可能是新浪的全球指数接口——但它在当前出口上到底通不通、返回什么结构，
+     在部署环境里打一发比猜快。只放白名单 URL，不做通用转发。 */
+  if (url.searchParams.get('trial') === '1') {
+    const LIST = [
+      ['sina_json_v2', 'https://quotes.sina.cn/global/api/json_v2.php/GlobalService.getMinLine?symbol=int_nikkei'],
+      ['sina_openapi', 'https://quotes.sina.cn/global/api/openapi.php/GlobalService.getMinLine?symbol=int_nikkei'],
+      ['sina_jsonp', 'https://quotes.sina.cn/global/api/jsonp_v2.php/var%20t=/GlobalService.getMinLine?symbol=int_nikkei'],
+      ['sina_kline', 'https://quotes.sina.cn/global/api/openapi.php/GlobalService.getKLine?symbol=int_nikkei&day=1'],
+      ['sina_hq', 'https://hq.sinajs.cn/list=int_nikkei'],
+      ['sina_kospi', 'https://hq.sinajs.cn/list=int_kospi'],
+      /* Yahoo 是唯一一个同时覆盖日经、KOSPI、外盘期货、美债的免费源。
+         沙箱出口实测 429（Edge: Too Many Requests），线上出口未必同样待遇，
+         所以放到部署环境里打一发——通了就能一次性替掉四五个单点。 */
+      ['yahoo_n225', 'https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?interval=1m&range=1d'],
+      ['yahoo_ks11', 'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?interval=1m&range=1d'],
+      ['yahoo_nq', 'https://query2.finance.yahoo.com/v8/finance/chart/NQ%3DF?interval=1m&range=1d'],
+      ['yahoo_tnx', 'https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1m&range=1d'],
+    ];
+    const rows = await Promise.all(LIST.map(async ([k, u]) => {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+          signal: AbortSignal.timeout(7000),
+        });
+        const t = await r.text();
+        return { k, s: r.status, ms: Date.now() - t0, bytes: t.length, head: t.slice(0, 260) };
+      } catch (e) {
+        return { k, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 60) };
+      }
+    }));
+    return json({ ok: true, mode: 'trial', rows });
+  }
+  const snap = String(url.searchParams.get('snap') || '').trim();
+  if (snap) {
+    const sids = snap.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    if (!sids.length) return json({ ok: false, error: 'snap 为空' });
+    const out = [];
+    for (const host of ['push2delay', 'push2']) {
+      const t0 = Date.now();
+      try {
+        const r = await fetch('https://' + host + '.eastmoney.com/api/qt/ulist.np/get'
+          + '?fltt=2&invt=2&secids=' + sids.join(',')
+          + '&fields=f2,f3,f4,f12,f13,f14', {
+          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+          signal: AbortSignal.timeout(7000),
+        });
+        const j = await r.json().catch(() => null);
+        const diff = (j && j.data && j.data.diff) || [];
+        out.push({
+          host, s: r.status, ms: Date.now() - t0,
+          rows: (Array.isArray(diff) ? diff : Object.values(diff))
+            .map((x) => ({ secid: (x.f13 != null ? x.f13 + '.' : '') + x.f12, n: x.f14, p: x.f2, chg: x.f3, d: x.f4 })),
+        });
+      } catch (e) {
+        out.push({ host, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 80) });
+      }
+    }
+    return json({ ok: true, mode: 'snap', out });
+  }
+
+  const sids = String(url.searchParams.get('sids') || '').split(',')
+    .map((s) => s.trim()).filter((s) => isOvSid(s)).slice(0, 6);
+  if (!sids.length) return json({ ok: false, error: 'sids 需为逗号分隔的 secid（最多 6 个）' });
+  const hosts = String(url.searchParams.get('hosts') || 'push2his,push2delay,push2')
+    .split(',').map((s) => s.trim()).filter((h) => /^push2[a-z]*$/.test(h)).slice(0, 3);
+  const vs = String(url.searchParams.get('v') || '1,3')
+    .split(',').map((s) => +s).filter((n) => n >= 1 && n <= 4).slice(0, 4);
+
+  /* 变体：
+     1 trends2 原样（A 股/美股这条一直通）
+     2 trends2 + ut（缺 token 被拒时会回 200 空体，不报错，所以要和大写一起看）
+     3 kline klt=1 分钟线——分时拿不到时的替代路径，前端按点画折线即可
+     4 kline klt=101 日线（K 线弹窗同源） */
+  const PATHS = {
+    1: (s) => '/api/qt/stock/trends2/get?secid=' + s
+      + '&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f53&iscr=0&ndays=1',
+    2: (s) => '/api/qt/stock/trends2/get?secid=' + s
+      + '&ut=fa5fd1943c7b386f172d6893dbfba10b&fields1=f1,f2,f3,f4,f5,f6,f7,f8'
+      + '&fields2=f51,f53&iscr=0&iscca=0&ndays=1',
+    3: (s) => '/api/qt/stock/kline/get?secid=' + s + '&klt=1&fqt=1&lmt=400'
+      + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57',
+    4: (s) => '/api/qt/stock/kline/get?secid=' + s + '&klt=101&fqt=1&lmt=60'
+      + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57',
+  };
+
+  const jobs = [];
+  for (const sid of sids) {
+    for (const host of hosts) {
+      for (const v of vs) {
+        jobs.push((async () => {
+          const t0 = Date.now();
+          try {
+            const r = await fetch('https://' + host + '.eastmoney.com' + PATHS[v](sid), {
+              headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+              signal: AbortSignal.timeout(6000),
+            });
+            const j = await r.json().catch(() => null);
+            const arr = (j && j.data && (j.data.trends || j.data.klines)) || null;
+            const ref = v === 3 ? j && j.data && j.data.preClose : null;
+            return {
+              sid, host, v, s: r.status, ms: Date.now() - t0,
+              n: Array.isArray(arr) ? arr.length : 0,
+              pre: ref || (j && j.data && (j.data.preClose || j.data.preSettlement)) || 0,
+              head: Array.isArray(arr) && arr.length ? String(arr[arr.length - 1]).slice(0, 24) : '',
+            };
+          } catch (e) {
+            return { sid, host, v, s: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 50) };
+          }
+        })());
+      }
+    }
+  }
+  const rows = await Promise.all(jobs);
+  // 汇总成「每只一行、域×变体一列」的矩阵，比按请求顺序滚一遍好读
+  const bySid = {};
+  for (const r of rows) {
+    const k = r.host.replace('push2', 'p') + '/v' + r.v;
+    (bySid[r.sid] = bySid[r.sid] || []).push(
+      r.n ? k + '=' + r.n : (r.err ? k + '=✗' : k + '=[s' + r.s + ']'));
+  }
+  return json({ ok: true, mode: 'trends', rows, summary: bySid });
 }
 
 /* 隔夜/亚太条目的 K 线：同一个 secid，换成东财的日线接口。
@@ -1271,30 +1948,29 @@ async function serveOvMin(sid, env, ctx) {
 async function serveOvK(sid, n, env, ctx) {
   const cache = await getCache();
   const lim = Math.max(30, Math.min(300, n | 0));
-  const key = new Request('https://etf.internal/ovk/v1/' + sid + '/' + lim, { method: 'GET' });
+  /* v2：日经/韩国改走 CNBC 后，v1 里存的是「失败」和「今天量柱为 0」的旧结果，
+     边缘缓存 600 秒，不换键的话这段时间点开还是旧的。 */
+  const key = new Request('https://etf.internal/ovk/v2/' + sid + '/' + lim, { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
       if (hit) return hit;
     } catch (e) { /* 降级直连 */ }
   }
-  let j = null;
+  let out = null;
   let emErrK = null;
   try {
-    j = await emRetry(() => fetch('https://push2his.eastmoney.com/api/qt/stock/kline/get'
+    out = await emTryHosts(sid, '/api/qt/stock/kline/get'
       + '?secid=' + sid + '&klt=101&fqt=1&lmt=' + lim
       + '&end=20500101&fields1=f1,f2,f3,f4,f5,f6'
-      + '&fields2=f51,f52,f53,f54,f55,f56,f57', {
-      headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-      signal: AbortSignal.timeout(8000),
-    }).then((r) => {
-      if (!r.ok) throw new Error('K 线上游 HTTP ' + r.status);
-      return r.json();
-    }));
+      + '&fields2=f51,f52,f53,f54,f55,f56,f57', (j) => {
+      const k = j && j.data && j.data.klines;
+      return k && k.length ? k : null;
+    }, 9000);
   } catch (e) {
     emErrK = e;
   }
-  const ks = j && j.data && j.data.klines;
+  const ks = out && out.v;
   if (!ks || !ks.length) {
     /* 和分时同一条链路，一起挂。换腾讯：A 股/港股/美股都能取到日线，
        中金所期货和日经/韩国没有对应代码，仍然只能报错。 */
@@ -1307,9 +1983,31 @@ async function serveOvK(sid, n, env, ctx) {
         }
         return res2;
       }
-    } catch (e) { /* 两家都挂 */ }
+    } catch (e) { /* 下一档 */ }
+    try {
+      const sb = await fetchSinaFutKline(sid, lim);
+      if (sb) {
+        const res2 = json({ ok: true, sid, bars: sb, ts: Date.now(), src: 'sina-fut' }, 1800);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+    } catch (e) { /* 下一档 */ }
+    /* 日经/韩国：腾讯没有代码、新浪外盘日线不认，只有 CNBC 这一条。
+       放在最后是因为它只对这两个 secid 生效，前面几档能覆盖的不必多打一次。 */
+    try {
+      const cb = await fetchCnbcDaily(sid, lim);
+      if (cb) {
+        const res2 = json({ ok: true, sid, bars: cb, ts: Date.now(), src: 'cnbc' }, 600);
+        if (cache) {
+          try { await cache.put(key, res2.clone()); } catch (e) { /* 忽略 */ }
+        }
+        return res2;
+      }
+    } catch (e) { /* 四家都挂 */ }
     return json({ ok: false, error: 'K 线上游取不到：'
-      + String((emErrK && emErrK.message) || (ks ? '没有 K 线数据' : '无数据')) });
+      + String((emErrK && emErrK.message) || '无数据') });
   }
   /* 字段顺序：日期,开,收,高,低,量,额。这里重排成 o/h/l/c 的顺序，
      前端画蜡烛不用再记一遍源头的列序（记错了就是高低画反，肉眼极难发现）。 */
@@ -1318,27 +2016,16 @@ async function serveOvK(sid, n, env, ctx) {
     return [a[0], +a[1], +a[3], +a[4], +a[2], +a[5]];
   }).filter((b) => b[1] > 0 && b[4] > 0);
   if (!bars.length) return json({ ok: false, error: 'K 线解析为空' });
-  const res = json({ ok: true, sid, bars, ts: Date.now() }, 300);
+  const res = json({ ok: true, sid, bars, ts: Date.now(), src: 'em:' + out.host }, 300);
   if (cache) {
     try { await cache.put(key, res.clone()); } catch (e) { /* 忽略 */ }
   }
   return res;
 }
 
-/**
- * 全 A 行业口径的市场结构快照（集中度 × 宽度）。
- *
- * 板块地图上的四象限原本用 ETF 成交额算，那是错的：ETF 池子里只有 18 个行业格，
- * TOP3 天然占一半以上（11-06：58.7%），而全 A 真实的行业集中度只有 24.1%。
- * 更根本的是——ETF 二级市场成交是份额转让、不产生股票成交，半导体 ETF 一天
- * 200 亿和半导体个股一天 2245 亿是两套资金，前者不能代表后者。
- *
- * 口径：东财行业板块列表返回 496 个（含「电子」这种一级和「半导体」这种二级，
- * 直接加总会把同一批股票算两遍）。这里只取 MKT_INDS 里那 128 个扁平行业名——
- * 个股的 f100 就是这套名字，一只股票只归一个行业，所以互不重叠。
- *
- * 4 页 × 100 条，约 0.4 秒。60 秒边缘缓存：盘中不必秒级，收盘后基本不动。
- */
+/* 全 A 市场结构的说明见 serveMkt（下面）。这里原本还有一段「板块地图用 ETF
+   成交额算四象限是错的」的注释，结论仍然成立，只是算法已经换成个股口径，
+   注释里的 496 板块 / f100 / 128 行业那套已经作废了。 */
 // ---------------------------------------------------------------- 份额日档
 /**
  * 份额变化（清单里那一列 + 点开后的每日柱状图）。
@@ -1394,8 +2081,22 @@ async function serveShares(url, env, ctx) {
 }
 
 async function serveMkt(env, ctx) {
+  /* 全 A 市场结构快照（集中度 × 宽度）。
+   *
+   * 口径：TOP3 三级行业成交额 ÷ 全 A 个股成交额，行业取 EM2016（东方财富自建
+   * 分类，244 个三级）。逐只个股日线回算，250 天历史由 pipeline/gen_mkt_hist.mjs
+   * 每天 16:35 在 Actions 里重算，产物就是 mkt_hist.json。
+   *
+   * 这里不再现算。以前是拉东财 496 个板块、筛出互斥的 128 个求和——但板块名是
+   * 申万口径（带 Ⅱ/Ⅲ 后缀），和 EM2016 的 244 个三级名只重合 89 个，筛不全就
+   * 直接抛错，整块卡片跟着挂。改成按个股现算又要翻 56 页 clist，超过 Worker 的
+   * 子请求上限。读文件是唯一既能同口径又不会挂的路子。
+   *
+   * 代价：盘中的 c 停在上一交易日（管线收盘后才跑）。这张卡片本来就是「结构」
+   * 不是「行情」——用半截成交额算出来的集中度也没有可比性，宁可标清截止日期。
+   */
   const cache = await getCache();
-  const key = new Request('https://etf-board.internal/mkt/v1', { method: 'GET' });
+  const key = new Request('https://etf-board.internal/mkt/v2', { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
@@ -1403,136 +2104,48 @@ async function serveMkt(env, ctx) {
     } catch (e) { /* 缓存读失败不影响主流程 */ }
   }
 
-  // 排序键必须是**不变**的字段。用 fid=f6（成交额）翻页，盘中成交额每秒都在动，
-  // 第 2 页可能混进第 1 页已经出现过的板块、又漏掉另一批——实测只捞到 98/128 个行业。
-  // f12 是板块代码，天然稳定，5 页 496 条实测零重复零遗漏。
-  const CL = 'https://push2.eastmoney.com/api/qt/clist/get?pn=%d&pz=100&po=1&np=1'
-    + '&fltt=2&invt=2&fid=f12&fs=m:90+t:2&fields=f12,f14,f3,f6,f104,f105';
-  const one = async (pn) => {
-    let last;
-    for (let k = 0; k < 2; k++) {
-      try {
-        const r = await fetch(CL.replace('%d', pn), {
-          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-          cf: { cacheTtl: 30 }
-        });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return await r.json();
-      } catch (e) { last = e; }
-    }
-    throw last;
+  /** 把一份 250 天的历史压成「最新一天 + 全量历史」。c/b 存的是千分位整数，
+   *  出口统一换成百分数，页面直接显示。 */
+  const pack = (h, src) => {
+    const i = h.d.length - 1;
+    const u = h.u[i] || 0, w = h.w[i] || 0;
+    return {
+      ok: true, d: h.d[i], asOf: h.d[i], cVer: h.cVer || 'em2016-l3',
+      c: h.c[i] / 10, b: h.b[i] / 10,
+      // 页面历史上用 stockUp/stockDn/stockN 这三个名字，保持兼容
+      stockUp: u, stockDn: w, stockN: (u + w) || h.n[i] || 0,
+      n: h.n[i] || 0, p5: (h.p5 && h.p5[i] / 10) || 0,
+      amt: (h.a && h.a[i]) || 0,
+      top3: h.t3 || [], inds: h.inds || (h.ind || []).length,
+      src,
+      // 点散点时要用 t/ind 回答「那天钱压在哪条线」，光两个数字不够
+      hist: { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w, a: h.a,
+        t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5, cVer: h.cVer || '' },
+    };
   };
 
+  let out = null;
   try {
-    // 顺序拉，不并发：并发 4 页会被上游断连（socket closed）。
-    // 5 页约 0.5 秒，比一次失败的 1.5 秒快。
-    const all = [];
-    let total = 0;
-    for (let pn = 1; pn <= 8; pn++) {
-      const j = await one(pn);
-      if (!j || !j.data || !j.data.diff) throw new Error('上游无数据 p' + pn);
-      total = j.data.total || total;
-      all.push(...j.data.diff);
-      if (!j.data.diff.length || all.length >= total) break;
-    }
-
-    const want = new Set(MKT_INDS);
-    const pick = [];
-    for (const b of all) if (want.has(b.f14)) pick.push(b);
-    if (pick.length < want.size * 0.9) throw new Error('行业匹配不全 ' + pick.length + '/' + want.size);
-
-    let amt = 0, upInd = 0, n = 0, sUp = 0, sDn = 0;
-    for (const b of pick) {
-      const a = +b.f6 || 0;
-      amt += a;
-      if (+b.f3 > 0) upInd++;
-      if (a > 0) n++;
-      sUp += +b.f104 || 0;
-      sDn += +b.f105 || 0;
-    }
-    pick.sort((x, y) => (+y.f6 || 0) - (+x.f6 || 0));
-    const top3 = pick.slice(0, 3);
-    const t3 = amt > 0 ? top3.reduce((s, b) => s + (+b.f6 || 0), 0) / amt * 100 : 0;
-
-    // 报「行情对应的交易日」，不是「北京今天」。周六早上打开页面，成交额还是周五
-    // 收盘的，报成今天会让人以为周末在交易。周末和开盘前一律退到上一个工作日；
-    // 盘中（09:15 之后）就是今天。法定节假日识别不了——那天本来就没人看。
-    const bj = new Date(Date.now() + 8 * 3600e3);
-    const mins = bj.getUTCHours() * 60 + bj.getUTCMinutes();
-    const wd = bj.getUTCDay();
-    const back = new Date(bj);
-    if (wd === 0 || wd === 6 || mins < 9 * 60 + 15) {
-      do { back.setUTCDate(back.getUTCDate() - 1); } while (back.getUTCDay() === 0 || back.getUTCDay() === 6);
-    }
-    const d = back.toISOString().slice(0, 10);
-    const t = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
-
-    // 宽度的分母是个股，不是行业：128 个行业里 9 个在涨（7.0%）和
-    // 716 只个股在涨（13.9%）是同一件事的两个切面，后者才是「有多少票在涨」。
-    // sUp/sDn 来自板块的 f104/f105（板块内上涨/下跌家数），128 个行业加总
-    // 就是全 A——11-06 实测 716 涨 4431 跌，与逐只个股 K 线回算的 716/4431 完全一致。
-    const sDir = sUp + sDn;
-    const out = {
-      ok: true, d, t,
-      inds: want.size, n,
-      c: +t3.toFixed(2), b: sDir ? +(sUp / sDir * 100).toFixed(2) : 0,
-      up: upInd, top3: top3.map((b) => b.f14),
-      amt: +(amt / 1e8).toFixed(0),
-      stockUp: sUp, stockDn: sDn, stockN: sDir,
-      src: 'eastmoney'
-    };
-
-    // 顺带把 250 天的历史也带回去：页面内联的那份是部署时固化的，
-    // 一个月不重新发布，「今天」就会飘到散点云外面去。这份由 Actions 每天重写。
-    // 读不到就不带，页面继续用内联兜底——不会因此让整张卡片挂掉。
-    try {
-      if (histSource(env)) {
-        const a = await readAsset(env, 'mkt_hist.json');
-        if (a) {
-          const h = JSON.parse(await a.text());
-          if (h && Array.isArray(h.d) && h.d.length >= 60) {
-            // t/ind 是「每天的前三大行业」+ 行业名表：点散点时要用它回答
-            // 「那天钱压在哪条线」，光两个数字不够。
-            out.hist = { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w,
-              t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5 };
-          }
-        }
+    if (histSource(env)) {
+      const a = await readAsset(env, 'mkt_hist.json');
+      if (a) {
+        const h = JSON.parse(await a.text());
+        if (h && Array.isArray(h.d) && h.d.length >= 60) out = pack(h, 'file');
       }
-    } catch (e) { /* 历史读不到，只有今天这个点 */ }
-    const res = json(out, 60);
-    if (cache && ctx && typeof ctx.waitUntil === 'function') {
-      ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
     }
-    // 留一份最近成功的快照。东财的板块接口限流比 ETF 行情狠，连续翻几页就可能被断，
-    // 失败时退回「几小时前的那份」，比让卡片掉回基线（可能是好几天前）强得多。
-    // 但写要有节制，见 MKT_SNAP_GAP 那段：十分钟一次、且数值真变了才写。
-    const sig = [out.c, out.b, out.u, out.w, out.t, out.p5].join('|');
-    const nowMs = Date.now();
-    if (env && env.WATCH && sig !== mktSnapSig && nowMs - mktSnapAt >= MKT_SNAP_GAP && kvWriteAllowed('mkt-snap')) {
-      mktSnapAt = nowMs;
-      mktSnapSig = sig;
-      const keep = { ...out };
-      delete keep.hist;
-      const put = env.WATCH.put(MKT_LAST_KEY, JSON.stringify(keep), { expirationTtl: 259200 });
-      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(Promise.resolve(put).catch(() => {}));
-      else await put.catch(() => {});
-    }
-    return res;
-  } catch (e) {
-    // 上游挂了：先看有没有最近成功的快照，没有才报错
-    try {
-      if (env && env.WATCH) {
-        const raw = await env.WATCH.get(MKT_LAST_KEY);
-        if (raw) {
-          const saved = JSON.parse(raw);
-          if (saved && saved.c > 0) {
-            return json({ ...saved, ok: true, stale: true, src: 'kv' }, 60);
-          }
-        }
-      }
-    } catch (e2) { /* KV 也读不到，往下报错 */ }
-    return json({ ok: false, error: String((e && e.message) || e) });
+  } catch (e) { /* 读不到就走内联那份，卡片不能因此空掉 */ }
+
+  // 内联那份是部署时固化的，只作兜底：它的「最新一天」会随着不重新部署越来越旧
+  if (!out && MKT_HIST && Array.isArray(MKT_HIST.d) && MKT_HIST.d.length >= 60) {
+    out = pack(MKT_HIST, 'inline');
   }
+  if (!out) return json({ ok: false, code: 'NO_MKT', error: '市场结构数据还没有生成' }, 60);
+
+  const res = json(out, 60);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
 }
 
 async function serveEvents(env, ctx) {
@@ -4622,6 +5235,16 @@ export default {
       return serveOvMin(sid, env, ctx);
     }
 
+    if (p === '/api/bond') {
+      // 十年美债收益率（隔夜卡用；单位 %，变动 bp）
+      return serveBond(env, ctx);
+    }
+
+    if (p === '/api/ovprobe') {
+      // 分时/K 线源排障：哪个域能出图、哪只真没分时、代码到底叫什么
+      return serveOvProbe(url);
+    }
+
     if (p === '/api/ovk') {
       // 同一个条目切到日线看位置（东财 kline 代理，同一份 secid 白名单）
       const sid = (url.searchParams.get('sid') || '').trim().toUpperCase();
@@ -4830,6 +5453,11 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
 .onfut{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
 .onfut span{background:var(--bg1);border:1px solid var(--line);border-radius:4px;
   padding:2px 7px;font-size:11.5px;color:var(--txt2)}
+/* 美债那条是异步补进来的：外层 #onBond 只是挂载点，不能自己占一个框，
+   否则先出现一个空边框、再撑成两个框。display:contents 让它的子元素
+   直接当 .onfut 的 flex item 参与排布。 */
+.onfut #onBond{display:contents}
+.onfut span i{font-style:normal;margin-left:4px;font-size:11px}
 .ontrks{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .ontrk{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:3px 9px;
   background:var(--bg1);user-select:none;display:flex;gap:6px;align-items:baseline}
@@ -6168,7 +6796,13 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         <p class="hlead">本页说明各区块的指标定义、计算口径与数据来源。指标均基于收盘后的日线或当日分钟线计算。配色沿用 A 股惯例，涨红跌绿，外盘数据同样处理。</p>
 
         <div class="hm"><h3>隔夜</h3>
-        <p>美股收盘与外盘期货按赛道折算为对应 A 股 ETF 的隐含涨跌。映射关系挂在跟踪指数上，ETF 变更代码或简称不影响折算结果。</p></div>
+        <p>美股收盘与外盘期货按赛道折算为对应 A 股 ETF 的隐含涨跌。映射关系挂在跟踪指数上，ETF 变更代码或简称不影响折算结果。行末的 <b>美债10年</b> 为美国 10 年期国债收益率，数值取收益率本身（非债券价格），变动以基点计，1bp = 0.01 个百分点；收益率上行通常压制高久期成长股的估值。</p></div>
+
+        <div class="hm"><h3>亚太</h3>
+        <p>四个 A 股与港股指数为当日实时，日经 225 与韩国 KOSPI 为当日已收盘或正在交易的最新价。点条目查看最近一个交易时段的分时与日线。</p></div>
+
+        <div class="hm"><h3>隔夜与亚太的数字为什么可能与别处不同</h3>
+        <p>这两行与条目弹窗的行情按覆盖范围从多个厂商分别取用。同一条目在各家的报价时点相差几秒到十几分钟，跨源的价格基准也可能不同——期货的涨跌以昨结算为基准，指数的涨跌以前收盘为基准。卡片与分时图不一致时，以卡片上带时间戳的报价为准。</p></div>
 
         <div class="hm"><h3>板块地图</h3>
         <p>按跟踪指数聚合，同一指数只计一票（取成交额最大者）。若不去重，同指数发行数量多的板块会因权重堆叠而虚高，得到的是发行结构而不是资金轮动。A 股、港股、跨境分别计算分母。表内只含行业与主题类，宽基、债券、货币、商品不入表。附 250 个交易日占比曲线，用于判断当前占比处于扩张初期还是已过半程。</p></div>
@@ -6203,7 +6837,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
         </ul></div>
 
         <div class="hm"><h3>点开一只之后</h3>
-        <p>分时图固定 240 格，午休不占位，以昨收为中轴上下对称。日线近 500 个交易日，含 MA、BOLL、RSI。成分穿透为季报口径前十大持仓，权重 × 涨跌 = 贡献；加总与当日涨跌幅的差额来自未披露仓位、现金及折溢价，属残差项，不是计算错误。份额明细为该标的的申赎历史。</p></div>
+        <p>分时图固定 240 格，午休不占位，以昨收为中轴上下对称。日线近 250 个交易日，含 MA、BOLL、RSI。成分穿透以当日<b>申购赎回清单（PCF）</b>为准：清单覆盖全部成分，权重按股数 × 昨收归一化、合计 100%，<b>贡献</b> = 权重 × 涨跌；合计与当日涨跌幅的差额来自现金差额与折溢价，属残差项。清单取不到时退回基金季报的前十大持仓，此时权重合计只有二三十个点，剩余部分整体记为「其余仓位」，含未披露持仓与现金。份额明细为该标的的申赎历史。</p></div>
 
         <div class="hm"><h3>因子研究</h3>
         <p>独立页面，含 201 个因子的 IC 检验、样本外回测与 PE 策略。另有一组先按指数去重再计算的因子，避免同指数多只 ETF 在横截面上重复投票、稀释 IC。</p></div>
@@ -6243,11 +6877,11 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <script>
 'use strict';
 var IDX_GROUPS = {"中证港股通内地金融港元":["158000","159091","513190","526090"],"国证价值100":["158001","158043","159037","159042","159079","159085","159096","159098","159263"],"中证港股通医疗主题":["158003","159137","159167","159366","513620","520510","520850","526010"],"中证工程机械主题":["158005","159065","159070","159138","159161","159177","159542","512420","515970","516250","516440","560280","560920","561030","561070"],"细分化工":["158006","158017","158032","159082","159087","159093","159129","159133","159870","516020","516120","516220","516690","561620"],"国证储能电池":["158008","159052","159071","159193","159305","159566"],"国证航天航空行业":["158009","158013","158030","159208","159227","159241","159267"],"中证医疗":["158010","159828","159847","512170","560260"],"创业板软件":["158011","158072","159107","159256"],"中证云计算50":["158012","159095","159099","560660","562110"],"中证电池主题":["158019","159077","159147","159155","159160","159175","159796","512460","560410","560910","561160","561910","562880"],"创业板综合":["158022","159287","159288","159289","159290","159291","159292","159293","159295","159541","159563"],"中证800红利低波动":["158023","159355","563980"],"创业板成长":["158025","159597"],"国证大盘成长":["158026","159203"],"中证工业互联网主题":["158027","159013","159075","159778"],"中证稀有金属主题":["158028","159045","159053","159055","159062","159608","159671","561050","561250","561390","561800","561970","562800"],"创业板人工智能":["158031","159242","159243","159246","159279","159363","159381","159382","159388"],"中证卫星产业":["158036","158046","159218","512630","562420","563230","563530","563790"],"中证机器人":["158037","159213","159258","159526","159551","159770","560630","560770","562360","562500"],"国证粮食产业":["158038","158047","158065","159030","159031","159033","159038","159060","159063","159072","159073","159587","159698"],"标普港股通低波红利":["158039","159117","159118","159220","513630","520610"],"中证科创创业人工智能":["158040","159022","159139","159140","159141","159142","588410","588420","588430","588470","588480","588510","588530"],"创业板算力基础设施":["158041","158049","158050","158053","158055","158056","158057","158059","158061","158063"],"恒生科技":["158042","159740","159741","159742","513010","513130","513180","513260","513380","513580","513890","520570","520590","520920"],"中证金融科技主题":["158051","159086","159103","159299","159851","515720","516100","516860","562400","563570","563670"],"创业板金融科技":["158052","158058","158062","158067"],"中证大数据产业":["158066","515400","516000","516700"],"中证红利低波动":["158076","159525","159547","512890","560150","560730","563020","563690"],"创业板电池":["158078","158079","158081","158082"],"中证畜牧养殖":["159007","159011","159020","159023","159027","159165","159172","159865","159867","512450","516670","516760","561400","561470"],"中证全指证券公司":["159008","159058","159260","159841","159842","159848","512000","512570","512880","512900","515010","515560","515850","516200","560090","560400","562870"],"创业板新能源":["159009","159069","159076","159122","159149","159187","159190","159261","159368","159387"],"恒生港股通科技主题":["159010","159015","159120","159135","159152","159262","520670","520840"],"中证科创创业50":["159012","159603","159780","159781","159782","159783","588300","588310","588320","588330","588350","588360","588380","588390","588400","588660"],"中证证券公司30":["159016","159692","516730"],"国证石油天然气":["159017","159018","159019","159026","159148","159181","159189","159195","159197","159199","159588","159697"],"国证大盘价值":["159021","159391"],"中证家电龙头":["159025","159192","159328"],"恒生港股通汽车主题":["159028","159121","159186","159239","520730"],"中证有色金属矿业主题":["159029","159049","159163","159690","512940","560290","561330","561830","562450"],"中证工业有色金属主题":["159032","159157","159162","159168","159171","512470","515040","515540","560490","560860","560870","560970"],"中证软件服务":["159035","159852","560360","560790","562930"],"中证全指软件开发":["159036","561010"],"国证机器人产业":["159039","159048","159050","159272","159278","159530","159559"],"中证港股通互联网":["159040","159179","159568","159792","513040","513720","513770","520630","520650","520740","520790","520910"],"中证农业主题":["159041","159825","159827","512620","516810"],"中证全指食品":["159043","159151","515840","560130","560160","560320","560420","561020","563850"],"国证绿色电力":["159046","159061","159067","159625","159669"],"中证港股通信息技术综合港元":["159047","159131","159185","159196","159198","513240","520710","520750","526000","526030","526050","526060"],"中证全指医疗器械":["159051","159056","159057","159797","159883","159898","561810","562600"],"中证全指电力公用事业":["159059","159146","159158","159611","512140","516370","560270","560450","560460","560480","560580","560830","560930","561560","561700","562350"],"中证A股":["159066","159078","515440","561730","561890","563330"],"中证全指软件":["159068","159590","159899","515230"],"中证红利低波动100":["159083","159228","159307","159549","515100","515480","560520","560720"],"国证港股通互联网":["159089","159170","159280"],"巴西BOVESPA":["159100","520870"],"国证港股通科技":["159101","159125","159128","159191","159251","159636"],"恒生生物科技":["159102","159105","159130","159132","159169","159615","159892","513280","513930","520760","520930"],"中证民企300":["159106"],"国证工业软件主题":["159108","159145","159180"],"恒生港股通50":["159109","520950"],"深证AAA科技创新公司债":["159110","159400"],"中证AAA科技创新公司债":["159111","159112","159113","159115","159116","159200","159600","159700","551500","551510","551520","551550","551560","551580","551800","551900"],"中证800自由现金流":["159119","159229","516460","563580","563680","563990"],"中证光伏产业":["159123","159609","159618","159857","159863","159864","515370","515790","516180","516230","516290","516880","560230","560310","561410","562970"],"中证港股通50港元":["159126","159711","159712","513550"],"中证港股通高股息投资港元":["159127","159277","159302","159331","513530","513820","513830","520810"],"中证A50":["159136","159390","159591","159592","159593","159595","159596","512030","512240","512250","560350","560820","561230","561750","562890","563080","563350"],"恒生港股通中国央企红利":["159143","513920"],"深证50":["159150","159350"],"国证消费电子主题":["159153","159178","159732"],"国证新能源车电池":["159156","159755","159757","159767","159775","159840"],"中证全指公用事业":["159159","159301","560190","560620"],"国证自由现金流":["159166","159201","159221","159222","159223","159225","159276"],"中证全指农牧渔":["159173","159275","560210"],"中证全指家用电器":["159176","159182","159996","515640","560880","561120"],"中证新能源汽车":["159183","159637","159806","159824","515030","516660"],"标普中国A股红利100":["159188"],"恒生互联网科技业":["159202","159688","513330"],"创业板指":["159205","159247","159675","159676","159808","159810","159821","159908","159915","159948","159952","159956","159957","159958","159964","159971","159977"],"国证商用卫星通信产业":["159206"],"中证智选高股息策略":["159207"],"中证全指红利质量":["159209","515460","560250","560370","561430","561490","561630","561650","562150","562200"],"中证港股通汽车产业主题":["159210","159237","159323","520600","520680","520720","520780"],"深证100":["159211","159212","159216","159219","159576","159706","159716","159721","159901","159961","159970","159975"],"中证A500":["159215","159226","159240","159249","159338","159339","159351","159352","159353","159356","159357","159358","159359","159360","159361","159362","159376","159379","159380","159386","512020","512050","512080","512370","560510","560530","560610","560750","561090","563220","563360","563500","563550","563600","563630","563650","563660","563800","563860","563880"],"国证港股通创新药":["159217","159286","159297","159567","159570"],"国证通用航空产业":["159230","159231","159255","159257","159378","159392"],"中证全指自由现金流":["159232","159233","159235","159236","512130","561080","561870","563390","563620","563760","563770","563780","563830"],"沪深300":["159238","159300","159330","159393","159673","159919","159925","510300","510310","510320","510330","510350","510360","510370","510380","510390","515130","515310","515330","515350","515360","515380","515390","515660","561000","561300","561930","561990","562070","563520"],"国证港股通消费主题":["159245","159265","159268","159285"],"中证人工智能主题":["159248","159819","512930","515070","515470","561460"],"中证银行":["159253","512410","512700","512730","512800","512820","515020","515280","515290","516210","516310","560670","561530"],"国证成长100":["159259"],"中证港股通央企红利":["159266","159281","159333","513910"],"中证港股通科技":["159269","159751","513020","513150","513560","513860","513980","520530","520860"],"创业板200":["159270","159571","159572","159573","159575"],"恒生指数":["159271","159920","513210","513600","513660"],"中证沪港深云计算产业":["159273","159738","517130","517230","517390"],"中证通用航空主题":["159283","561660","563320","563870"],"中证A500红利低波动":["159296","560570","561680","562180","563510","563590"],"创业板50":["159298","159367","159369","159370","159371","159372","159373","159375","159383","159681","159682","159949"],"恒生医疗保健":["159303","159557","513060"],"中证汽车零部件主题":["159306","159565","512740","562700"],"中证油气资源":["159309","561760","563150"],"中证芯片产业":["159310","159560","159599","516350","516640","516920"],"中证数字经济主题":["159311","159658","560800"],"恒指港股通":["159312","159318","159365","520770","520820","520940","520960","526070"],"中证沪深港黄金产业股票":["159315","159321","159322","159562","517400","517520"],"恒生港股通创新药":["159316"],"恒生A股电网设备":["159320","515940","560390","561380"],"中证半导体行业精选":["159325"],"中证电网设备主题":["159326"],"中证半导体材料设备主题":["159327","159516","159558","560780","562590"],"富时沙特阿拉伯":["159329","520830"],"中证中央企业红利":["159332","561580"],"中证诚通央企科技创新":["159335"],"中证诚通央企红利":["159336"],"中证500":["159337","159500","159610","159678","159820","159922","159935","159968","159982","510500","510510","510530","510550","510560","510570","510580","510590","512500","512510","515190","515530","515550","560100","560950","561350","561550","561950","563030","563750"],"创业板医药卫生":["159377"],"中证诚通国企数字经济":["159385","159389","561220"],"深证基准做市信用债":["159395","159396","159397","159398"],"富时中国A股自由现金流聚焦":["159399"],"纳斯达克100":["159501","159513","159632","159659","159660","159696","159941","513100","513110","513300","513390","513870"],"标普生物科技精选行业":["159502"],"国证2000":["159505","159521","159543","159628","159907"],"恒生港股通创新药及医疗保健":["159506"],"国证通信":["159507","159695"],"国证生物医药":["159508","159839","159859"],"纳斯达克科技市值加权":["159509"],"中证智选300价值稳健策略":["159510"],"中证通信服务":["159511"],"中证全指汽车":["159512","516840"],"中证国有企业红利":["159515","561060","563890"],"中证800":["159517","159800","515800","515810"],"S&POil&GasExploration&ProductionSelectIndustry":["159518","513350"],"中证香港内地国有企业港元":["159519","513810"],"中证消费龙头":["159520","516130"],"中证智选300成长创新策略":["159523"],"中证云计算与大数据主题":["159527","159739","159890","516510","516630"],"中证国有企业改革":["159528"],"标普500消费精选":["159529"],"中证2000":["159531","159532","159533","159535","159536","159552","159553","159555","159556","560220","561370","562660","563200","563300"],"国证信息技术创新主题":["159537","159538","159539","159540"],"恒生港股通红利低波动":["159545","513950","520550","520890"],"中证全指集成电路":["159546","562820"],"中证沪港深互联网":["159550","159729","159856","517050","517200"],"法兰克福DAX":["159561","513030"],"国证港股通红利低波动率":["159569"],"MSCIUSA50Index":["159577","513850"],"深证主板50":["159578"],"中证红利":["159581","159589","515080","515180","515890","560020"],"中证半导体产业":["159582","561980"],"中证通信设备主题":["159583"],"中证全指计算机":["159586"],"MSCI中国A50互联互通":["159601","159602","560050","563000","563280"],"中证海外中国互联网30":["159605","159607"],"中证500质量成长":["159606","560500","562340"],"标准普尔500":["159612","159655","513500","513650"],"中证信息安全主题":["159613","562920"],"中证农牧主题":["159616"],"中证智选500价值稳健策略":["159617"],"中证基建工程":["159619","159635","516950","516970"],"中证智选500成长创新策略":["159620"],"MSCICHINAARMBESGUNIVERSALINDEX":["159621"],"中证沪港深创新药产业":["159622","159748","517110","517120"],"中证成渝地区双城经济圈":["159623"],"中证A100":["159627","159630","159631","159661","159686","159923","512060","512910","515670","560380","561180","561200","561770","561880","562000"],"中证1000":["159629","159633","159677","159679","159680","159685","159845","512100","516300","560010","560110","560590","561280","561590","561780"],"中证智选航空航天科技":["159638"],"中证上海环交所碳中和":["159639","159640","159641","159642","560060","560550","561190","562990"],"国证疫苗与生物科技":["159643","159645","159657"],"中证中药":["159647","560080","561510","562390"],"中债-1-5年国开行债券全价":["159649"],"中债-0-3年国开行债券全价":["159650","159651"],"细分有色":["159652","516650","560470"],"国证ESG300":["159653","159717"],"沪深300成长":["159656","562310"],"国证交通运输行业":["159662"],"中证机床":["159663","159667"],"国证半导体芯片":["159665","159801","159813","159995"],"中证全指运输":["159666"],"中证消费50":["159670","159798","515650"],"中证主要消费":["159672","159689","159928","512600","560680"],"富时亚太低碳精选":["159687"],"中证港股通高股息精选港元":["159691"],"恒生消费":["159699","513970","520520","520620"],"中证物联网主题":["159701","159895","159896","516260","516330"],"中证新材料主题":["159703","159761","159763","516360","516480","516710","516890"],"中证800地产":["159707"],"深证红利":["159708","159905"],"深圳物联网50":["159709"],"中证稀土产业":["159713","159715","516150","516780"],"中证港股通医药卫生综合港元":["159718","159776","513200","513700"],"富时中国国企开放共赢":["159719","517090","517180"],"中证智能电动汽车":["159720","516380","516590","560000"],"中证沪港深科技龙头":["159723","517270","517350"],"中证线上消费主题":["159725"],"恒生港股通中国内地企业红利":["159726"],"国证在线消费":["159728"],"国证龙头家电":["159730"],"中证石化产业":["159731","516570"],"中证港股通消费主题港元":["159735","513070","513230","513590"],"中证食品饮料":["159736"],"中证湖北新旧动能转换":["159743"],"中证全指建筑材料":["159745","159787","516750"],"中证香港科技":["159747","159750"],"中证内地新能源主题":["159752","516270"],"中证红利质量":["159758"],"国证公共卫生与医疗健康":["159760"],"中证旅游主题":["159766","562510"],"中证内地地产主题":["159768"],"创业板科技":["159773","159777"],"中证消费电子主题":["159779","561100","561310","561600","562950"],"中证虚拟现实主题":["159786"],"中证港股通中国100港元":["159788"],"中证内地低碳经济主题":["159790","159885","516070","560560","562300"],"沪深300ESG基准":["159791","516830","560180","561900"],"中证沪港深线上消费主题":["159793","517280"],"中证智能汽车主题":["159795","159888","159889","515250","516520"],"国证创业板中盘精选88":["159804"],"中证传媒":["159805","512980"],"中证科技50":["159807"],"中证5G产业50":["159811"],"黄金9999":["159812","159934","159937","518660","518800","518850","518880"],"创业板大盘":["159814","159991"],"中证0-4年期地方政府债":["159816"],"标普中国新经济行业":["159822"],"上海金":["159830","159831","159834","518600","518680","518860","518890"],"中证创新药产业":["159835","159858","159992","515120","516060","516080","560900"],"创业板300":["159836"],"中证生物科技主题":["159837","159849","516500","516930"],"中证医药50":["159838","515950"],"国证食品饮料行业":["159843"],"恒生中国企业":["159850","159954","159960","510900"],"中证影视主题":["159855","516620"],"中证环保产业50":["159861"],"细分食品":["159862","515170","515710"],"东京日经225":["159866","513000","513520","513880"],"中证动漫游戏":["159869","516010","516770"],"中证有色金属":["159871","159876","159881"],"中证车联网主题":["159872"],"中证全指医疗保健设备与服务":["159873","159877","159891","516610","516790"],"中证新能源":["159875","516090","516160","516580","516850"],"国证有色金属行业":["159880"],"细分机械":["159886","516960"],"中证800银行":["159887"],"中小企业100":["159902"],"深证":["159903","159943"],"深证成长40":["159906"],"深证电子信息传媒产业50":["159909"],"深证基本面120":["159910"],"深证300":["159912"],"深证300价值":["159913"],"深证基本面60":["159916"],"中小创业企业400":["159918"],"中证医药卫生":["159929"],"中证能源":["159930"],"中证金融地产":["159931","512640"],"沪深300金融地产":["159933"],"中证全指可选消费":["159936","562580"],"中证全指医药卫生":["159938"],"中证全指信息技术":["159939","562560"],"中证全指金融地产":["159940"],"中证全指原材料":["159944"],"中证全指能源":["159945"],"中证央企结构调整":["159959","512950","512960"],"央视财经50":["159965"],"创业板低波价值":["159966"],"创业板动量成长":["159967"],"中证5年期地方政府债":["159972"],"国证民企领先100":["159973"],"中证央企创新驱动":["159974","515600","515680","515900"],"粤港澳大湾区创新100":["159976"],"上期有色金属":["159980"],"易盛郑商所能源化工指数A":["159981"],"大商所豆粕期货":["159985"],"国证证券龙头":["159993"],"中证5G通信主题":["159994","515050"],"中证电子":["159997"],"中证计算机主题":["159998","512720"],"上证180公司治理":["510010"],"上证超级大盘":["510020"],"上证180价值":["510030"],"上证180":["510040","510180","510670","530080","530180","530280","530300","530580","530680","530800"],"上证50":["510050","510100","510190","510600","510680","510710","510800","510850","510950","530000","530050","563090"],"上证中央企业50":["510060"],"责任":["510090"],"上证中盘":["510130"],"上证综合":["510140","510210","510760","510910","510980","530060","562810","563930"],"消费80":["510150"],"中证南方小康产业":["510160"],"上证商品":["510170"],"上证证券行业":["510200"],"上证180金融股":["510230"],"上证国企":["510270"],"上证380":["510290","530380"],"上证资源":["510410"],"上证主要消费行业":["510630"],"上证金融地产行业":["510650"],"上证医药卫生行业":["510660"],"上证国有企业红利":["510720","530880"],"上证G60战略新兴产业":["510770"],"中证上海国企":["510810"],"上证红利":["510880"],"中证180ESG":["510990"],"上证5年期国债":["511010"],"中证5-10年期国债活跃券":["511020"],"中债-中高等级公司债利差因子财富":["511030"],"上证5年期地方政府债":["511060"],"上证基准做市公司债":["511070","511110","511190","511200"],"中债-30年期国债财富":["511090"],"上证基准做市国债":["511100"],"上证AAA科技创新公司债":["511120","511150","551000","551030","551060","551300"],"上证30年期国债":["511130"],"中证1-3年国债":["511160"],"上证投资级可转债及可交换债券":["511180"],"上证城投债":["511220"],"上证10年期国债":["511260"],"上证10年期地方政府债":["511270"],"中证短融":["511360"],"中证可转债及可交换债券":["511380"],"中债-7-10年政策性金融债全价":["511520"],"中证国债及政策性金融债0-3年":["511580"],"沪深300医药卫生":["512010"],"中证国信价值":["512040"],"沪深300非银行金融":["512070"],"MSCI中国A股国际通":["512090","512160","512180","512280","512520","512990","515160"],"细分医药":["512120"],"富时中国A50":["512150","512550"],"中证浙江凤凰行动50":["512190"],"中证全指房地产":["512200","515060"],"中证科技传媒通信150":["512220"],"中证500行业中性低波动":["512260"],"中证生物医药":["512290"],"MSCI中国A股":["512320","512380","515770","515780"],"中证500信息技术":["512330"],"MSCI中国A股国际":["512360"],"MSCI中国A股低波":["512390"],"有色金属":["512400"],"中证家居家电":["512430","515730"],"中证全指半导体产品与设备":["512480"],"沪深300红利":["512530"],"中证军工":["512560","512660","512680","512810"],"中证环保产业":["512580"],"中证长三角一体化发展主题":["512650"],"中证国防":["512670"],"中证酒":["512690"],"中证军工龙头":["512710"],"中证锐联基本面50":["512750"],"中华交易服务半导体芯片行业":["512760"],"中国战略新兴产业":["512770"],"中证杭州湾区":["512870"],"中证粤港澳大湾区发展主题":["512970"],"中证海外中国互联网50":["513050"],"法国CAC40":["513080"],"中证香港证券投资主题港元":["513090"],"中证香港创新药":["513120"],"中证港股通金融服务":["513140"],"恒生港股通中国科技":["513160","520980"],"恒生中国央企":["513170"],"中证全球中国互联网":["513220"],"纳斯达克生物科技":["513290"],"中证韩交所中韩半导体":["513310"],"恒生港股通新经济":["513320"],"中证全球中国教育主题":["513360"],"道琼斯工业平均":["513400"],"恒生港股通红利":["513690"],"新交所泛东南亚科技":["513730"],"中证港股通非银行金融主题":["513750"],"中证港股通创新药":["513780","520700","520970"],"东证":["513800"],"中华港股通精选100港元":["513900"],"中证港股通消费主题":["513960"],"上证港股通":["513990"],"中证科技龙头":["515000","516050"],"中证可持续发展100":["515090"],"中证国企一带一路":["515110","515150","515990"],"中证研发创新100":["515200"],"中证钢铁":["515210"],"中证煤炭":["515220"],"中证电子50":["515260","515320"],"沪深300红利低波动":["515300"],"标普中国A股大盘红利低波50":["515450","561450"],"中证科技100":["515580"],"中证500等权重":["515590"],"中证800证券保险":["515630"],"中证新能源汽车产业":["515700","516390"],"中证科技50策略":["515750"],"中证浙江国资创新发展":["515760"],"中证新兴科技100策略":["515860"],"中证全指通信设备":["515880"],"MSCI中国A股国际质量":["515910"],"中证智能消费主题":["515920"],"中证医药健康100策略":["515960"],"中证人工智能产业":["515980"],"沪深300自由现金流":["516040","561420","562080","562170","563900"],"中证800汽车与零部件":["516110"],"中证文娱传媒":["516190"],"中证装备产业":["516320","562910"],"中证现代物流":["516530","516910"],"中证大农业":["516550"],"中证养老产业":["516560"],"消费服务":["516600"],"中证ESG120策略":["516720"],"中证智能制造主题":["516800"],"中证医药及医疗器械创新":["516820"],"食品饮料":["516900"],"中证证券公司先锋策略":["516980"],"中证沪港深500":["517000","517010","517080","517100","517170"],"中证沪港深300":["517030","517300"],"中证长江保护主题":["517160","517330"],"中证沪港深科技100":["517360","517960"],"恒生沪深港创新药精选50":["517380"],"中证沪港深消费龙头":["517550","517760"],"中证沪港深物联网主题":["517660"],"中证沪港深游戏及文化传媒":["517770"],"中证沪港深人工智能50":["517800"],"中证沪港深张江自主创新50":["517850"],"中证沪港深品牌消费50":["517880"],"中证银行AH价格优选":["517900"],"中证智选沪深港科技50":["517950"],"中证沪港深500医药卫生":["517990"],"恒生创新药":["520500"],"恒生中国30":["520560"],"iEdgeEmergingAsiaSelect50Index":["520580"],"中证国新港股通央企红利":["520660","520900","520990"],"恒生港股通创新药精选":["520690","520880"],"上证580":["530100","530530"],"中证800价值":["560030"],"中证国新央企股东回报":["560070","560700","561960"],"中证500自由现金流":["560120"],"中证国新央企科技引领":["560170","562380","563050"],"中证电信主题":["560300","560690","563010"],"沪深300价值":["560330","562320"],"中证企业核心竞争力50":["560650","561500"],"中证智选船舶产业":["560710"],"中证诚通央企ESG":["560810"],"中证信息技术应用创新产业":["560850","562030","562570"],"中证碳中和60":["560960"],"中证光伏龙头30":["560980"],"中证科技先锋":["560990"],"中证新华社民族品牌工程":["561130"],"中证绿色电力":["561170","561610","562550","562960"],"中证国新央企现代能源":["561260","561790","562850"],"中证内地运输主题":["561320"],"中证油气产业":["561360","561570"],"沪深300质量":["561690","563960"],"中证疫苗与生物技术":["561710","561920","562860"],"中证绿色能源":["562010"],"中证制药":["562050"],"标普中国A股红利机会":["562060"],"中证500价值":["562330"],"中证智选1000成长创新策略":["562520"],"中证智选1000价值稳健策略":["562530"],"中证现代农业主题":["562900"],"中证国资央企50":["563060"],"中证高股息策略":["563180"],"恒生A股专精特新企业":["563210"],"中证全指航空航天":["563380"],"中证科技优势成长50策略":["563560"],"中证红利价值":["563700"],"上证科创板50":["588000","588040","588050","588060","588080","588090","588150","588180","588280","588370","588450","588460","588720","588840","588870","588940","588950","589150","589360","589850"],"上证科创板新材料":["588010","588160","589180","589510"],"上证科创板成长":["588020","588070","588110","589490","589700"],"上证科创板100":["588030","588120","588190","588210","588220","588500","588680","588800","588880","588900","588980","589270","589950","589980"],"上证科创板新一代信息技术":["588100","588260","588770"],"上证科创板生物医药":["588130","588250","588700","588860"],"上证科创板200":["588140","588230","588240","588270","588820","589200","589220","589320","589330","589460","589780","589820"],"上证科创板半导体材料设备主题":["588170","588710","589020"],"上证科创板芯片":["588200","588290","588750","588810","588890","588920","588990","589100","589130","589160","589190"],"上证科创板综合":["588520","588550","588670","588690","589000","589050","589060","589080","589280","589300","589500","589580","589600","589630","589660","589680","589770","589800","589860","589880","589890","589900","589990"],"上证科创板人工智能":["588730","588760","588790","588930","589010","589090","589110","589230","589310","589380","589410","589520","589560"],"上证科创板芯片设计主题":["588780","589030","589070","589170","589210","589250","589260","589290","589350","589390","589400","589420","589430","589480"],"上证科创板新能源主题":["588830","588960","589960"],"上证科创板工业机械":["588850"],"上证智选科创板创新价值":["588910"],"上证科创板创新药":["589120","589720"],"上证智选科创板价值50策略":["589550"]};
-var RESEARCH = {"generated_at":"2026-11-12T17:30:13","window":["2023-11-13","2026-11-12"],"train":["2023-11-13","2025-08-27"],"test":["2025-08-28","2026-11-12"],"train_days":436,"test_days":291,"horizon":5,"clusters":73,"cluster_thresh":0.5,"corr":{"mean":0.1016,"median":0.0559,"p95":0.357,"gt06":0.0102},"picks":[["a040",0.02488,0.143,2.98,0.5661,17],["a054",0.02426,0.108,2.25,0.5197,63],["a095",0.01726,0.148,3.08,0.5684,7],["a024",0.01617,0.078,1.63,0.4988,46],["a061",-0.01537,-0.106,-2.2,0.5592,41],["a001",0.01507,0.075,1.55,0.536,48],["a036",0.01467,0.113,2.34,0.5522,40],["a072",0.01435,0.123,2.55,0.5545,11]],"ic":{"n":101,"neg":34,"rows":[["a018",-0.02563,-0.099,-5.12,0.5326,2672],["a032",0.02496,0.076,3.74,0.522,2404],["a060",0.02346,0.081,4.17,0.5231,2680],["a044",0.02149,0.141,7.29,0.5525,2675],["a085",0.02055,0.114,5.8,0.5334,2602],["a054",0.0194,0.068,3.53,0.5231,2703],["a006",0.01929,0.099,5.12,0.5478,2680],["a040",0.01891,0.087,4.52,0.5471,2676],["a014",0.01808,0.094,4.87,0.5377,2680],["a073",-0.01771,-0.057,-2.95,0.5206,2691],["a039",-0.01733,-0.056,-2.73,0.5257,2376],["a093",-0.0158,-0.088,-4.43,0.5326,2531],["a075",0.01431,0.105,5.46,0.5353,2703],["a072",0.01428,0.082,4.17,0.5477,2569],["a083",0.01386,0.059,3.04,0.5158,2687],["a043",0.01375,0.055,2.84,0.5323,2664],["a065",-0.01367,-0.066,-3.43,0.5246,2703],["a052",-0.01305,-0.048,-2.32,0.5226,2394],["a063",-0.01266,-0.055,-2.68,0.5142,2396],["a098",0.0126,0.073,3.69,0.5318,2561],["a019",-0.01231,-0.036,-1.77,0.5122,2376],["a062",0.01224,0.069,3.6,0.512,2703],["a079",0.01141,0.072,3.73,0.5191,2703],["a008",0.01118,0.034,1.74,0.5004,2670],["a087",-0.01109,-0.059,-3.06,0.5169,2691],["a026",0.01092,0.065,3.29,0.5371,2577],["a057",0.01038,0.045,2.3,0.5053,2652],["a070",-0.01033,-0.046,-2.33,0.521,2595],["a016",0.01013,0.079,4.08,0.5396,2691],["a036",0.01009,0.05,2.48,0.5314,2452],["a022",0.00996,0.056,2.87,0.5251,2647],["a071",0.00973,0.059,3.08,0.5041,2670],["a030",0.00964,0.037,1.89,0.5,2664],["a009",0.009,0.028,1.45,0.5081,2700],["a081",-0.00804,-0.053,-2.75,0.5054,2703],["a094",-0.00798,-0.047,-2.31,0.5111,2385],["a049",0.00794,0.024,1.23,0.5022,2700],["a100",0.00784,0.03,1.51,0.5069,2553],["a055",0.00783,0.057,2.92,0.5188,2658],["a058",0.00758,0.051,2.64,0.5297,2675],["a051",0.00755,0.023,1.18,0.503,2700],["a041",-0.00733,-0.039,-2.05,0.5187,2703],["a046",0.00726,0.024,1.24,0.5041,2700],["a059",0.00711,0.047,2.41,0.5378,2661],["a064",-0.00703,-0.031,-1.61,0.508,2703],["a015",0.00697,0.056,2.79,0.5298,2463],["a077",-0.00695,-0.04,-2.05,0.5236,2664],["a013",0.00679,0.051,2.66,0.524,2691],["a095",0.00677,0.043,2.21,0.5057,2703],["a067",0.00657,0.028,1.45,0.5105,2658],["a029",-0.00655,-0.021,-1.1,0.5015,2688],["a020",0.00642,0.024,1.26,0.5093,2700],["a012",0.0064,0.035,1.83,0.5133,2700],["a003",0.00639,0.045,2.31,0.5264,2637],["a033",0.00618,0.017,0.87,0.4943,2703],["a002",-0.00614,-0.039,-2.03,0.5147,2687],["a047",-0.00573,-0.018,-0.93,0.5146,2664],["a037",0.00565,0.02,1,0.4957,2451],["a034",0.0055,0.019,0.97,0.5019,2678],["a089",0.00535,0.023,1.19,0.5098,2652],["a061",0.00531,0.028,1.44,0.4898,2703],["a091",0.00528,0.035,1.82,0.5123,2633],["a086",-0.00516,-0.036,-1.82,0.5286,2556],["a053",0.00502,0.017,0.86,0.4977,2620],["a031",0.00501,0.024,1.24,0.503,2650],["a025",0.00485,0.017,0.86,0.5045,2664],["a010",0.00472,0.015,0.79,0.503,2700],["a023",0.00463,0.017,0.86,0.5094,2703],["a004",0.00434,0.018,0.94,0.5128,2703],["a096",0.00431,0.034,1.71,0.5277,2490],["a101",-0.00426,-0.013,-0.69,0.4909,2703],["a068",-0.00423,-0.037,-1.92,0.4955,2686],["a078",-0.00417,-0.024,-1.21,0.5022,2479],["a048",0.00397,0.02,0.96,0.5149,2375],["a024",0.00389,0.015,0.76,0.498,2693],["a005",0.00385,0.017,0.86,0.4978,2680],["a084",-0.0038,-0.012,-0.61,0.5014,2529],["a088",0.0038,0.024,1.22,0.5099,2687],["a076",-0.00349,-0.022,-1.14,0.4974,2674],["a028",0.00285,0.015,0.75,0.5094,2652],["a080",-0.00278,-0.016,-0.81,0.5079,2662],["a027",0.00218,0.016,0.85,0.5117,2703],["a021",0.00215,0.009,0.46,0.4865,2672],["a050",0.00188,0.014,0.71,0.5189,2513],["a092",0.00177,0.011,0.57,0.502,2703],["a038",-0.00171,-0.005,-0.26,0.5109,2703],["a017",-0.00138,-0.005,-0.25,0.506,2664],["a082",-0.00137,-0.006,-0.31,0.4974,2670],["a090",0.00122,0.007,0.35,0.4966,2616],["a099",-0.00107,-0.006,-0.34,0.4935,2703],["a001",0.00102,0.004,0.19,0.5064,2660],["a074",0.00093,0.006,0.31,0.5124,2703],["a011",-0.00084,-0.005,-0.25,0.5076,2693],["a042",-0.00074,-0.003,-0.15,0.5142,2703],["a056",-0.0007,-0.003,-0.13,0.506,2656],["a007",-0.00067,-0.003,-0.16,0.5092,2673],["a069",0.00064,0.003,0.16,0.5036,2661],["a035",0.00051,0.002,0.09,0.5059,2700],["a097",0.00043,0.003,0.1,0.4925,1330],["a066",-0.00034,-0.003,-0.12,0.5,2352],["a045",0.00009,0.001,0.03,0.4971,2551]]},"bt":[["8因子组合 多头",290,-0.0908,0.2223,-0.408,-0.2746,0.4931,0.00099,0.0064],["8因子组合 多空",290,-0.0278,0.0937,-0.297,-0.125,0.5276,null,null],["101因子等权 多头",290,-0.0632,0.2221,-0.284,-0.2612,0.5034,0.01033,0.0763],["101因子等权 多空",290,0.0357,0.0864,0.414,-0.1137,0.5103,null,null],["单因子a040 多头",290,-0.1132,0.2413,-0.469,-0.3182,0.5138,-0.0121,-0.0702],["单因子a040 多空",290,-0.0902,0.1275,-0.708,-0.1877,0.4793,null,null],["全市场等权 多头",291,0.0244,0.2059,0.118,-0.1986,0.5189,null,null]]};
+var RESEARCH = {"generated_at":"2026-11-04T13:35:17","window":["2023-11-03","2026-11-03"],"train":["2023-11-03","2025-08-18"],"test":["2025-08-19","2026-11-03"],"train_days":435,"test_days":291,"horizon":5,"clusters":73,"cluster_thresh":0.5,"corr":{"mean":0.1013,"median":0.0556,"p95":0.3556,"gt06":0.0104},"picks":[["a040",0.03095,0.187,3.87,0.5814,17],["a054",0.02327,0.104,2.17,0.5163,63],["a024",0.02121,0.104,2.16,0.5186,46],["a095",0.01726,0.149,3.1,0.5721,7],["a036",0.01595,0.121,2.52,0.5628,40],["a076",0.01541,0.115,2.38,0.5326,5],["a063",0.01525,0.096,1.99,0.5442,42],["a059",0.01517,0.144,2.98,0.5651,9]],"ic":{"n":101,"neg":36,"rows":[["a018",-0.02611,-0.101,-5.24,0.5361,2671],["a032",0.02498,0.076,3.74,0.5207,2397],["a060",0.02298,0.079,4.08,0.5223,2673],["a044",0.02202,0.144,7.46,0.5499,2677],["a085",0.02059,0.114,5.8,0.531,2595],["a006",0.01877,0.096,4.96,0.5477,2673],["a039",-0.01865,-0.06,-2.94,0.5276,2369],["a040",0.01823,0.084,4.33,0.5481,2671],["a054",0.01811,0.063,3.29,0.5171,2696],["a014",0.01753,0.091,4.71,0.5357,2673],["a073",-0.017,-0.055,-2.83,0.519,2684],["a093",-0.01642,-0.092,-4.6,0.5361,2524],["a075",0.01607,0.119,6.16,0.5356,2696],["a098",0.01521,0.087,4.43,0.5379,2584],["a065",-0.01474,-0.071,-3.71,0.5256,2696],["a072",0.01443,0.083,4.21,0.5457,2562],["a052",-0.01399,-0.051,-2.49,0.5245,2387],["a043",0.01322,0.053,2.73,0.5326,2657],["a063",-0.01304,-0.056,-2.76,0.5165,2389],["a083",0.01289,0.055,2.84,0.5153,2680],["a019",-0.01278,-0.038,-1.84,0.512,2369],["a062",0.0122,0.069,3.58,0.5159,2696],["a079",0.01106,0.069,3.6,0.523,2696],["a087",-0.01098,-0.058,-3.02,0.5142,2684],["a070",-0.01078,-0.048,-2.42,0.5224,2588],["a026",0.01072,0.064,3.22,0.5319,2570],["a008",0.01056,0.032,1.65,0.5006,2663],["a016",0.01044,0.081,4.19,0.5432,2684],["a071",0.01003,0.065,3.36,0.5107,2663],["a036",0.00998,0.05,2.45,0.5297,2445],["a022",0.00987,0.055,2.84,0.5232,2655],["a057",0.00977,0.042,2.16,0.5032,2645],["a094",-0.0085,-0.05,-2.46,0.5151,2378],["a009",0.00846,0.026,1.36,0.5084,2693],["a064",-0.00826,-0.036,-1.89,0.5111,2696],["a030",0.00821,0.031,1.61,0.5021,2657],["a100",0.00792,0.03,1.52,0.5039,2584],["a055",0.00769,0.056,2.86,0.5177,2652],["a077",-0.00744,-0.043,-2.19,0.5243,2657],["a041",-0.00737,-0.04,-2.07,0.5219,2696],["a081",-0.00728,-0.048,-2.47,0.5082,2696],["a047",-0.00719,-0.023,-1.17,0.5175,2657],["a013",0.00715,0.054,2.79,0.5268,2684],["a046",0.00714,0.024,1.22,0.5072,2693],["a029",-0.00711,-0.023,-1.19,0.5024,2681],["a015",0.00675,0.054,2.68,0.5298,2482],["a049",0.00674,0.02,1.04,0.5009,2693],["a095",0.00668,0.042,2.18,0.507,2696],["a002",-0.00663,-0.042,-2.19,0.5172,2680],["a051",0.00642,0.019,1,0.5009,2693],["a012",0.00625,0.035,1.79,0.5113,2693],["a058",0.00609,0.041,2.12,0.5247,2668],["a003",0.00609,0.043,2.21,0.5318,2640],["a059",0.00607,0.04,2.06,0.5317,2654],["a033",0.00573,0.015,0.8,0.4937,2696],["a091",0.00558,0.038,1.94,0.5187,2626],["a086",-0.00529,-0.037,-1.86,0.5283,2548],["a061",0.00512,0.027,1.4,0.4874,2696],["a037",0.00509,0.018,0.9,0.4914,2444],["a067",0.00509,0.022,1.12,0.5096,2651],["a020",0.00506,0.019,0.99,0.5032,2693],["a053",0.00464,0.015,0.79,0.4964,2613],["a089",0.00462,0.02,1.02,0.5064,2654],["a034",0.00461,0.016,0.81,0.4987,2671],["a031",0.0046,0.022,1.14,0.5013,2645],["a088",0.00459,0.029,1.49,0.5194,2680],["a096",0.00455,0.036,1.83,0.5238,2518],["a010",0.00453,0.015,0.76,0.5058,2693],["a076",-0.0039,-0.025,-1.26,0.4979,2667],["a068",-0.00371,-0.032,-1.68,0.5006,2685],["a078",-0.00359,-0.021,-1.04,0.5025,2565],["a048",0.00355,0.018,0.85,0.5131,2368],["a025",0.00352,0.012,0.63,0.4994,2657],["a080",-0.00351,-0.02,-1.03,0.5103,2665],["a092",-0.00346,-0.021,-1.11,0.5056,2696],["a101",-0.00337,-0.011,-0.55,0.49,2696],["a004",0.00318,0.013,0.69,0.5119,2696],["a023",0.00311,0.011,0.58,0.507,2696],["a005",0.003,0.013,0.67,0.4961,2673],["a028",0.00297,0.015,0.78,0.5096,2653],["a038",-0.00284,-0.008,-0.43,0.5122,2696],["a084",-0.00275,-0.009,-0.44,0.4968,2522],["a027",0.00261,0.02,1.02,0.5148,2696],["a024",0.0026,0.01,0.51,0.4944,2686],["a017",-0.00246,-0.009,-0.45,0.5073,2657],["a082",-0.0022,-0.01,-0.5,0.4983,2663],["a050",0.00218,0.016,0.82,0.5155,2543],["a099",-0.0021,-0.013,-0.66,0.4933,2696],["a001",0.00193,0.007,0.35,0.5089,2653],["a035",0.00193,0.007,0.35,0.5087,2693],["a056",-0.00185,-0.007,-0.34,0.5081,2649],["a042",-0.00175,-0.007,-0.36,0.5122,2696],["a007",-0.00145,-0.006,-0.34,0.5101,2666],["a011",-0.00127,-0.007,-0.39,0.5045,2686],["a069",0.00116,0.006,0.3,0.5019,2654],["a021",0.00107,0.004,0.23,0.4844,2665],["a097",0.00105,0.006,0.23,0.4966,1325],["a066",-0.00101,-0.007,-0.35,0.5096,2345],["a090",0.00078,0.004,0.23,0.4958,2612],["a045",-0.00058,-0.004,-0.21,0.4957,2544],["a074",0.00039,0.003,0.13,0.5052,2696]]},"bt":[["8因子组合 多头",290,-0.1249,0.2096,-0.596,-0.2819,0.5,-0.00679,-0.0355],["8因子组合 多空",290,-0.0953,0.1421,-0.67,-0.1738,0.4724,null,null],["101因子等权 多头",290,-0.1243,0.2144,-0.58,-0.2653,0.5034,-0.01122,-0.0527],["101因子等权 多空",290,-0.1001,0.1404,-0.713,-0.1226,0.4931,null,null],["单因子a040 多头",290,-0.1392,0.2273,-0.612,-0.3144,0.5069,-0.02091,-0.123],["单因子a040 多空",290,-0.1622,0.1255,-1.293,-0.1927,0.4828,null,null],["全市场等权 多头",291,0.0162,0.1959,0.083,-0.1917,0.512,null,null]]};
 var ALPHA_META = {"a001":{"nm":"恐慌位置","ds":"近 5 日里「恐慌度」最极端的是哪一天。下跌日用 20 日波动率、上涨日用收盘价，再平方放大差距，取期间位置——位置越靠后说明恐慌刚刚发生。","f":"inner = ((returns < 0) ? ts_stddev(returns, 20) : close)\\n→ rank(ts_argmax(signedpower(inner, 2), 5))"},"a002":{"nm":"量变背离","ds":"成交量两日变化与日内涨跌的负相关。放量却收阴、缩量却收阳时因子走高，赌的是量价不同步之后的回归。","f":"→ −1 × ts_corr(rank(delta(log(volume), 2)), rank((close − open) ÷ open), 6)"},"a003":{"nm":"开盘量与价","ds":"开盘价排名与成交量排名的 10 日负相关。开盘越贵成交越少的标的得分越高。","f":"→ −1 × ts_corr(rank(open), rank(volume), 10)"},"a004":{"nm":"低价时点","ds":"最低价排名在过去 9 日中的位置，取负。价格创近期新低时因子走高。","f":"→ −1 × ts_rank(rank(low), 9)"},"a005":{"nm":"开盘离均价","ds":"开盘价相对 10 日 VWAP 均值的偏离，乘以收盘价偏离 VWAP 的幅度。两个偏离同向时信号被放大。","f":"→ rank((open − (ts_sum(vwap, 10) ÷ 10))) × (−1 × abs(rank((close − vwap))))"},"a006":{"nm":"开盘量能","ds":"开盘价与成交量的 10 日相关性取负。开盘价推高但量跟不上时得分高。","f":"→ −1 × ts_corr(open, volume, 10)"},"a007":{"nm":"放量后的七天动量","ds":"仅当成交量高于 20 日均量时生效：7 日涨跌幅的绝对值在 60 日中的分位，再按涨跌方向定符号。放量上涨得分低、放量下跌得分高。","f":"adv20 = adv(amount, 20)\\nd7 = delta(close, 7)\\n→ ((adv20 < volume) ? ((−1 × ts_rank(abs(d7), 60)) × sign(d7)) : −1.0)"},"a008":{"nm":"五日量价合成","ds":"开盘价和与 5 日收益率和的乘积，与 10 日前的同值比较取负。衡量量价配合程度的边际变化。","f":"x = ts_sum(open, 5) × ts_sum(returns, 5)\\n→ −1 × rank((x − delay(x, 10)))"},"a009":{"nm":"价差连续性","ds":"单日价差连续 5 日在同向时顺势取值，方向反转时反号——本质是在判断短期趋势是否还在延续。","f":"d1 = delta(close, 1)\\n→ ((ts_min(d1, 5) > 0) ? d1 : ((ts_max(d1, 5) < 0) ? d1 : (−1 × d1)))"},"a010":{"nm":"价差连续性（4日）","ds":"同 a009，但只用 4 日窗口判断价差是否连续同向，节奏更快、换手更高。","f":"d1 = delta(close, 1)\\n→ rank(((ts_min(d1, 4) > 0) ? d1 : ((ts_max(d1, 4) < 0) ? d1 : (−1 × d1))))"},"a011":{"nm":"VWAP 偏离极值","ds":"近 3 日 VWAP 减收盘的最大值与最小值之和，再乘以成交量 3 日变化。偏离越大、放量越猛，信号越强。","f":"spread = vwap − close\\n→ (rank(ts_max(spread, 3)) + rank(ts_min(spread, 3))) × rank(delta(volume, 3))"},"a012":{"nm":"量价反向","ds":"成交量变化的方向乘以收盘价变化的反号。放量下跌得正分，放量上涨得负分。","f":"→ sign(delta(volume, 1)) × (−1 × delta(close, 1))"},"a013":{"nm":"收盘量协方差","ds":"收盘价排名与成交量排名的 5 日协方差取负。量价同向变动时因子走低。","f":"→ −1 × rank(ts_cov(rank(close), rank(volume), 5))"},"a014":{"nm":"收益变化 × 开盘量能","ds":"3 日收益率变化的排名，乘以开盘价与成交量的 10 日相关性。前半看动能拐点，后半看量价配合。","f":"→ (−1 × rank(delta(returns, 3))) × ts_corr(open, volume, 10)"},"a015":{"nm":"高价量相关累积","ds":"最高价与成交量排名的 3 日相关性，做排名后累加 3 日，取负。","f":"→ −1 × ts_sum(rank(ts_corr(rank(high), rank(volume), 3)), 3)"},"a016":{"nm":"高价量协方差","ds":"最高价排名与成交量排名的 5 日协方差取负。高位放量被视为负面信号。","f":"→ −1 × rank(ts_cov(rank(high), rank(volume), 5))"},"a017":{"nm":"三重压制","ds":"收盘价时序分位、二阶价格变化、相对成交量分位三项连乘取负。任一项弱则整体弱，是典型的多条件共振因子。","f":"adv20 = adv(amount, 20)\\n→ ((−1 × rank(ts_rank(close, 10))) × rank(delta(delta(close, 1), 1))) × rank(ts_rank(volume ÷ adv20, 5))"},"a018":{"nm":"日内振幅背离","ds":"5 日振幅的均值加上当日涨跌，再加收盘与开盘的 10 日相关性，整体取负排名。振幅大且量价背离时得分低。","f":"→ −1 × rank(((ts_stddev(abs(close − open), 5) + (close − open)) + ts_corr(close, open, 10)))"},"a019":{"nm":"长期收益斜率","ds":"7 日价格变化的方向，乘以 250 日收益率累积的排名。短期方向与长期强度同时为正才给出强信号。","f":"→ (−1 × sign(((close − delay(close, 7)) + delta(close, 7)))) × (1 + rank((1 + ts_sum(returns, 250))))"},"a020":{"nm":"开盘跳空三重","ds":"开盘价相对昨日高、收、低三个价位的缺口连乘取负。三个缺口同向时信号最强。","f":"→ ((−1 × rank((open − delay(high, 1)))) × rank((open − delay(close, 1)))) × rank((open − delay(low, 1)))"},"a021":{"nm":"多条件判定","ds":"由若干个价格、成交量、均价条件组合成 +1/−1 的离散信号，条件都不满足时默认 −1。","f":"adv20 = adv(amount, 20)\\nvr = volume ÷ adv20\\ncond1 = (((ts_sum(close, 8) ÷ 8) + ts_stddev(close, 8)) < (ts_sum(close, 2) ÷ 2))\\ncond2 = ((ts_sum(close, 2) ÷ 2) < ((ts_sum(close, 8) ÷ 8) − ts_stddev(close, 8)))\\ncond3 = (vr ≥ 1)\\n→ (cond1 ? −1.0 : (cond2 ? 1.0 : (cond3 ? 1.0 : −1.0)))"},"a022":{"nm":"量价相关变化 × 波动","ds":"高价与成交量 5 日相关性的 5 日变化，乘以 20 日收盘波动率的排名，取负。","f":"→ −1 × (delta(ts_corr(high, volume, 5), 5) × rank(ts_stddev(close, 20)))"},"a023":{"nm":"高价突破","ds":"收盘价站上 20 日均高价时，取 2 日高价变化的反向；否则记 0。只在高位突破时给信号。","f":"→ (((ts_sum(high, 20) ÷ 20) < high) ? (−1 × delta(high, 2)) : 0.0)"},"a024":{"nm":"长期弱势判定","ds":"100 日均价相对 100 日前的涨幅不超过 5% 时，看当前价离 100 日最低有多远；否则看 3 日价格变化。区分「长期横盘」与「仍在下跌」。","f":"x = delta((ts_sum(close, 100) ÷ 100), 100) ÷ delay(close, 100)\\n→ ((x ≤ 0.05) ? (−1 × (close − ts_min(close, 100))) : (−1 × delta(close, 3)))"},"a025":{"nm":"量价负向加权","ds":"收益率、20 日均成交额、VWAP、日内回落幅度四者连乘取负排名。成交量越大、日内回落越深，得分越低。","f":"→ rank(((((−1 × returns) × adv(amount, 20)) × vwap) × (high − close)))"},"a026":{"nm":"量价分位相关极值","ds":"成交量 5 日分位与高价 5 日分位的相关性，取 3 日最大值再取负。","f":"→ −1 × ts_max(ts_corr(ts_rank(volume, 5), ts_rank(high, 5), 5), 3)"},"a027":{"nm":"缩量判定","ds":"5 日成交量之和的 1/20 高于当日量时记 −1，否则 +1。极简的放量/缩量二值信号。","f":"cond = (rank((ts_sum(ts_corr(rank(volume), rank(vwap), 6), 2) ÷ 2.0)) > 0.5)\\n→ (cond ? −1.0 : 1.0)"},"a028":{"nm":"均价低位","ds":"20 日均成交额与最低价的 5 日相关性，加上日内中价与收盘的差，整体缩放。均价托底时得分高。","f":"→ scale(((ts_corr(adv(amount, 20), low, 5) + ((high + low) ÷ 2)) − close))"},"a029":{"nm":"分层动量叠加","ds":"把多层排名、对数、连乘嵌套后取 5 日最小值，再叠加 6 日前收益的反向分位。论文里结构最绕的因子之一，结果仍是动量类信号。","f":"x = rank(rank((−1 × rank(delta((close − 1), 5)))))\\npart = ts_product(rank(rank(scale(log(ts_sum(ts_min(x, 2), 1))))), 1)\\n→ min_(part, 5) + ts_rank(delay((−1 × returns), 6), 5)"},"a030":{"nm":"量能转移","ds":"(1 − 5日与20日价格变化方向的排名) 乘以 5 日量占 20 日量的比重。资金正在集中而非分散时得分高。","f":"sgn = (sign((close − delay(close, 1))) + sign((delay(close, 1) − delay(close, 2)))) + sign((delay(close, 2) − delay(close, 3)))\\n→ ((1.0 − rank(sgn)) × ts_sum(volume, 5)) ÷ ts_sum(volume, 20)"},"a031":{"nm":"加权量价合成","ds":"三段加权：量价衰减相关的排名、价格衰减变化、低量惩罚，线性合成后取反向。","f":"part1 = rank(rank(rank(decay_linear((−1 × rank(rank(delta(close, 10)))), 10))))\\npart2 = rank((−1 × delta(close, 3)))\\npart3 = sign(scale(ts_corr(adv(amount, 20), low, 12)))\\n→ (part1 + part2) + part3"},"a032":{"nm":"均线偏离 + 长周期量价","ds":"7 日均价与收盘的偏离，加上 20 倍 VWAP 与 5 日前收盘的 230 日相关性。后者捕捉「超长期」量价关系，是全集里窗口最长的因子。","f":"→ scale(((ts_sum(close, 7) ÷ 7) − close)) + (20 × scale(ts_corr(vwap, delay(close, 5), 230)))"},"a033":{"nm":"开盘折价","ds":"开盘价相对收盘价的比例取负排名。开盘低于收盘（低开高走）时得分高。","f":"→ rank((−1 × (1 − open ÷ close)))"},"a034":{"nm":"波动比与价格变化","ds":"2 日与 5 日波动率之比，加上价格日变化的排名，合成后排名。短期波动突然收缩时得分高。","f":"→ rank(((1 − rank(ts_stddev(returns, 2) ÷ ts_stddev(returns, 5))) + (1 − rank(delta(close, 1)))))"},"a035":{"nm":"量价分位三重","ds":"成交量 32 日分位 × (1 − 日内振幅 16 日分位) × (1 − 收益率 32 日分位)。三者都低时得分高，是「平静」信号。","f":"→ (ts_rank(volume, 32) × (1 − ts_rank(((close + high) − low), 16))) × (1 − ts_rank(returns, 32))"},"a036":{"nm":"四段加权动量","ds":"2.21×量价相关排名 + 0.7×日内回落排名 + 0.73×短期动量排名 + 成交量加权。论文给出的权重，偏向量价配合。","f":"adv20 = adv(amount, 20)\\n→ ((((2.21 × rank(ts_corr((close − open), delay(volume, 1), 15))) + (0.7 × rank((open − close)))) + (0.73 × rank(ts_rank(delay((−1 × returns), 6), 5)))) + rank(abs(ts_corr(vwap, adv20, 6)))) + (0.6 × rank((((ts_sum(close, 200) ÷ 200) − open) × (close − open))))"},"a037":{"nm":"日内回落与长期相关","ds":"前一日 (开盘−收盘) 与收盘价的 200 日相关性排名，加上当日日内回落排名。","f":"→ rank(ts_corr(delay((open − close), 1), close, 200)) + rank((open − close))"},"a038":{"nm":"收盘分位 × 开收比","ds":"收盘价 10 日分位的排名，乘以收盘/开盘比值的排名，取负。","f":"→ (−1 × rank(ts_rank(close, 10))) × rank(close ÷ open)"},"a039":{"nm":"长期趋势 × 量能衰减","ds":"7 日价格变化 × (1 − 相对成交量的衰减排名)，再乘以 250 日累计收益。长周期动量与资金流入同时成立才有强信号。","f":"adv20 = adv(amount, 20)\\n→ (−1 × rank((delta(close, 7) × (1 − rank(decay_linear(volume ÷ adv20, 9)))))) × (1 + rank(ts_sum(returns, 250)))"},"a040":{"nm":"高价波动 × 量价背离","ds":"最高价 10 日波动率的排名，乘以高低价与成交量的 10 日相关性，取负。","f":"→ (−1 × rank(ts_stddev(high, 10))) × ts_corr(high, volume, 10)"},"a041":{"nm":"几何均价偏离","ds":"最高价与最低价的几何平均减去 VWAP。价格中枢高于成交均价时为正。","f":"→ np.sqrt((high × low)) − vwap"},"a042":{"nm":"VWAP 相对位置","ds":"VWAP 减收盘与 VWAP 加收盘两个排名之比。收盘远低于 VWAP 时得分高。","f":"→ rank((vwap − close)) ÷ rank((vwap + close))"},"a043":{"nm":"量能分位 × 跌幅分位","ds":"相对成交量 20 日分位，乘以 7 日跌幅的 8 日分位。放量下跌时信号最强。","f":"→ ts_rank(volume ÷ adv(amount, 20), 20) × ts_rank((−1 × delta(close, 7)), 8)"},"a044":{"nm":"高价量相关","ds":"最高价与成交量排名的 5 日相关性取负。","f":"→ −1 × ts_corr(high, rank(volume), 5)"},"a045":{"nm":"三重量价结构","ds":"5 日前收盘的 20 日均价排名 × 收盘与成交量的 2 日相关 × 短期与长期均价的相关排名，取负。","f":"→ −1 × ((rank((ts_sum(delay(close, 5), 20) ÷ 20)) × ts_corr(close, volume, 2)) × rank(ts_corr(ts_sum(close, 5), ts_sum(close, 20), 2)))"},"a046":{"nm":"日内位置分档","ds":"用收盘价在日内区间的位置分三档：高位给负、低位给正、中间用当日价格变化取反。区间用 2 日数据算。","f":"x = ((delay(close, 20) − delay(close, 10)) ÷ 10) − ((delay(close, 10) − close) ÷ 10)\\n→ ((x > 0.25) ? −1.0 : ((x < 0) ? 1.0 : (−1 × (close − delay(close, 1)))))"},"a047":{"nm":"量能加权反转","ds":"收盘倒数 × 相对量 × 高价相对回落，再减去 VWAP 的 5 日变化。","f":"adv20 = adv(amount, 20)\\ninner = ((rank((1 ÷ close)) × volume) ÷ adv20) ÷ (ts_sum(high, 5) ÷ 5) × (high × rank((high − close)))\\n→ inner − rank((vwap − delay(vwap, 5)))"},"a048":{"nm":"行业中性量价","ds":"价格二阶变化与 250 日相关的乘积，先做行业中性化（这里用资产类别代理）再除以波动率。全集里唯一显式做中性化的因子。","f":"num = ts_corr(delta(close, 1), delta(delay(close, 1), 1), 250) × delta(close, 1)\\nnum = indneutralize(num ÷ close, asset_class)\\nden = ts_sum(((delta(close, 1) ÷ delay(close, 1)) ^ 2), 250)\\n→ num ÷ den"},"a049":{"nm":"跌破均线","ds":"5 日均价相对 5 日前跌破 10% 时记 +1，否则取当日价格变化的反向。赌超跌反弹。","f":"x = ((delay(close, 20) − delay(close, 10)) ÷ 10) − ((delay(close, 10) − close) ÷ 10)\\n→ ((x < −0.1) ? 1.0 : (−1 × (close − delay(close, 1))))"},"a050":{"nm":"量价相关峰值","ds":"成交量排名与 VWAP 排名 5 日相关性的排名，取 5 日最大值再取负。","f":"→ −1 × ts_max(rank(ts_corr(rank(volume), rank(vwap), 5)), 5)"},"a051":{"nm":"跌破均线（5%）","ds":"同 a049，但阈值放宽到 −5%，触发更频繁。","f":"x = ((delay(close, 20) − delay(close, 10)) ÷ 10) − ((delay(close, 10) − close) ÷ 10)\\n→ ((x < −0.05) ? 1.0 : (−1 × (close − delay(close, 1))))"},"a052":{"nm":"低位反抽 × 长期收益","ds":"5 日最低价的变化，乘以 220 日累计收益的排名，再乘成交量分位。低位放量反抽时得分高。","f":"→ (((−1 × ts_min(low, 5)) + delay(ts_min(low, 5), 5)) × rank(((ts_sum(returns, 240) − ts_sum(returns, 20)) ÷ 220))) × ts_rank(volume, 5)"},"a053":{"nm":"日内位置变化","ds":"收盘价在日内区间中的相对位置，取 9 日变化的反向。位置快速上移时得分低。","f":"→ −1 × delta(((close − low) − (high − close)) ÷ (close − low), 9)"},"a054":{"nm":"价格幂次比","ds":"(低−收)×开盘^5 ÷ ((低−高)×收盘^5)。用五次幂放大开收盘差异，是全集里唯一带高次幂的因子。","f":"→ ((−1 × (low − close)) × (open ^ 5)) ÷ ((low − high) × (close ^ 5))"},"a055":{"nm":"区间位置与量","ds":"收盘在 12 日高低区间中的位置排名，与成交量排名做 6 日相关取负。","f":"rng = ts_max(high, 12) − ts_min(low, 12)\\n→ −1 × ts_corr(rank((close − ts_min(low, 12)) ÷ rng), rank(volume), 6)"},"a056":{"nm":"短长收益比 × 量价","ds":"10 日收益与 6 日收益之比排名，乘以收益率×成交额的排名，取负。","f":"→ −1 × (rank(ts_sum(returns, 10) ÷ ts_sum(ts_sum(returns, 2), 3)) × rank((returns × amount)))"},"a057":{"nm":"收盘离 VWAP","ds":"收盘价减 VWAP，除以收盘 30 日极值位置的衰减排名，取负。","f":"→ −1 × (close − vwap) ÷ decay_linear(rank(ts_argmax(close, 30)), 2)"},"a058":{"nm":"中性化 VWAP 量能","ds":"VWAP 做行业中性化后与成交量的 4 日相关，衰减加权后取 6 日分位，再取负。","f":"→ −1 × ts_rank(decay_linear(ts_corr(indneutralize(vwap, asset_class), volume, 4), 8), 6)"},"a059":{"nm":"中性化 VWAP 量能（加权）","ds":"同 a058，但 VWAP 先按 0.728 的权重与自身混合一次，衰减窗口从 8 拉长到 16。","f":"k = 0.728317\\n→ −1 × ts_rank(decay_linear(ts_corr(indneutralize(((vwap × k) + (vwap × (1 − k))), asset_class), volume, 4), 16), 8)"},"a060":{"nm":"日内位置量能","ds":"日内位置乘成交量后的排名缩放，减去收盘 10 日极值位置的排名缩放，取负。","f":"inner = ((close − low) − (high − close)) ÷ (high − low) × volume\\n→ −1 × ((2 × scale(rank(inner))) − scale(rank(ts_argmax(close, 10))))"},"a061":{"nm":"VWAP 低位","ds":"VWAP 离 16 日最低的距离排名，低于 VWAP 与 180 日均额的相关排名时记 1。","f":"→ (rank((vwap − ts_min(vwap, 16))) < rank(ts_corr(vwap, adv(amount, 180), 18)))"},"a062":{"nm":"多重排名比较","ds":"把 VWAP、均价、成交量、开盘价的多组排名做大小比较，输出 0/1 信号取负。","f":"cond = (rank(ts_corr(vwap, ts_sum(adv(amount, 20), 22), 10)) < rank(((rank(open) + rank(open)) < (rank(((high + low) ÷ 2)) + rank(high)))))\\n→ −1.0 × cond"},"a063":{"nm":"中性化价格变化差","ds":"收盘做行业中性化后的 2 日变化衰减排名，减去开盘价中性化后的同项，取负。","f":"k = 0.318108\\np1 = rank(decay_linear(delta(indneutralize(close, asset_class), 2), 8))\\np2 = rank(decay_linear(ts_corr(((vwap × k) + (open × (1 − k))), ts_sum(adv(amount, 180), 37), 14), 12))\\n→ −1 × (p1 − p2)"},"a064":{"nm":"加权开低 vs 均额","ds":"开盘与最低价加权后与 120 日均额的相关排名，低于日内中价与 15 日均额的相关排名时记 1，取负。","f":"k = 0.178404\\np1 = rank(ts_corr(ts_sum(((open × k) + (low × (1 − k))), 13), ts_sum(adv(amount, 120), 13), 17))\\np2 = rank(delta(((((high + low) ÷ 2) × k) + (vwap × (1 − k))), 4))\\n→ −1.0 × (p1 < p2)"},"a065":{"nm":"开盘 VWAP 加权","ds":"开盘与 VWAP 加权后与 60 日均额求相关，与最低价 VWAP 加权版本比较，输出 0/1。","f":"k = 0.00817205\\np1 = rank(ts_corr(((open × k) + (vwap × (1 − k))), ts_sum(adv(amount, 60), 9), 6))\\np2 = rank((open − ts_min(open, 14)))\\n→ −1.0 × (p1 < p2)"},"a066":{"nm":"VWAP 变化 + 位置","ds":"VWAP 4 日变化的衰减排名，加上日内位置相对 VWAP 的分位，取负。","f":"p1 = rank(decay_linear(delta(vwap, 4), 7))\\np2 = ts_rank(decay_linear((low − vwap) ÷ (open − ((high + low) ÷ 2)), 11), 7)\\n→ −1 × (p1 + p2)"},"a067":{"nm":"高价抬升 × 中性化量能","ds":"最高价相对 2 日最低的抬升排名，与中性化 VWAP 和均额相关的排名做幂运算，取负。","f":"p1 = rank((high − ts_min(high, 2)))\\np2 = rank(ts_corr(indneutralize(vwap, asset_class), indneutralize(adv(amount, 20), asset_class), 6))\\n→ −1 × (p1 ^ p2)"},"a068":{"nm":"高价量相关 vs 加权价","ds":"高价与 15 日均额相关的时序分位，低于收盘与最低价加权价的衰减变化排名时记 1，取负。","f":"p1 = ts_rank(ts_corr(rank(high), rank(adv(amount, 15)), 9), 14)\\np2 = rank(delta(((close × 0.518371) + (low × (1 − 0.518371))), 1))\\n→ −1.0 × (p1 < p2)"},"a069":{"nm":"中性化 VWAP 极值","ds":"中性化 VWAP 的 3 日变化 5 日最大值排名，与收盘和最低价加权后的相关性排名做幂运算，取负。","f":"p1 = rank(ts_max(delta(indneutralize(vwap, asset_class), 3), 5))\\np2 = ts_rank(ts_corr(((close × 0.490655) + (vwap × (1 − 0.490655))), adv(amount, 20), 5), 9)\\n→ −1 × (p1 ^ p2)"},"a070":{"nm":"VWAP 变化 × 中性化相关","ds":"VWAP 日变化排名，与中性化收盘和 50 日均额相关的分位做幂运算，取负。","f":"p1 = rank(delta(vwap, 1))\\np2 = ts_rank(ts_corr(indneutralize(close, asset_class), adv(amount, 50), 18), 18)\\n→ −1 × (p1 ^ p2)"},"a071":{"nm":"双分量取大","ds":"收盘与均额相关的衰减分位，与收盘分位和最低价相关的衰减分位，取较大者。","f":"p1 = ts_rank(decay_linear(ts_corr(ts_rank(close, 3), ts_rank(adv(amount, 180), 12), 18), 4), 16)\\np2 = ts_rank(decay_linear((rank(((low + open) − (2 × vwap))) ^ 2), 16), 4)\\n→ max_(p1, p2)"},"a072":{"nm":"日内中价 vs 最低价","ds":"日内中价与 40 日均额相关，除以最低价与均额相关，比值型因子。","f":"p1 = rank(decay_linear(ts_corr(((high + low) ÷ 2), adv(amount, 40), 9), 10))\\np2 = rank(decay_linear(ts_corr(ts_rank(vwap, 4), ts_rank(volume, 19), 7), 3))\\n→ p1 ÷ p2"},"a073":{"nm":"VWAP 变化最值","ds":"VWAP 5 日变化的衰减排名，与开盘最低加权价的分位，取较大者再取负。","f":"p1 = rank(decay_linear(delta(vwap, 5), 3))\\nk = 0.147155\\nx = (open × k) + (low × (1 − k))\\np2 = ts_rank(decay_linear((delta(x, 2) ÷ x × −1), 3), 17)\\n→ −1 × max_(p1, p2)"},"a074":{"nm":"收盘 vs 加权高价","ds":"收盘与 30 日均额的相关排名，低于高价与 VWAP 加权后的相关排名时记 1，取负。","f":"p1 = rank(ts_corr(close, ts_sum(adv(amount, 30), 37), 15))\\np2 = rank(ts_corr(rank(((high × 0.0261661) + (vwap × (1 − 0.0261661)))), rank(volume), 11))\\n→ −1.0 × (p1 < p2)"},"a075":{"nm":"VWAP 量比 vs 低价量比","ds":"VWAP 与成交量的 4 日相关排名，低于低价与 50 日均额相关排名时记 1。","f":"→ (rank(ts_corr(vwap, volume, 4)) < rank(ts_corr(rank(low), rank(adv(amount, 50)), 12)))"},"a076":{"nm":"VWAP 变化（双版本）","ds":"VWAP 日变化衰减排名，与中性化低价和均额相关的分位，取较大者取负。","f":"p1 = rank(decay_linear(delta(vwap, 1), 12))\\np2 = ts_rank(decay_linear(ts_rank(ts_corr(indneutralize(low, asset_class), adv(amount, 81), 8), 20), 17), 19)\\n→ −1 × max_(p1, p2)"},"a077":{"nm":"双衰减取小","ds":"日内中价相关组合与低价 VWAP 组合的衰减排名，取较小者。","f":"p1 = rank(decay_linear(((((high + low) ÷ 2) + high) − (vwap + high)), 20))\\np2 = rank(decay_linear(ts_corr(((high + low) ÷ 2), adv(amount, 40), 3), 6))\\n→ min_(p1, p2)"},"a078":{"nm":"低价 VWAP 加权幂","ds":"低价与 VWAP 加权后与 40 日均额相关，与日内中价相关做幂运算。","f":"k = 0.352233\\np1 = rank(ts_corr(ts_sum(((low × k) + (vwap × (1 − k))), 20), ts_sum(adv(amount, 40), 20), 7))\\np2 = rank(ts_corr(rank(vwap), rank(volume), 6))\\n→ p1 ^ p2"},"a079":{"nm":"中性化价格分位","ds":"中性化收盘低价加权价的日变化排名，低于 VWAP 分位与均额相关的分位时记 1。","f":"p1 = rank(delta(indneutralize(((close × 0.60733) + (open × (1 − 0.60733))), asset_class), 1))\\np2 = rank(ts_corr(ts_rank(vwap, 4), ts_rank(adv(amount, 150), 9), 15))\\n→ 1.0 × (p1 < p2)"},"a080":{"nm":"量价一致性的分位","ds":"收盘与成交量 5 日相关，做 18 日分位后再按成交量分位调整，取负。","f":"k = 0.868128\\np1 = rank(sign(delta(indneutralize(((open × k) + (high × (1 − k))), asset_class), 4)))\\np2 = ts_rank(ts_corr(high, adv(amount, 10), 5), 6)\\n→ −1 × (p1 ^ p2)"},"a081":{"nm":"VWAP 与均额（8日）","ds":"VWAP 与 10 日均额 8 日相关的四次幂排名，低于 VWAP 与成交量相关排名时记 1，取负。","f":"p1 = rank(log(ts_product(rank((rank(ts_corr(vwap, ts_sum(adv(amount, 10), 50), 8)) ^ 4)), 15)))\\np2 = rank(ts_corr(rank(vwap), rank(volume), 5))\\n→ −1.0 × (p1 < p2)"},"a082":{"nm":"开盘变化 vs 量价","ds":"开盘价日变化衰减排名，与收盘量价相关的衰减排名，取较小者取负。","f":"p1 = rank(decay_linear(delta(open, 1), 15))\\np2 = ts_rank(decay_linear(ts_corr(indneutralize(volume, asset_class), open, 17), 7), 13)\\n→ −1 × min_(p1, p2)"},"a083":{"nm":"振幅比 × 量","ds":"日内振幅占 5 日均价比例的 2 日滞后排名，乘以成交量排名，再除以振幅与 VWAP 偏离之比。","f":"x = (high − low) ÷ (ts_sum(close, 5) ÷ 5)\\n→ (rank(delay(x, 2)) × rank(rank(volume))) ÷ x ÷ (vwap − close)"},"a084":{"nm":"VWAP 极值分位幂","ds":"VWAP 距 15 日最高的分位，以价格 5 日变化为指数做幂运算。符号随价格变化翻转，是全集里最敏感的一个。","f":"p1 = signedpower(ts_rank((vwap − ts_max(vwap, 15)), 21), delta(close, 5))\\n→ p1"},"a085":{"nm":"高价权重相关","ds":"高价与收盘加权后与 30 日均额相关，再以高价分位与成交量分位相关的分位为指数。","f":"p1 = rank(ts_corr(((high × 0.876703) + (close × (1 − 0.876703))), adv(amount, 30), 10))\\np2 = rank(ts_corr(ts_rank(((high + low) ÷ 2), 4), ts_rank(volume, 10), 7))\\n→ p1 ^ p2"},"a086":{"nm":"收盘均额相关分位","ds":"收盘与 15 日均额 6 日相关的 20 日分位，低于开盘收盘和与 VWAP 和之差的排名时记 1，取负。","f":"p1 = ts_rank(ts_corr(close, ts_sum(adv(amount, 20), 15), 6), 20)\\np2 = rank(((open + close) − (vwap + open)))\\n→ −1.0 × (p1 < p2)"},"a087":{"nm":"加权价衰减差","ds":"收盘 VWAP 加权价的衰减变化排名，减去中性化 VWAP 与均额相关的衰减分位，取较大者再取负。","f":"p1 = rank(decay_linear(delta(((close × 0.369701) + (vwap × (1 − 0.369701))), 2), 3))\\np2 = ts_rank(decay_linear(abs(ts_corr(indneutralize(adv(amount, 81), asset_class), close, 13)), 5), 14)\\n→ −1 × max_(p1, p2)"},"a088":{"nm":"开低高收组合","ds":"开盘与最低价排名之和，减去高价与收盘排名之和，衰减后与收盘分位比较，取较小者。","f":"p1 = rank(decay_linear((((rank(open) + rank(low)) − rank(high)) − rank(close)), 8))\\np2 = ts_rank(decay_linear(ts_corr(ts_rank(close, 8), ts_rank(adv(amount, 60), 21), 8), 7), 3)\\n→ min_(p1, p2)"},"a089":{"nm":"低价均额 vs 中性化 VWAP","ds":"低价与 10 日均额相关的衰减排名，减去中性化 VWAP 变化的衰减分位，取负。","f":"p1 = ts_rank(decay_linear(ts_corr(low, adv(amount, 10), 7), 6), 4)\\np2 = ts_rank(decay_linear(delta(indneutralize(vwap, asset_class), 3), 10), 15)\\n→ p1 − p2"},"a090":{"nm":"收盘极值 vs 低价相关","ds":"收盘距 5 日最高的排名，低于低价与 40 日均额相关排名时记 1，取负。","f":"p1 = rank((close − ts_max(close, 5)))\\np2 = ts_rank(ts_corr(indneutralize(adv(amount, 40), asset_class), low, 5), 3)\\n→ −1 × (p1 ^ p2)"},"a091":{"nm":"双重衰减比较","ds":"收盘成交量相关的双层衰减分位，低于 VWAP 与 30 日均额相关的衰减排名时记 1，取负。","f":"p1 = ts_rank(decay_linear(decay_linear(ts_corr(indneutralize(close, asset_class), volume, 10), 16), 4), 5)\\np2 = rank(decay_linear(ts_corr(vwap, adv(amount, 30), 4), 3))\\n→ −1 × (p1 − p2)"},"a092":{"nm":"日内中价条件取值","ds":"日内中价低于开盘低价组合时取最低价，否则取中价，衰减后与低价相关分位取较小者。","f":"p1 = ts_rank(decay_linear(((((high + low) ÷ 2) + close) < (low + open)), 15), 19)\\np2 = ts_rank(decay_linear(ts_corr(rank(low), rank(adv(amount, 30)), 8), 7), 7)\\n→ min_(p1, p2)"},"a093":{"nm":"中性化 VWAP 长窗口","ds":"中性化 VWAP 与 81 日均额 17 日相关，衰减 20 日后再取 8 日分位，取负。","f":"p1 = ts_rank(decay_linear(ts_corr(indneutralize(vwap, asset_class), adv(amount, 81), 17), 20), 8)\\np2 = rank(decay_linear(delta(((close × 0.524434) + (vwap × (1 − 0.524434))), 3), 16))\\n→ p1 ÷ p2"},"a094":{"nm":"VWAP 极值幂","ds":"VWAP 距 12 日最低的排名，以 VWAP 分位与均额相关的分位为指数做幂运算，取负。","f":"p1 = rank((vwap − ts_min(vwap, 12)))\\np2 = ts_rank(ts_corr(ts_rank(vwap, 20), ts_rank(adv(amount, 60), 4), 18), 3)\\n→ −1 × (p1 ^ p2)"},"a095":{"nm":"振幅比 vs 低价相关","ds":"日内振幅占 5 日均价的衰减分位，低于低价与 40 日均额相关的衰减分位时记 1，取负。","f":"p1 = rank((open − ts_min(open, 12)))\\np2 = ts_rank((rank(ts_corr(ts_sum(((high + low) ÷ 2), 19), ts_sum(adv(amount, 40), 19), 13)) ^ 5), 12)\\n→ 1.0 × (p1 < p2)"},"a096":{"nm":"量价与极值取大","ds":"VWAP 成交量相关的衰减分位，与收盘分位和均额相关的极值分位，取较大者取负。","f":"p1 = ts_rank(decay_linear(ts_corr(rank(vwap), rank(volume), 4), 4), 8)\\np2 = ts_rank(decay_linear(ts_argmax(ts_corr(ts_rank(close, 7), ts_rank(adv(amount, 60), 4), 4), 13), 14), 13)\\n→ −1 × max_(p1, p2)"},"a097":{"nm":"中性化低价衰减差","ds":"中性化低价 VWAP 加权价的衰减变化排名，减去低价分位与均额相关的极值分位，取负。","f":"p1 = rank(decay_linear(delta(indneutralize(((low × 0.721001) + (vwap × (1 − 0.721001))), asset_class), 3), 20))\\np2 = ts_rank(decay_linear(ts_rank(ts_corr(ts_rank(low, 8), ts_rank(adv(amount, 60), 17), 5), 19), 16), 7)\\n→ −1 × (p1 − p2)"},"a098":{"nm":"VWAP 均额 + 开盘极值","ds":"VWAP 与 5 日均额相关的衰减分位取负，再减去开盘价与 15 日均额相关极值的分位。","f":"p1 = rank(decay_linear(ts_corr(vwap, ts_sum(adv(amount, 5), 26), 5), 7))\\np2 = rank(decay_linear(ts_rank(ts_argmin(ts_corr(rank(open), rank(adv(amount, 15)), 21), 9), 7), 8))\\n→ p1 − p2"},"a099":{"nm":"中价 vs 低价量","ds":"日内中价的 20 日均值与 60 日均额相关的排名，低于低价与成交量相关排名时记 1，取负。","f":"p1 = rank(ts_corr(ts_sum(((high + low) ÷ 2), 20), ts_sum(adv(amount, 60), 20), 9))\\np2 = rank(ts_corr(low, volume, 6))\\n→ −1.0 × (p1 < p2)"},"a100":{"nm":"日内位置量能（放大）","ds":"日内位置乘成交量的排名缩放 ×1.5 取负，减去 VWAP 与 5 日均额相关的缩放。","f":"inner = ((close − low) − (high − close)) ÷ (high − low) × volume\\np1 = scale(indneutralize(indneutralize(rank(inner), asset_class), asset_class))\\np2 = scale(indneutralize((ts_corr(close, rank(adv(amount, 20)), 5) − rank(ts_argmin(close, 30))), asset_class))\\n→ (−1 × ((1.5 × p1) − p2)) × volume ÷ adv(amount, 20)"},"a101":{"nm":"日内涨跌幅度","ds":"收盘减开盘，除以日内振幅。最朴素的一个：当天从开盘到收盘走了整个区间的百分之多少。","f":"→ (close − open) ÷ ((high − low) + 0.001)"}};
 var LAB = {"generated_at":"2026-11-05T09:02:28","universe":{"n_idx":468,"n_etf":1617},"window":["2019-06-01","2026-11-03"],"param":{"hold":20,"top":0.2,"cost":0.0005},"pe":{"all":{"ann":0.12676575204425067,"vol":0.2049144430992687,"sharpe":0.685109446245538,"mdd":-0.2811909139939204,"win":0.52,"n":1800,"to":8.25147565348503,"holding":21.36277777777778,"b_ann":0.05443131923675537,"b_vol":0.18897031888529692,"b_sharpe":0.37512763173026653,"b_mdd":-0.3844228982925415,"b_win":0.5088888888888888,"b_n":1800},"yearly":[[2019,0.04817236707979977,0.12464368343353271,-0.07647131635373294],[2020,0.2572824373584115,0.3862694501876831,-0.1289870128292716],[2021,0.08013250689378482,0.01837158203125,0.061760924862534816],[2022,0.10674745788464146,-0.17774468660354614,0.2844921444881876],[2023,-0.093747831562348,-0.08523845672607422,-0.008509374836273786],[2024,0.16228046517025452,0.08235502243041992,0.0799254427398346],[2025,0.3158991118065151,0.29973936080932617,0.016159750997188915],[2026,0.10460138140698816,-0.11997127532958984,0.224572656736578]],"nav":[["2019-06-03",0.9964,0.9978],["2019-06-28",1.0278,1.0436],["2019-07-31",1.0356,1.0592],["2019-08-30",1.0324,1.0616],["2019-09-30",1.0188,1.0572],["2019-10-31",1.0182,1.0652],["2019-11-29",1.002,1.0518],["2019-12-31",1.0482,1.1246],["2020-01-23",1.0817,1.1614],["2020-02-28",1.0894,1.192],["2020-03-31",0.9851,1.0929],["2020-04-30",1.0641,1.1889],["2020-05-29",1.0803,1.1906],["2020-06-30",1.1772,1.3104],["2020-07-31",1.2997,1.4743],["2020-08-31",1.2999,1.49],["2020-09-30",1.2099,1.4027],["2020-10-30",1.2236,1.4247],["2020-11-30",1.2445,1.4773],["2020-12-31",1.3178,1.5591],["2021-01-29",1.321,1.5627],["2021-02-26",1.281,1.5231],["2021-03-31",1.217,1.4577],["2021-04-30",1.2721,1.5247],["2021-05-31",1.3077,1.5957],["2021-06-30",1.3768,1.6362],["2021-07-30",1.4761,1.5963],["2021-08-31",1.5233,1.605],["2021-09-30",1.4372,1.5746],["2021-10-29",1.3948,1.5883],["2021-11-30",1.4146,1.605],["2021-12-31",1.4235,1.5877],["2022-01-28",1.3299,1.4394],["2022-02-28",1.3759,1.457],["2022-03-31",1.3274,1.3688],["2022-04-29",1.2668,1.2781],["2022-05-31",1.3604,1.3273],["2022-06-30",1.5119,1.4576],["2022-07-29",1.4738,1.3821],["2022-08-31",1.4674,1.3537],["2022-09-30",1.3625,1.2396],["2022-10-31",1.3865,1.2061],["2022-11-30",1.5614,1.3074],["2022-12-30",1.5754,1.3055],["2023-01-31",1.653,1.3883],["2023-02-28",1.6279,1.3567],["2023-03-31",1.6812,1.3791],["2023-04-28",1.6435,1.361],["2023-05-31",1.5701,1.3061],["2023-06-30",1.5738,1.3212],["2023-07-31",1.588,1.3599],["2023-08-31",1.5303,1.2854],["2023-09-28",1.4883,1.2492],["2023-10-31",1.4487,1.228],["2023-11-30",1.4282,1.2246],["2023-12-29",1.4277,1.1942],["2024-01-31",1.2727,1.049],["2024-02-29",1.4212,1.1643],["2024-03-29",1.4263,1.1582],["2024-04-30",1.4394,1.172],["2024-05-31",1.4303,1.1661],["2024-06-28",1.3976,1.1316],["2024-07-31",1.3908,1.1333],["2024-08-30",1.3679,1.0964],["2024-09-30",1.6151,1.3219],["2024-10-31",1.6486,1.2982],["2024-11-29",1.693,1.3054],["2024-12-31",1.6594,1.2926],["2025-01-27",1.6752,1.2867],["2025-02-28",1.703,1.3581],["2025-03-31",1.7094,1.3549],["2025-04-30",1.6725,1.3176],["2025-05-30",1.6651,1.3487],["2025-06-30",1.7089,1.4126],["2025-07-31",1.8454,1.4923],["2025-08-29",2.0809,1.6407],["2025-09-30",2.2747,1.7149],["2025-10-31",2.251,1.6933],["2025-11-28",2.1984,1.6517],["2025-12-31",2.1836,1.68],["2026-01-30",2.284,1.785],["2026-02-27",2.3753,1.7898],["2026-03-31",2.1468,1.6492],["2026-04-30",2.2244,1.7726],["2026-05-29",2.3098,1.7652],["2026-06-30",2.6032,1.7826],["2026-07-31",2.5727,1.6688],["2026-08-31",2.6825,1.7215],["2026-09-30",2.604,1.6542],["2026-10-30",2.3853,1.4732],["2026-11-03",2.412,1.4785]]},"counts":{"n_new":100,"n_alpha":101,"sig_in":28,"alive":9,"only_out":25,"alive_list":["ITS","RANGE_POS","PE","a101","a039","a033","a038","a051","a099"],"fam_alive":{"Alpha101":6,"G 路径形态":2,"H 技术位置":1},"pos_out_new":44,"pos_out_alpha":21},"cross":[["AMT_SURGE","E 流动性",0.0223,4.5914,0.0035,-0.0023,-0.396,-0.0472,"成交额脉冲：5 日相对 60 日的放大倍数"],["MOM_12_1","B 动量反转",0.0487,4.3057,0.0496,0.0254,1.9178,-0.0411,"跳过最近 1 个月的 12 月动量：避开短期反转污染"],["MOM250","B 动量反转",0.0473,4.1457,0.0458,0.0269,2.0152,-0.0203,"12 个月动量"],["VMOM","B 动量反转",0.038,3.642,0.056,0.0188,1.7259,-0.0386,"波动率调整动量：单位风险的 120 日趋势"],["NH60","G 路径形态",0.0157,3.24,0.0256,0.016,2.3605,-0.0342,"创新高天数占比:信息缓慢扩散的标志"],["TURN_20_250","E 流动性",0.0166,3.2243,-0.0146,0.0305,7.2467,0.0204,"换手率（成交量/一年均值）：意见分歧与过度交易"],["ITS","G 路径形态",0.0275,3.0603,0.0184,0.027,2.4571,0.0233,"日内趋势强度：收盘在当日振幅中的位置"],["PATH_SKEW","G 路径形态",0.0203,3.0146,0.003,0.0192,2.4962,-0.0101,"路径偏度：日内收益分布的偏斜方向"],["MOM120","B 动量反转",0.031,2.6778,0.043,0.0226,1.732,-0.0105,"6 个月动量"],["NL60","G 路径形态",0.0158,2.6647,0.0264,0.0129,1.8163,-0.0211,"创新低天数占比"],["ILLIQ20","E 流动性",0.0084,2.6249,-0.0106,0.0172,6.0872,0.0083,"Amihud 非流动性：单位成交额的价格冲击"],["RESMOM120","B 动量反转",0.0276,2.5522,0.0432,0.0071,0.6186,-0.0205,"残差动量（120 日）"],["SKEW60","D 尾部风险",0.0199,2.5471,-0.0024,0.0244,3.1787,-0.0344,"收益偏度 60 日"],["W52","B 动量反转",0.0249,2.4275,0.0115,0.0291,2.6025,-0.014,"距 52 周高点的接近度：锚定效应下的动量"],["RANGE_POS","H 技术位置",0.0236,2.3367,0.017,0.0307,2.7213,0.0132,"区间位置：60 日高低区间中的相对位置"],["SHADOW","G 路径形态",0.013,2.0941,-0.0158,0.001,0.1342,-0.0491,"上下影线结构：上影线主导说明每次上攻遇抛压"],["PE","G 路径形态",0.0153,2.0766,0.0111,0.0245,2.8115,0.0484,"路径效率：净涨幅/路径总长度，越高越像信息驱动"],["TREND_R2","I 自相关",0.0166,2.0402,0.0257,-0.003,-0.3891,-0.0489,"趋势拟合优度：60 日对数价格线性回归 R²"],["CVAR5","D 尾部风险",0.0197,1.9577,-0.0028,0.0104,0.716,-0.0248,"5% 条件在险价值（左尾期望损失，取负号使大=安全）"],["VR20","I 自相关",0.0154,1.9454,0.0045,0.0164,1.573,0.0307,"方差比 20"],["RESMOM60","B 动量反转",0.0191,1.8337,0.009,0.0231,2.0513,0.0706,"残差动量（60 日）：剔除市场 beta 后的特质趋势"],["STREAK","G 路径形态",0.0147,1.8239,-0.0202,0.0195,2.2568,-0.0023,"连续涨跌强度：近 20 日最长连涨减最长连跌"],["IMPACT_ELAST","E 流动性",0.0081,1.6205,-0.029,0.0216,4.6086,0.0088,"冲击弹性：|收益| 对 ln(成交额) 的相关，越负越有深度"],["ILLIQ60","E 流动性",0.0054,1.6075,-0.0108,0.0165,5.6423,0.0045,"Amihud 非流动性 60 日"],["IVOL120","C 波动结构",0.01,1.5302,-0.0301,0.0415,4.7775,-0.0019,"特质波动率 120 日"],["SUPPORT","H 技术位置",0.0147,1.4192,0.0384,-0.0154,-1.4466,-0.0079,"支撑强度：近 60 日触及低点后反弹的幅度均值"],["PEERMOM","B 动量反转",0.0161,1.4118,-0.0045,0.0349,2.5915,0.0487,"同类相对动量：剥离板块 beta 后的组内强弱"],["TAIL_ASYM","D 尾部风险",0.0098,1.3358,-0.0054,0.0167,2.0593,-0.0246,"最大涨幅/最大跌幅：不对称的彩票属性"],["BREAKOUT","H 技术位置",0.0133,1.3335,-0.0108,0.0308,2.6051,-0.0138,"突破强度：收盘突破 60 日高点的幅度"],["DIST_L60","H 技术位置",0.0141,1.3313,0.0167,0,-0.0005,0.0326,"距 60 日低点高度"],["CRASHP","D 尾部风险",0.0069,1.3302,0.0179,-0.0137,-2.3179,-0.0531,"暴跌频率：超过 2 倍标准差的下跌日占比"],["UBETA","D 尾部风险",0.0149,1.2756,0.0275,-0.0089,-0.5401,-0.062,"上行 beta：跟涨能力弱说明弹性差"],["MOM60","B 动量反转",0.0145,1.2742,-0.0076,0.0318,2.4237,0.0455,"3 个月动量"],["MA_SLOPE60","H 技术位置",0.0141,1.2616,-0.0069,0.0285,2.2406,0.0401,"60 日均线斜率"],["RSVOL","C 波动结构",0.012,1.1952,-0.0149,0.0224,1.5221,-0.0109,"Rogers-Satchell 波动率：允许漂移的估计量"],["RSJ","C 波动结构",0.01,1.1732,-0.0234,-0.0165,-1.7268,-0.0999,"已实现偏度：右偏吸引彩票偏好"],["MAX5","D 尾部风险",0.0121,1.1593,-0.026,0.0169,1.1149,-0.0291,"前 5 大单日收益均值：彩票偏好"],["IVOL60","C 波动结构",0.0073,1.1475,-0.0238,0.0424,4.7588,-0.0047,"特质波动率：对市场回归残差的 60 日标准差"],["MAX20","D 尾部风险",0.0097,1.0148,-0.0348,0.0192,1.3449,-0.0238,"单日最大涨幅：最强彩票信号"],["TREND_SLOPE","I 自相关",0.0114,1.014,-0.0323,0.0192,1.5027,0.0192,"趋势斜率：60 日对数价格回归斜率（年化）"],["GKVOL","C 波动结构",0.0104,1.0077,-0.019,0.0232,1.5454,-0.0127,"Garman-Klass 波动率：用高低开收估计，比收盘价法高效"],["YZVOL","C 波动结构",0.01,1.0008,-0.0153,0.017,1.1427,-0.0214,"Yang-Zhang 波动率：同时处理隔夜跳空与日内漂移"],["RUV","C 波动结构",0.0074,0.984,-0.023,-0.0189,-4.1524,-0.0657,"下行方差占比：真实左尾风险暴露"],["AMT_CV","E 流动性",0.0034,0.8083,-0.0163,0.0089,1.9989,0.0106,"成交额变异系数：忽大忽小说明资金不稳定"],["MIN20","D 尾部风险",0.0077,0.7686,0.0324,-0.025,-1.7471,-0.0317,"单日最大跌幅（取绝对值前先保留符号）：超跌反弹"],["LIQ_BETA","E 流动性",0.0068,0.7565,-0.0184,0.0059,0.5122,0.0007,"流动性风险 beta：收益对市场流动性冲击的敏感度"],["OBV_SLOPE","F 量价关系",0.0051,0.7526,-0.0403,0.0085,1.2231,0.0177,"OBV 斜率：能量潮的 20 日趋势"],["GAPFILL","G 路径形态",0.0042,0.6556,-0.0323,0.0131,1.7273,0.0084,"跳空回补率：低开高走的日子占比（下方有承接）"],["AR1_60","I 自相关",0.004,0.5894,-0.0031,-0.0146,-1.8397,-0.0298,"一阶自相关 60 日"],["VWAPDEV5","F 量价关系",0.0024,0.5849,-0.0133,0.0072,2.6391,-0.0308,"VWAP 乖离 5 日：短期的尾盘拉抬"],["VWAPDEV20","F 量价关系",0.0024,0.5699,-0.015,0.0065,2.441,-0.0322,"收盘价相对当日均价（成交额/成交量）的乖离"],["VOV","C 波动结构",0.0032,0.3921,-0.0223,0.0283,3.9114,0.0604,"波动率的波动：风险本身的不确定性"],["MOM20","B 动量反转",0.003,0.2771,-0.0056,0.0137,1.0496,0.0373,"1 个月动量"],["RECOVERY","G 路径形态",0.0016,0.1501,0.0065,-0.0111,-0.8535,0.0289,"修复速度：从 20 日低点反弹的幅度"],["DIST_L20","H 技术位置",0.0012,0.1126,0.0114,-0.0095,-0.7092,0.0361,"距 20 日低点的高度"],["KURT60","D 尾部风险",0.0003,0.0356,-0.0339,0.0041,0.5413,0.0105,"收益峰度 60 日"],["MA_SLOPE20","H 技术位置",-0.0008,-0.0739,-0.0132,0.0126,0.9742,0.0285,"20 日均线斜率"],["ZERO_RET","E 流动性",-0.0005,-0.0894,-0.0356,-0.003,-0.3647,-0.0251,"零收益天数占比：交易稀疏的流动性折价"],["MA_ALIGN","H 技术位置",-0.0011,-0.097,-0.0286,0.0209,1.613,0.0627,"均线多头排列强度：5>20>60 的标准化差值"],["RKURT","C 波动结构",-0.0018,-0.248,-0.0446,0.0181,2.666,0.0271,"已实现峰度：跳跃频发"],["TURN_STAB","E 流动性",-0.0015,-0.3529,-0.0279,-0.0057,-1.3752,-0.0471,"换手稳定性：成交量变异系数的倒数，越不稳定越差"],["ON_VSHARE","A 隔夜日内",-0.0029,-0.5055,-0.0261,-0.0141,-1.8016,-0.0379,"隔夜波动占总波动的比例：定价发生在流动性最差的时点"],["ROLL_SPREAD","E 流动性",-0.0043,-0.5971,-0.0401,0.0072,0.746,0.0526,"Roll 隐含价差：收益负自相关的幅度"],["AR1_20","I 自相关",-0.0044,-0.6067,-0.019,-0.0249,-3.3648,-0.0788,"一阶自相关 20 日：正相关代表趋势延续"],["REV10","B 动量反转",-0.0067,-0.6296,-0.0458,-0.0202,-1.5677,-0.0852,"10 日反转"],["VOL_SKEW","C 波动结构",-0.005,-0.691,-0.0282,0.0073,1.0776,0.0308,"波动率序列本身的偏度：波动放大得越突兀越差"],["VELAST","F 量价关系",-0.0053,-0.8601,0.0419,-0.0131,-1.7808,0.0147,"量价弹性：收益对成交量变化的回归斜率"],["VR5","I 自相关",-0.0064,-0.8747,-0.0368,0.0067,0.8551,0.0005,"方差比 5：5 日收益方差/(5×日方差)，>1 趋势型"],["AMTRET","F 量价关系",-0.0083,-0.8956,-0.0153,0.0033,0.2979,0.0508,"成交额加权收益：大额成交日的方向更能代表知情资金"],["RV_RATIO","C 波动结构",-0.0075,-0.9331,-0.045,-0.0109,-1.314,-0.0571,"短期/长期波动比：波动率冲击后收益走弱"],["REV5","B 动量反转",-0.012,-1.1337,-0.0647,-0.021,-1.6613,-0.0897,"5 日反转"],["DBETA","D 尾部风险",-0.0128,-1.1652,-0.004,0.0117,0.7852,0.0707,"下行 beta：市场下跌时的放大系数"],["HURST","I 自相关",-0.0086,-1.2145,0.0001,0.0027,0.356,-0.0518,"Hurst 指数代理：log(σ5/σ1)/log(5)，>0.5 为持续"],["CORR_RV60","F 量价关系",-0.0072,-1.2315,0.0092,-0.011,-1.9113,0.0029,"收益与成交量变化的相关：放量伴随信息流入"],["ON_ID_CORR","A 隔夜日内",-0.0064,-1.2516,-0.0405,0.0094,1.8949,-0.0015,"隔夜与日内的 60 日相关：负相关说明隔夜是流动性冲击"],["MR_SPEED","I 自相关",-0.0099,-1.3479,-0.0246,-0.0105,-1.2649,-0.0361,"均值回复速度：偏离 20 日均线的回归强度"],["CS_SPREAD","E 流动性",-0.0134,-1.3971,-0.003,-0.0163,-1.1911,0.0235,"Corwin-Schultz 买卖价差：由高低价自协方差反推"],["DIST_H60","H 技术位置",-0.0137,-1.3991,-0.0208,-0.0279,-2.3821,-0.0617,"距 60 日高点距离"],["UPDN_VOL","G 路径形态",-0.0103,-1.4198,-0.0035,0.0018,0.5074,0.0041,"上行波动/下行波动：好波动多说明收益质量高"],["VPS","F 量价关系",-0.0085,-1.4208,-0.017,-0.0005,-0.0675,0.0478,"放量日平均收益：增量资金是否真的推动价格"],["MDD120","G 路径形态",-0.0155,-1.5316,-0.0007,-0.0247,-2.1787,-0.0338,"120 日最大回撤"],["MDD60","G 路径形态",-0.0155,-1.5443,-0.018,-0.0252,-2.1042,-0.0582,"60 日最大回撤：套牢盘出清后的修复空间"],["ID_REV20","A 隔夜日内",-0.0166,-1.6529,-0.0622,-0.0128,-1.121,-0.0456,"日内收益 20 日均值"],["W52LOW","B 动量反转",-0.0223,-1.9569,-0.0509,-0.0055,-0.4047,-0.0209,"距 52 周低点的距离：越远越弱"],["DIST_H20","H 技术位置",-0.0195,-2.0255,-0.042,-0.0348,-2.8536,-0.0672,"距 20 日高点的距离：越近越强（取负使方向为正）"],["ON_WIN","A 隔夜日内",-0.0087,-2.0615,-0.0461,0.0035,0.5518,-0.0108,"隔夜上涨天数占比"],["TUG20","A 隔夜日内",-0.0198,-2.3058,-0.0592,-0.0084,-0.916,-0.0273,"隔夜减日内（拉锯）：隔夜越强越像信息驱动"],["ID_REV5","A 隔夜日内",-0.0236,-2.4098,-0.0864,-0.0266,-2.3579,-0.0829,"日内收益 5 日均值：做市补偿，后续回吐"],["VOL_PERSIST","C 波动结构",-0.0198,-2.5679,-0.0482,0.0286,4.1031,0.0305,"波动率自相关：持续性越强说明风险越难消散"],["CORR_RV20","F 量价关系",-0.0152,-2.6837,-0.0195,-0.0017,-0.2835,0.0444,"收益与成交量变化的相关（20 日）"],["ID_WIN","A 隔夜日内",-0.0201,-2.9683,-0.064,-0.0212,-2.444,-0.0553,"日内上涨天数占比"],["VDS","F 量价关系",-0.0185,-3.103,-0.0187,-0.0208,-2.712,0.023,"缩量日平均收益：缩量阴跌代表买盘缺失"],["TUG60","A 隔夜日内",-0.0279,-3.2131,-0.0524,-0.0106,-1.224,-0.0287,"隔夜减日内 60 日"],["FROG","B 动量反转",-0.0287,-3.32,-0.0724,-0.0017,-0.281,-0.0484,"动量生命周期：涨得越平滑（阴线越少）惯性越强"],["CORR_RA60","F 量价关系",-0.0231,-3.5771,-0.0394,0.0008,0.1003,0.0425,"收益与成交额的相关：大资金推动的方向"],["ON_MOM60","A 隔夜日内",-0.0218,-3.9005,-0.0535,0.0026,0.4284,-0.0048,"隔夜收益 60 日均值（更慢的隔夜动量）"],["AMT_TREND","E 流动性",-0.0244,-4.7561,-0.0646,0.014,2.3025,0.05,"成交额趋势斜率：资金持续流入 vs 持续撤离"],["VOL_ASYM","F 量价关系",-0.0294,-4.9516,-0.0527,0.0017,0.3043,0.021,"涨跌量比：上涨日成交量/下跌日成交量"],["VPDIV","F 量价关系",-0.0238,-5.1816,-0.0387,-0.0079,-1.4576,0.0177,"量价背离：价格接近高点但成交额没有跟上"],["ON_MOM20","A 隔夜日内",-0.0308,-5.7706,-0.0647,0.0072,1.0679,0.0085,"隔夜收益 20 日均值：机构主导时段的信息持续性"],["a001","Alpha101",0.031,3.8782,0.0187,0.0199,2.3867,-0.0178,""],["a022","Alpha101",0.0185,3.8393,-0.0508,0.0066,1.1629,-0.05,""],["a018","Alpha101",0.0251,3.7947,0.0135,0.0171,2.1915,-0.0084,""],["a101","Alpha101",0.0327,3.6397,0.0224,0.0414,3.9361,0.0206,""],["a071","Alpha101",0.0112,3.5822,-0.0058,0.0071,2.0704,-0.0161,""],["a054","Alpha101",0.0277,3.4476,0.004,0.0274,2.5615,-0.0451,""],["a030","Alpha101",0.0233,3.3921,-0.0247,0.0181,2.3502,-0.0131,""],["a039","Alpha101",0.0349,3.3856,0.044,0.0271,2.4752,0.0313,""],["a066","Alpha101",0.011,3.3338,-0.0312,0.0029,0.9798,-0.0496,""],["a032","Alpha101",0.0271,3.2341,0.0369,0.0212,3.9528,-0.0093,""],["a033","Alpha101",0.03,3.1669,0.0086,0.035,3.1991,0.0343,""],["a095","Alpha101",0.0118,3.0246,-0.0045,0.0088,1.9552,-0.0145,""],["a047","Alpha101",0.0248,2.9785,0.0022,0.0295,2.8801,-0.0113,""],["a019","Alpha101",0.0298,2.9469,0.0452,0.0148,1.488,0.0388,""],["a045","Alpha101",0.0109,2.8027,-0.0343,0.0074,1.8209,-0.0423,""],["a038","Alpha101",0.0262,2.7917,0.0255,0.0284,2.6568,0.0528,""],["a055","Alpha101",0.0105,2.651,-0.0085,-0.0164,-4.3247,-0.0286,""],["a061","Alpha101",0.0105,2.6345,-0.0081,0.0095,1.5845,-0.0349,""],["a021","Alpha101",0.017,2.5719,-0.0246,0.0278,3.2672,-0.0253,""],["a059","Alpha101",0.0104,2.5421,-0.0198,0.0087,2.1051,-0.0446,""],["a042","Alpha101",0.0135,2.5012,0.0092,0.0171,2.557,-0.0253,""],["a056","Alpha101",0.0179,2.4625,-0.0241,0.0374,4.6076,0.0564,""],["a062","Alpha101",0.0104,2.375,-0.0473,0.0035,0.7337,-0.0344,""],["a010","Alpha101",0.0175,2.354,-0.0325,0.0005,0.0564,-0.0388,""],["a087","Alpha101",0.0098,2.3126,-0.019,0.0004,0.0901,-0.0607,""],["a015","Alpha101",0.0082,2.3081,-0.0378,0.0159,4.4981,-0.0388,""],["a093","Alpha101",0.0145,2.2056,-0.022,0.0176,2.624,-0.0016,""],["a086","Alpha101",0.0084,2.0833,0.0165,0.0024,0.5614,-0.0311,""],["a051","Alpha101",0.0211,2.0791,0.0147,0.0281,2.444,0.0245,""],["a099","Alpha101",0.0079,2.0269,0.0122,0.0094,2.0887,0.029,""],["a004","Alpha101",0.0167,1.9906,0.0044,0.0179,1.7679,0.0319,""],["a079","Alpha101",0.0067,1.9107,-0.0226,0.0056,1.2532,-0.0267,""],["a048","Alpha101",0.0131,1.8612,-0.0366,-0.0168,-1.7648,-0.0604,""],["a043","Alpha101",0.01,1.8338,-0.0579,0.0103,1.4707,-0.0487,""],["a070","Alpha101",0.009,1.8295,-0.022,0.0086,1.5096,-0.0303,""],["a027","Alpha101",0.007,1.8042,-0.0046,-0.0096,-2.7561,-0.026,""],["a031","Alpha101",0.0117,1.7812,-0.0436,0.0115,1.6621,-0.0692,""],["a012","Alpha101",0.0094,1.781,-0.0458,0.024,3.9361,-0.0568,""],["a044","Alpha101",0.0071,1.7453,-0.0488,0.017,3.9826,-0.0462,""],["a100","Alpha101",0.0091,1.6838,-0.0212,0.0106,1.6096,-0.0338,""],["a028","Alpha101",0.0085,1.6809,-0.0561,-0.0105,-1.7006,-0.1201,""],["a097","Alpha101",0.0063,1.652,-0.0111,0.0049,1.9269,-0.033,""],["a017","Alpha101",0.0134,1.6204,-0.0083,0.0103,1.1257,-0.0079,""],["a009","Alpha101",0.0138,1.6152,-0.0175,0.0109,1.104,-0.0099,""],["a049","Alpha101",0.0165,1.5881,0.015,0.0259,2.1469,0.0258,""],["a096","Alpha101",0.0057,1.5745,-0.0607,-0.0001,-0.0273,-0.062,""],["a025","Alpha101",0.0123,1.5631,-0.0152,0.0268,2.8833,0.013,""],["a075","Alpha101",0.0051,1.4986,-0.0255,0.0083,2.1159,-0.0302,""],["a029","Alpha101",0.012,1.4538,-0.0163,0.0129,1.3459,0.0286,""],["a040","Alpha101",0.0075,1.2997,-0.0494,0.0142,1.8347,-0.0592,""],["a085","Alpha101",0.0068,1.2994,-0.016,-0.0165,-3.1124,-0.0852,""],["a072","Alpha101",0.0051,1.1434,-0.0192,0.0079,2.0842,-0.0461,""],["a058","Alpha101",0.0044,1.1347,-0.0634,0.0114,2.8854,-0.0539,""],["a088","Alpha101",0.008,1.0789,-0.0563,0.0061,0.5492,-0.0628,""],["a023","Alpha101",0.0089,1.0646,0.003,-0.0016,-0.1657,0.0099,""],["a024","Alpha101",0.0077,1.0486,-0.0549,-0.0028,-0.3311,-0.123,""],["a046","Alpha101",0.0074,1.0323,-0.044,-0.0054,-0.5894,-0.1093,""],["a034","Alpha101",0.0091,1.0284,-0.0364,0.0351,3.737,0.0432,""],["a090","Alpha101",0.008,0.9716,-0.0218,0.014,1.5098,-0.0414,""],["a091","Alpha101",0.0045,0.9692,-0.0498,0.0041,0.8149,-0.0513,""],["a026","Alpha101",0.0044,0.9508,-0.05,0.0162,3.0299,-0.0544,""],["a053","Alpha101",0.005,0.8979,-0.056,0.0053,0.7429,-0.044,""],["a078","Alpha101",0.0047,0.8522,-0.0215,0.0059,1.1809,-0.0122,""],["a080","Alpha101",0.0059,0.835,-0.047,0.0109,1.3564,-0.0411,""],["a065","Alpha101",0.0049,0.8253,-0.0032,0.0069,0.8771,0.0276,""],["a036","Alpha101",0.0041,0.8188,-0.0235,-0.0017,-0.3509,-0.0715,""],["a092","Alpha101",0.0031,0.812,-0.0322,0.0101,2.3923,-0.0103,""],["a082","Alpha101",0.0068,0.7566,0,0.0242,2.3902,0.0611,""],["a052","Alpha101",0.0067,0.6747,-0.0016,-0.0232,-2.0916,-0.0964,""],["a005","Alpha101",0.0028,0.6687,-0.0261,0.0066,2.4627,-0.0236,""],["a014","Alpha101",0.0034,0.6685,-0.03,-0.0134,-2.2444,-0.0481,""],["a068","Alpha101",0.0022,0.6667,-0.0574,-0.0014,-0.4546,-0.0473,""],["a041","Alpha101",0.0027,0.6609,-0.0245,0.0071,2.6067,-0.0169,""],["a007","Alpha101",0.0044,0.6461,0.0016,0.0042,0.4928,0.0192,""],["a002","Alpha101",0.0026,0.6386,-0.0014,-0.0084,-2.2129,-0.0218,""],["a083","Alpha101",0.0026,0.6182,-0.0114,0.0069,2.603,-0.008,""],["a081","Alpha101",0.0021,0.5853,0.007,0.0027,0.6265,0.0045,""],["a013","Alpha101",0.0025,0.5739,-0.0179,-0.0063,-1.6129,-0.0162,""],["a069","Alpha101",0.0032,0.5163,-0.0119,-0.0078,-1.0795,-0.0213,""],["a089","Alpha101",0.0029,0.4949,-0.0521,0.0075,1.0429,-0.0762,""],["a077","Alpha101",0.002,0.4916,-0.0114,-0.0036,-1.0425,0.0129,""],["a050","Alpha101",0.0019,0.4729,-0.0209,-0.0088,-2.404,-0.0278,""],["a020","Alpha101",0.0025,0.4484,-0.0019,-0.0092,-1.3023,-0.0441,""],["a098","Alpha101",0.0019,0.4276,-0.022,0.0076,1.5039,0.0159,""],["a006","Alpha101",0.0021,0.4097,-0.0338,-0.0134,-2.2641,-0.0425,""],["a037","Alpha101",0.0027,0.3804,-0.0352,0.0121,1.6964,-0.0183,""],["a008","Alpha101",0.0033,0.3649,0.0035,0.0149,1.4056,-0.0078,""],["a064","Alpha101",0.0013,0.3595,0.0089,0.017,3.6211,0.0248,""],["a063","Alpha101",0.0024,0.3358,0.0088,0.0056,0.7699,-0.0191,""],["a003","Alpha101",0.0013,0.3344,-0.0558,-0.0165,-4.1118,-0.0305,""],["a035","Alpha101",0.0022,0.3109,-0.074,-0.012,-1.4001,-0.073,""],["a057","Alpha101",0.0013,0.3032,-0.0202,0.0091,3.48,-0.0325,""],["a073","Alpha101",0.0021,0.2774,-0.0287,0.0125,1.3308,-0.0087,""],["a076","Alpha101",0.0007,0.1637,-0.0483,-0.0014,-0.3216,-0.0595,""],["a060","Alpha101",0.001,0.1564,-0.0694,-0.0055,-0.7764,-0.0858,""],["a074","Alpha101",0.0004,0.1058,-0.0306,0.0052,1.2385,-0.0308,""],["a067","Alpha101",0.0007,0.092,-0.0369,0.0162,2.0987,-0.0175,""],["a094","Alpha101",0.0005,0.0857,-0.0396,-0.0088,-1.0832,-0.0608,""],["a084","Alpha101",-0.0003,-0.0376,-0.0405,0.0058,0.6719,-0.016,""],["a011","Alpha101",-0.0002,-0.0504,0.0119,-0.0059,-2.272,-0.022,""],["a016","Alpha101",-0.0002,-0.0508,-0.0183,-0.0078,-1.9203,-0.0256,""]],"sens":[[10,10,0.1,0.1344,0.0965],[10,10,0.2,0.1077,0.0948],[10,10,0.3,0.07,0.0808],[10,20,0.1,0.1157,0.0846],[10,20,0.2,0.0947,0.0845],[10,20,0.3,0.0646,0.0712],[10,30,0.1,0.1078,0.0455],[10,30,0.2,0.0891,0.0478],[10,30,0.3,0.0648,0.0353],[20,10,0.1,0.1467,0.1435],[20,10,0.2,0.1053,0.1322],[20,10,0.3,0.0712,0.0954],[20,20,0.1,0.1496,0.1591],[20,20,0.2,0.1128,0.1264],[20,20,0.3,0.0828,0.0808],[20,30,0.1,0.13,0.0839],[20,30,0.2,0.112,0.075],[20,30,0.3,0.0809,0.0434],[40,10,0.1,0.1203,0.0269],[40,10,0.2,0.0906,0.0593],[40,10,0.3,0.0682,0.0625],[40,20,0.1,0.0984,-0.0202],[40,20,0.2,0.0637,0.0388],[40,20,0.3,0.0467,0.0456],[40,30,0.1,0.0494,-0.0583],[40,30,0.2,0.0293,0.0062],[40,30,0.3,0.0246,0.0241],[60,10,0.1,-0.0035,-0.0598],[60,10,0.2,0.0113,0.0119],[60,10,0.3,0.0006,0.0339],[60,20,0.1,-0.0047,-0.0548],[60,20,0.2,0.0123,0.0207],[60,20,0.3,-0.0023,0.0396],[60,30,0.1,0.0012,-0.0693],[60,30,0.2,0.0093,-0.0001],[60,30,0.3,-0.0012,0.0239],[120,10,0.1,0.1186,-0.0267],[120,10,0.2,0.0652,0.007],[120,10,0.3,0.0444,0.0144],[120,20,0.1,0.1112,-0.0509],[120,20,0.2,0.0664,-0.0098],[120,20,0.3,0.0415,0.0071],[120,30,0.1,0.0841,-0.0698],[120,30,0.2,0.0574,-0.0306],[120,30,0.3,0.0321,-0.0113]]};
 var SEC_HIST = {"d":["2025-11-03","2025-11-04","2025-11-05","2025-11-06","2025-11-07","2025-11-10","2025-11-11","2025-11-12","2025-11-13","2025-11-14","2025-11-17","2025-11-18","2025-11-19","2025-11-20","2025-11-21","2025-11-24","2025-11-25","2025-11-26","2025-11-27","2025-11-28","2025-12-01","2025-12-02","2025-12-03","2025-12-04","2025-12-05","2025-12-08","2025-12-09","2025-12-10","2025-12-11","2025-12-12","2025-12-15","2025-12-16","2025-12-17","2025-12-18","2025-12-19","2025-12-22","2025-12-23","2025-12-24","2025-12-25","2025-12-26","2025-12-29","2025-12-30","2025-12-31","2026-01-05","2026-01-06","2026-01-07","2026-01-08","2026-01-09","2026-01-12","2026-01-13","2026-01-14","2026-01-15","2026-01-16","2026-01-19","2026-01-20","2026-01-21","2026-01-22","2026-01-23","2026-01-26","2026-01-27","2026-01-28","2026-01-29","2026-01-30","2026-02-02","2026-02-03","2026-02-04","2026-02-05","2026-02-06","2026-02-09","2026-02-10","2026-02-11","2026-02-12","2026-02-13","2026-02-24","2026-02-25","2026-02-26","2026-02-27","2026-03-02","2026-03-03","2026-03-04","2026-03-05","2026-03-06","2026-03-09","2026-03-10","2026-03-11","2026-03-12","2026-03-13","2026-03-16","2026-03-17","2026-03-18","2026-03-19","2026-03-20","2026-03-23","2026-03-24","2026-03-25","2026-03-26","2026-03-27","2026-03-30","2026-03-31","2026-04-01","2026-04-02","2026-04-03","2026-04-07","2026-04-08","2026-04-09","2026-04-10","2026-04-13","2026-04-14","2026-04-15","2026-04-16","2026-04-17","2026-04-20","2026-04-21","2026-04-22","2026-04-23","2026-04-24","2026-04-27","2026-04-28","2026-04-29","2026-04-30","2026-05-06","2026-05-07","2026-05-08","2026-05-11","2026-05-12","2026-05-13","2026-05-14","2026-05-15","2026-05-18","2026-05-19","2026-05-20","2026-05-21","2026-05-22","2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29","2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05","2026-06-08","2026-06-09","2026-06-10","2026-06-11","2026-06-12","2026-06-15","2026-06-16","2026-06-17","2026-06-18","2026-06-22","2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-29","2026-06-30","2026-07-01","2026-07-02","2026-07-03","2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-13","2026-07-14","2026-07-15","2026-07-16","2026-07-17","2026-07-20","2026-07-21","2026-07-22","2026-07-23","2026-07-24","2026-07-27","2026-07-28","2026-07-29","2026-07-30","2026-07-31","2026-08-03","2026-08-04","2026-08-05","2026-08-06","2026-08-07","2026-08-10","2026-08-11","2026-08-12","2026-08-13","2026-08-14","2026-08-17","2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28","2026-08-31","2026-09-01","2026-09-02","2026-09-03","2026-09-04","2026-09-07","2026-09-08","2026-09-09","2026-09-10","2026-09-11","2026-09-14","2026-09-15","2026-09-16","2026-09-17","2026-09-18","2026-09-21","2026-09-22","2026-09-23","2026-09-24","2026-09-28","2026-09-29","2026-09-30","2026-10-08","2026-10-09","2026-10-12","2026-10-13","2026-10-14","2026-10-15","2026-10-16","2026-10-19","2026-10-20","2026-10-21","2026-10-22","2026-10-23","2026-10-26","2026-10-27","2026-10-28","2026-10-29","2026-10-30","2026-11-02","2026-11-03","2026-11-04","2026-11-05","2026-11-06","2026-11-09","2026-11-10","2026-11-11","2026-11-12"],"s":{"hk/港股金融":[212,263,228,342,242,334,280,237,231,184,209,243,239,269,185,183,198,167,228,230,200,193,236,192,405,396,229,257,180,307,358,277,395,345,307,327,328,384,433,479,303,278,331,273,429,271,286,323,309,234,311,234,282,255,274,240,283,226,326,296,244,316,275,247,210,245,246,194,237,144,196,131,225,162,257,186,188,181,218,176,162,193,168,147,161,159,177,155,266,163,191,168,216,216,162,187,150,150,181,149,100,154,150,206,159,391,250,215,117,220,188,209,178,273,183,127,198,259,287,250,225,178,211,260,225,204,151,168,152,188,169,235,160,199,188,197,154,191,152,157,182,148,164,183,173,198,188,283,324,299,239,191,410,287,205,319,217,154,201,329,154,186,133,122,115,139,132,131,125,169,102,156,158,170,143,180,133,142,138,138,132,131,103,113,149,112,107,135,101,127,119,87,119,95,130,65,124,115,91,226,203,195,161,224,155,219,210,214,162,156,197,171,122,118,169,127,144,128,105,107,137,139,99,83,86,129,144,132,111,156,108,148,136,112,113,145,126,115,111,150,138,213,182,141,94,90,94,105,81,81],"hk/港股医药":[453,305,318,276,304,289,246,409,401,401,321,303,305,277,255,269,305,433,306,325,273,260,266,324,201,243,328,240,317,253,232,241,185,240,283,245,274,249,193,124,208,232,200,304,204,352,342,331,263,327,268,264,273,319,248,276,233,297,265,253,228,185,260,175,194,222,198,250,234,430,281,232,202,214,198,206,241,198,178,211,269,278,237,281,286,308,270,285,281,292,249,268,241,285,226,309,410,410,368,477,554,499,521,315,413,253,338,376,521,324,448,290,349,290,376,423,274,357,250,320,252,289,240,342,350,244,222,276,250,301,335,296,244,181,233,276,265,360,329,220,303,326,349,283,333,355,328,339,261,232,277,400,212,337,376,310,337,456,369,479,444,439,522,384,350,363,499,418,468,505,486,418,405,384,439,419,457,420,341,336,362,285,312,352,365,426,569,508,548,447,553,492,530,463,489,665,495,469,593,524,520,422,454,380,471,482,393,345,483,421,400,374,564,408,462,511,501,574,447,545,504,470,587,650,522,484,457,452,375,469,564,537,540,488,401,440,424,535,529,484,470,414,393,473,405,450,447,421,477,493],"a/机械":[35,58,60,75,71,52,46,62,45,42,34,37,52,40,69,48,48,44,48,54,53,56,53,84,68,65,60,50,62,53,52,51,55,46,49,62,38,52,98,74,70,110,87,71,55,54,53,54,58,63,61,52,85,114,124,88,77,68,89,75,65,51,56,65,58,54,61,68,64,75,59,82,96,110,79,85,104,80,76,101,98,104,94,95,90,94,81,68,70,73,79,61,72,68,77,75,55,47,62,53,61,48,61,72,56,63,60,64,80,90,78,79,87,77,78,64,65,68,55,59,69,86,97,81,81,87,78,114,100,91,74,88,84,76,99,80,77,68,64,70,75,75,101,107,91,85,77,62,56,77,69,63,76,61,49,45,47,49,59,56,54,85,88,68,66,58,47,50,41,36,39,45,40,42,36,54,50,50,43,46,42,52,53,48,49,53,55,42,52,38,47,42,54,56,63,40,39,35,44,32,48,42,38,35,32,39,36,37,30,43,36,33,26,28,32,40,36,36,33,32,30,40,35,28,38,33,30,32,35,36,39,47,66,49,51,72,89,66,96,81,76,65,62,62,53,56,68,70,60,67],"a/材料":[24,19,16,30,57,49,23,35,33,26,37,42,32,19,19,27,24,19,22,18,26,28,24,15,20,17,17,13,11,14,15,13,27,22,19,22,14,20,16,21,29,22,19,21,24,24,21,22,23,18,17,20,19,36,36,32,41,34,40,34,40,33,34,47,32,26,34,56,34,29,43,32,39,36,72,36,38,46,36,33,25,39,42,32,40,35,39,57,46,40,43,46,32,24,31,30,31,25,26,37,23,19,30,40,34,24,31,20,22,21,27,22,25,15,23,28,21,19,29,19,25,36,18,25,19,16,25,23,29,15,20,13,14,17,14,11,15,18,13,13,12,24,13,16,14,14,15,28,25,18,18,24,20,17,18,15,13,13,13,15,16,16,20,17,16,16,9,11,11,7,9,12,12,9,11,15,13,10,11,11,12,8,10,8,12,13,11,12,16,16,17,10,10,12,9,10,10,13,16,16,15,22,13,15,15,14,14,12,13,17,14,14,15,19,10,12,9,14,10,16,13,16,13,15,16,12,16,13,14,15,12,9,8,11,12,9,8,10,9,9,9,8,10,8,10,8,10,8,9,8],"a/电池储能":[53,51,71,47,63,62,45,51,101,69,65,59,52,42,58,41,37,31,44,40,31,28,33,25,25,25,33,26,35,41,27,26,32,32,31,26,35,29,23,35,42,31,21,23,24,28,26,20,31,24,20,23,19,18,21,16,21,22,19,21,23,19,18,17,15,20,18,29,18,18,25,30,18,18,25,28,20,15,16,16,13,17,17,29,49,44,35,31,34,25,30,46,43,36,29,39,52,46,50,30,30,31,23,23,20,48,53,53,48,57,34,51,55,47,36,37,36,37,63,48,44,45,45,38,38,34,33,33,30,29,52,29,27,30,28,36,32,30,27,26,24,28,39,22,22,21,21,30,25,36,22,23,26,28,23,18,19,16,15,16,14,12,13,14,18,20,13,14,12,12,13,12,13,15,13,21,15,26,16,19,12,12,13,13,16,20,15,14,16,13,14,14,17,13,15,15,17,16,18,15,15,14,19,14,14,21,13,12,12,14,14,13,14,17,16,12,14,14,15,16,14,14,20,15,21,34,24,24,25,18,19,12,15,28,17,17,15,11,15,14,12,16,23,17,27,23,20,13,14,13],"a/军工":[31,38,33,32,42,32,34,62,33,35,66,42,72,36,48,87,57,61,45,50,53,57,61,54,64,74,51,50,69,65,86,64,71,104,82,69,76,97,129,106,87,102,122,101,76,92,106,181,153,183,156,124,96,111,108,81,121,154,133,88,83,59,70,61,88,88,63,76,77,80,95,69,80,90,93,98,80,130,97,69,68,81,67,70,62,73,68,45,51,76,53,44,49,51,53,57,47,65,81,53,54,55,43,70,54,58,54,83,99,81,72,132,110,84,94,79,80,70,56,81,73,70,96,81,91,76,96,70,73,57,45,52,56,54,58,52,52,77,45,48,55,35,61,53,45,44,42,57,44,44,47,43,41,33,32,28,38,32,53,44,46,57,60,44,42,36,105,100,69,40,36,40,36,33,29,30,29,38,26,28,27,29,31,28,27,31,33,37,41,32,26,27,28,27,56,34,32,30,24,24,28,32,35,30,47,35,36,28,31,54,45,32,31,27,27,28,29,34,28,28,27,28,27,23,31,33,28,45,40,35,53,44,38,40,33,31,33,34,35,61,46,36,35,37,29,26,60,36,29,29],"a/医药":[72,91,61,51,59,61,58,80,86,91,87,60,74,62,78,65,71,88,86,89,73,87,88,72,79,48,69,71,71,63,67,64,59,60,80,56,51,50,57,46,54,42,57,97,71,64,70,68,59,76,68,54,50,52,51,53,56,58,68,68,70,49,50,59,43,61,59,58,49,66,44,46,51,47,39,49,37,51,42,45,36,54,43,50,37,40,35,33,56,43,49,46,65,46,40,56,97,77,74,127,97,86,77,60,65,58,54,64,79,67,88,58,54,48,50,49,42,79,56,48,50,44,48,63,73,52,66,43,50,43,38,58,49,43,35,50,42,51,53,54,47,48,45,52,47,46,37,41,34,33,28,50,45,61,71,58,47,103,71,83,77,83,113,98,75,66,69,64,77,137,108,95,76,59,66,66,72,71,51,60,62,46,49,67,56,54,118,122,101,77,103,97,73,67,60,145,124,101,89,77,63,55,70,52,66,76,57,40,61,60,73,57,78,45,44,65,68,112,73,101,90,66,82,120,95,70,75,68,65,66,99,68,63,69,68,60,74,76,58,65,80,55,66,84,59,67,53,50,50,48],"a/计算机":[40,38,36,33,41,27,34,37,32,27,36,35,31,35,34,46,40,39,37,36,31,33,45,29,59,36,35,41,35,31,30,30,57,35,32,35,27,29,43,35,31,27,39,40,47,44,32,40,101,117,136,120,83,76,60,49,53,57,50,39,41,47,51,46,34,54,38,44,46,48,37,45,49,55,35,39,47,32,31,29,27,32,38,44,28,26,31,28,31,35,29,34,32,26,32,28,26,23,23,25,34,26,23,40,31,39,27,32,27,36,29,29,29,49,27,29,27,36,32,27,49,41,43,40,41,41,41,33,32,34,27,37,30,30,27,28,29,26,44,35,32,31,26,25,26,24,29,23,25,24,22,23,33,29,28,26,29,22,24,26,20,18,19,22,29,28,30,29,28,22,27,28,24,24,28,24,29,26,19,27,22,47,41,36,41,35,39,26,32,31,39,37,32,41,29,21,23,23,21,26,29,43,37,35,30,33,45,35,25,26,26,24,21,25,25,20,25,25,38,36,26,25,27,24,25,28,23,25,28,26,27,22,27,32,26,41,52,39,30,34,37,47,39,31,24,25,25,19,21,22],"a/资源":[102,84,102,87,85,82,80,75,104,113,107,84,88,88,106,78,68,56,69,74,110,104,91,96,99,94,97,81,92,89,82,84,82,87,105,108,84,116,101,131,197,186,139,106,111,143,137,118,110,99,98,154,139,119,123,130,121,117,168,194,230,279,272,193,286,187,171,166,132,129,177,175,161,161,175,155,193,296,347,349,290,238,256,270,281,260,282,269,214,219,277,246,260,369,229,250,235,218,186,198,230,228,263,204,190,145,164,159,146,146,120,125,123,118,159,120,105,131,150,136,120,144,118,106,110,110,90,106,105,100,89,74,93,105,103,84,90,73,89,101,107,125,92,125,96,95,107,111,161,135,108,101,112,117,105,87,74,64,58,49,65,81,78,64,66,62,43,47,95,55,51,63,58,63,75,103,104,73,62,57,62,52,59,59,85,125,105,102,127,109,95,85,80,72,65,94,107,113,114,145,103,101,145,132,156,124,101,90,113,129,118,132,114,111,109,134,93,100,95,105,111,116,113,82,105,130,109,84,112,92,97,80,101,75,115,91,105,93,88,93,112,121,91,91,90,89,102,109,71,63],"a/人工智能":[46,48,45,56,48,52,53,58,42,59,49,47,57,47,58,51,71,104,81,56,64,52,62,52,38,66,79,78,77,61,47,43,55,53,50,55,35,44,39,40,45,39,42,50,42,39,38,47,69,78,61,52,53,51,54,45,43,35,39,52,40,34,43,46,46,63,37,44,56,38,49,58,49,57,38,47,40,33,33,35,41,26,36,41,29,32,28,26,32,50,38,38,34,32,39,34,29,30,34,46,41,45,34,60,51,58,43,54,59,77,81,55,50,63,57,74,49,45,45,52,56,50,42,47,52,56,55,56,49,63,44,46,49,50,44,51,59,53,52,52,71,49,66,51,53,44,55,35,49,47,43,58,46,49,44,49,47,43,55,44,45,37,38,44,43,50,36,53,45,38,50,54,45,48,48,48,40,45,55,43,48,47,35,51,48,42,48,41,37,36,48,40,47,41,45,42,47,47,40,35,43,44,36,38,36,42,35,58,35,33,34,34,36,31,47,43,64,51,62,47,36,62,66,53,51,51,40,54,46,53,42,45,47,55,55,57,50,46,49,62,59,49,57,51,38,45,43,39,55,50],"a/农业":[7,6,6,6,8,9,9,9,9,9,14,5,10,8,9,7,5,6,9,9,6,14,14,8,4,6,5,5,7,4,8,6,6,6,8,10,4,14,5,7,12,6,5,8,9,6,4,5,5,4,3,4,4,6,5,9,4,3,8,4,6,6,10,9,4,8,6,6,5,4,5,5,11,4,6,5,6,6,5,11,11,20,19,13,13,19,14,12,17,14,12,14,13,9,9,9,9,12,10,7,13,12,11,8,9,9,16,14,12,13,12,9,8,10,9,9,10,11,16,11,8,10,9,15,9,7,8,6,10,8,6,5,6,6,5,6,5,4,5,6,5,6,8,5,5,6,5,5,7,6,5,4,5,4,4,6,6,5,5,7,6,6,8,8,7,5,4,5,4,6,8,6,6,5,4,6,6,5,4,5,5,3,5,4,4,5,5,8,7,5,6,6,7,14,10,11,9,7,10,8,10,13,11,19,16,12,20,14,19,17,17,10,12,13,12,16,9,12,9,13,9,10,8,8,8,7,9,7,8,9,10,6,7,16,10,8,7,6,6,6,6,7,9,5,6,8,7,5,5,4],"hk/港股红利":[31,51,28,36,55,42,60,70,55,52,74,59,71,52,49,48,46,56,60,68,74,119,82,54,42,49,67,75,74,50,55,65,43,54,57,71,67,58,85,74,84,57,65,55,58,42,41,40,29,40,34,51,47,69,50,49,78,74,59,61,69,66,85,77,54,62,53,62,76,50,63,73,59,77,84,65,67,78,110,99,91,53,85,79,78,95,97,58,55,71,85,59,65,70,60,68,61,47,50,42,39,49,60,34,47,31,44,35,35,29,34,40,61,48,48,31,57,40,56,61,43,52,66,42,53,49,38,50,71,58,53,48,57,90,42,63,77,39,48,34,42,46,42,64,39,42,44,36,55,58,68,70,53,46,38,43,51,27,39,30,43,44,27,36,35,26,23,32,33,28,24,37,42,44,32,41,55,29,64,53,54,62,52,46,58,70,39,41,31,51,29,38,38,36,37,28,44,50,51,50,44,38,44,64,54,40,35,51,42,69,56,56,39,82,45,46,33,33,54,55,47,50,33,31,43,34,60,66,55,66,35,36,42,44,51,45,42,36,33,48,48,51,71,41,33,39,44,54,54,51],"hk/港股科技":[155,181,190,162,171,147,198,141,150,154,182,189,179,210,256,227,197,161,203,183,205,188,213,216,167,150,170,213,190,178,178,218,171,191,173,177,162,157,119,140,173,195,196,164,157,158,171,146,163,169,185,200,188,173,215,214,207,193,177,174,213,218,179,252,253,219,219,240,202,174,219,248,268,236,194,251,220,255,247,249,225,218,266,232,235,230,225,252,215,238,230,233,234,215,238,207,174,195,192,169,158,138,110,224,187,154,185,187,151,202,162,216,193,168,201,213,252,167,197,194,259,255,267,188,189,240,261,275,273,229,246,204,320,304,315,282,256,214,248,281,237,303,255,272,251,235,247,155,184,209,232,185,170,181,207,165,220,178,215,81,175,185,173,220,220,231,176,213,200,124,160,171,183,202,193,182,176,206,208,221,203,233,211,183,182,178,130,148,125,162,150,184,157,180,152,110,148,168,132,98,130,140,175,143,164,136,158,200,171,164,181,198,129,182,167,136,175,118,139,112,154,164,140,113,158,156,156,164,189,160,134,118,140,177,216,176,230,166,182,145,145,160,168,167,172,172,179,193,183,155],"a/金融":[251,240,235,206,214,190,313,206,203,211,243,285,238,343,236,235,248,220,203,249,255,237,236,231,278,304,232,254,264,230,273,345,245,272,264,207,365,229,210,243,174,205,188,171,271,197,235,173,130,81,140,137,108,139,159,181,154,149,114,166,143,124,119,165,135,156,169,166,202,143,171,159,169,143,146,164,158,102,102,109,156,168,122,107,141,154,163,168,191,170,165,153,146,123,168,163,151,190,161,146,150,196,178,140,159,216,172,124,153,175,182,181,186,173,132,137,159,160,169,174,147,150,146,174,122,149,136,95,141,119,144,138,145,109,147,135,184,156,147,134,124,148,129,139,178,179,172,181,177,176,159,168,171,175,151,154,148,101,106,120,132,122,107,135,98,90,97,166,102,173,182,142,209,132,108,153,159,151,167,119,120,95,127,156,96,135,122,154,154,173,126,234,171,202,175,177,212,176,170,210,161,188,187,221,221,167,200,198,269,229,266,278,304,166,153,141,112,126,149,127,216,127,138,176,139,146,171,183,167,180,164,176,209,183,174,135,178,233,167,134,140,165,167,117,102,110,171,215,166,128],"a/新能源":[17,13,23,21,23,19,16,22,23,20,15,20,18,16,16,13,13,13,17,15,15,15,13,11,10,10,9,10,15,12,9,10,12,9,10,11,14,33,9,32,18,10,10,12,9,8,9,10,8,7,8,7,9,9,10,9,9,18,15,14,12,8,11,13,15,16,17,15,14,13,11,14,14,10,15,13,11,10,9,9,9,9,13,13,19,18,19,19,19,19,14,23,27,19,20,29,24,19,18,19,17,16,14,13,20,20,23,21,22,28,18,15,22,17,17,15,15,20,30,16,18,15,17,13,20,15,15,16,19,16,15,13,17,14,14,16,14,17,14,14,12,15,14,13,17,17,12,8,13,16,11,10,12,12,11,12,15,10,10,10,8,8,8,9,10,9,8,9,7,7,8,8,7,8,8,11,9,12,9,12,10,9,9,9,9,10,10,12,9,9,8,8,9,9,9,7,11,10,11,10,9,10,13,9,10,14,10,10,10,11,10,10,13,13,9,10,12,10,12,12,11,13,14,9,15,13,13,15,13,14,13,11,11,13,12,12,11,10,9,11,12,11,11,12,14,18,18,11,11,9],"a/消费":[55,55,58,40,40,151,91,86,85,74,68,48,50,45,51,54,57,49,56,57,55,68,84,68,38,45,71,55,44,62,64,46,49,54,64,64,48,55,56,46,50,35,48,57,48,44,33,31,40,40,35,29,37,36,45,55,30,30,44,36,39,93,65,57,47,70,92,65,57,62,45,55,42,53,35,34,25,33,28,35,31,47,27,25,23,29,36,36,45,32,31,29,35,25,25,33,35,33,49,35,33,29,29,38,35,43,41,55,39,31,53,33,37,26,50,32,32,26,38,34,36,33,33,29,34,31,41,28,28,25,23,21,26,28,22,53,30,48,28,30,32,28,28,27,24,30,22,23,20,24,24,27,26,23,22,26,18,27,21,19,17,18,22,22,19,18,19,17,16,36,31,26,32,30,29,25,24,23,29,34,42,30,26,31,28,27,29,35,27,33,28,25,31,20,17,16,20,24,22,20,20,22,26,34,24,26,43,30,23,32,36,23,23,22,19,20,15,25,20,30,24,23,19,30,23,20,27,23,27,27,29,41,23,28,25,41,30,23,28,28,53,63,54,40,33,32,31,30,37,25],"hk/港股汽车":[3,3,3,6,5,4,14,6,4,3,3,6,4,5,4,4,3,3,6,7,7,4,4,4,4,2,2,2,3,2,1,3,2,2,4,6,2,3,2,7,7,3,5,3,4,3,2,2,4,4,3,5,4,3,3,3,3,2,3,3,4,3,3,4,3,3,3,5,4,3,9,5,4,5,5,3,3,4,7,5,4,4,7,5,13,10,8,10,11,9,10,13,17,14,12,8,11,9,9,7,13,10,24,9,9,7,17,9,7,12,7,12,12,8,11,7,11,7,14,8,7,6,9,7,7,7,8,9,9,8,8,6,8,3,8,9,6,5,6,6,5,7,5,6,6,6,5,4,5,4,4,4,4,4,3,4,3,3,5,1,5,6,4,6,4,5,4,6,5,3,4,5,5,4,3,5,4,4,8,10,10,7,8,6,5,5,8,4,4,4,4,5,7,7,8,5,7,7,8,5,6,7,10,8,7,5,5,6,6,5,5,7,6,5,4,6,5,3,4,4,5,6,6,4,4,5,7,6,5,4,4,2,5,5,4,6,6,4,5,5,5,5,7,4,5,4,4,4,4,3],"hk/港股互联网":[143,193,229,174,219,167,180,126,152,199,201,192,194,181,244,263,246,175,185,181,234,228,192,205,177,153,197,205,227,201,168,189,197,163,171,168,150,139,158,170,214,226,197,195,143,167,151,152,226,222,195,241,201,176,190,207,180,200,166,203,231,205,188,236,276,239,253,225,227,182,193,293,232,293,244,276,272,274,230,252,241,247,232,249,219,191,214,232,160,220,230,253,218,189,289,203,189,182,194,151,132,146,130,207,180,155,157,173,165,208,158,224,198,208,175,192,203,164,190,160,208,213,201,157,170,250,316,219,237,212,183,204,203,210,209,167,229,183,210,297,226,166,179,186,194,158,183,177,166,192,176,143,146,139,167,156,168,177,165,76,173,135,137,227,271,234,162,195,164,167,217,207,202,190,183,166,172,194,236,233,230,275,309,293,237,203,142,157,186,203,142,191,146,215,179,122,174,186,122,92,92,193,153,177,146,115,195,182,134,179,159,191,138,202,144,171,140,140,248,174,150,167,132,117,183,187,170,175,260,141,149,153,131,169,209,184,168,140,136,165,181,148,163,163,286,232,224,212,194,209],"a/公用环保":[6,9,11,10,10,9,8,10,8,8,12,7,6,7,8,7,8,6,9,9,6,7,10,9,8,7,15,14,10,8,6,6,7,5,5,6,4,7,7,7,8,8,6,4,10,5,5,6,4,5,6,4,20,10,11,10,12,6,5,6,5,4,5,5,4,6,6,5,9,17,11,22,12,12,16,11,14,13,10,13,12,13,16,24,21,22,29,30,22,16,16,16,15,19,37,38,37,29,23,18,19,22,15,14,17,13,20,19,15,17,13,13,21,19,19,16,13,14,14,14,16,16,19,12,16,22,23,17,14,23,32,15,13,16,14,16,20,27,40,36,37,25,30,25,24,18,18,16,14,16,16,27,16,13,13,13,12,10,11,12,9,7,9,12,8,8,8,8,7,9,9,17,21,24,25,23,21,14,13,13,11,10,11,11,14,13,13,13,15,12,13,13,10,10,9,9,8,8,8,13,9,10,10,14,11,15,11,11,9,16,17,12,15,18,11,14,12,10,9,16,13,16,15,12,18,11,16,13,18,14,11,17,12,10,12,10,10,13,7,13,12,10,10,8,7,11,11,8,6,6],"x/巴西":[0,0,0,0,0,0,0,0,260,54,18,14,16,10,12,6,7,8,48,31,13,8,16,22,35,130,41,13,13,21,18,26,31,22,22,16,25,54,22,14,13,14,36,12,15,10,9,8,8,4,4,26,11,15,10,8,19,17,20,17,99,220,229,242,325,265,117,329,170,177,126,313,260,159,189,160,77,45,219,67,87,73,26,48,86,99,89,78,55,40,16,17,14,29,21,9,13,20,13,67,28,42,18,54,26,146,92,66,27,30,38,31,39,32,16,14,19,21,20,13,16,12,36,15,16,12,33,7,4,90,16,42,16,10,12,9,11,6,4,4,6,6,4,3,3,4,2,16,13,5,5,3,8,7,5,5,5,17,7,8,6,6,12,8,4,5,13,16,8,8,6,6,5,5,3,8,5,7,19,7,5,7,8,3,5,4,6,16,7,17,11,6,9,7,6,11,9,23,7,13,8,11,10,7,9,40,18,12,19,143,33,38,24,21,24,20,6,9,8,14,18,9,5,7,3,87,59,56,15,40,25,19,11,30,7,7,6,86,38,18,16,17,9,17,17,7,14,17,16,7],"a/光伏":[27,24,38,35,55,28,24,47,28,32,20,24,19,18,19,17,19,17,17,13,14,21,14,11,17,11,16,15,15,11,13,15,13,9,11,9,8,18,13,22,12,10,10,8,9,8,10,14,15,12,14,8,9,11,11,10,9,35,30,18,13,9,11,11,17,28,23,17,28,20,15,13,16,11,11,12,13,10,12,11,8,10,19,16,20,21,16,16,17,13,12,27,19,17,15,16,11,19,14,13,12,15,9,9,10,11,17,9,8,10,9,8,8,8,9,7,7,6,9,9,11,9,7,10,10,13,14,15,7,10,9,10,8,7,7,11,10,10,10,6,9,8,6,6,7,9,6,6,4,7,6,4,5,5,4,4,5,5,5,4,5,4,4,3,4,4,3,3,3,4,4,4,4,6,3,4,4,3,3,4,3,3,5,3,4,3,5,3,4,4,4,4,4,5,3,3,3,3,3,3,3,3,4,3,3,3,3,3,2,2,2,3,2,2,2,2,3,4,3,3,3,4,3,2,3,3,4,5,3,4,4,4,3,3,4,3,3,3,3,3,3,3,4,4,17,16,13,8,10,6],"a/电子":[9,11,7,9,7,5,5,8,6,8,5,5,5,4,6,5,7,9,9,8,13,19,9,12,11,7,8,8,6,7,7,8,10,7,5,6,5,9,8,9,6,5,12,9,7,6,5,4,5,5,5,5,6,8,6,5,4,4,4,4,4,3,5,3,3,4,4,4,5,3,4,5,4,5,5,8,5,6,4,4,4,4,6,6,6,4,3,5,4,4,4,4,4,3,7,5,4,3,4,4,3,4,4,5,10,8,8,6,6,6,6,11,6,10,9,7,10,8,7,7,9,6,5,6,7,8,9,21,13,11,17,14,17,26,17,17,14,15,16,16,17,16,18,16,16,13,13,13,16,17,19,21,21,17,22,21,23,23,18,15,15,19,16,15,16,16,13,12,14,13,12,14,11,13,11,12,11,15,9,12,11,9,8,9,11,11,11,13,11,10,10,9,13,14,12,12,11,14,15,11,14,13,13,16,15,16,11,14,14,11,13,12,10,15,13,14,15,12,13,16,12,15,16,9,11,13,11,14,15,12,11,11,11,12,11,12,11,9,9,10,11,10,11,8,7,7,9,9,11,9],"a/汽车":[9,7,11,7,12,10,8,7,15,10,9,8,9,9,12,9,8,8,9,12,10,9,10,10,9,7,8,9,9,11,12,10,11,13,16,14,12,11,12,17,13,12,11,10,10,10,12,9,6,9,9,8,9,8,8,9,9,11,9,8,8,5,6,6,6,8,8,8,7,7,8,8,10,8,9,8,6,6,6,6,6,5,7,7,9,7,7,9,7,7,7,8,14,9,8,10,13,13,11,8,11,10,10,10,9,13,12,18,11,13,11,11,14,10,16,12,14,12,14,13,11,11,11,13,11,12,10,12,9,8,8,8,10,12,11,10,9,9,9,7,8,22,8,7,8,7,7,5,6,8,6,7,6,5,6,6,5,5,6,5,5,6,7,5,6,6,4,4,5,4,5,5,6,4,4,5,4,7,5,6,5,5,5,4,6,4,4,5,6,5,6,5,5,5,5,5,5,5,5,5,5,4,5,5,6,5,5,4,4,5,5,4,6,6,9,7,5,6,6,6,6,5,8,5,6,8,6,6,7,6,7,4,5,6,6,5,7,5,6,7,6,5,6,5,5,5,5,4,5,5],"hk/港股消费":[3,4,4,3,4,17,22,11,8,7,9,8,7,7,7,5,4,5,12,7,8,8,7,5,4,7,6,8,9,10,7,6,6,6,5,6,17,9,9,5,10,8,6,5,5,7,7,4,5,5,4,6,5,5,21,11,16,7,5,10,11,8,11,9,10,10,27,24,20,17,40,19,10,12,18,12,8,10,10,7,7,7,6,6,7,8,9,7,12,7,6,5,8,10,13,17,5,7,6,5,4,4,5,4,5,8,9,5,3,4,4,8,9,4,6,6,5,5,6,7,5,7,7,5,7,5,4,3,8,4,6,7,8,14,6,7,13,8,7,5,5,5,6,6,4,7,5,5,6,5,5,7,6,6,3,4,4,5,6,4,6,4,3,5,5,4,4,6,6,3,7,7,6,5,5,7,4,4,5,8,8,7,7,7,5,5,5,5,5,6,4,3,3,4,6,4,6,5,4,4,5,4,4,3,3,2,3,4,2,6,3,3,2,3,8,3,3,3,4,3,3,4,4,3,4,5,5,5,5,5,7,7,6,4,5,4,4,3,5,4,12,9,16,11,6,13,6,11,8,7],"a/半导体":[198,193,183,254,169,161,150,157,156,183,139,181,168,147,164,167,173,204,227,197,171,141,130,203,155,163,172,183,163,226,183,155,171,148,138,199,155,171,139,127,152,139,162,194,159,206,187,183,142,130,129,159,215,191,157,216,216,176,158,176,173,149,150,180,154,140,163,158,163,155,126,162,175,139,179,177,174,108,136,120,141,111,149,135,114,110,101,141,114,146,132,138,130,117,158,121,129,130,158,160,147,124,151,177,195,158,170,189,175,145,154,151,147,199,149,221,280,229,202,245,249,194,204,219,235,247,222,282,265,319,324,341,317,333,323,314,281,275,287,274,273,246,218,212,245,262,246,250,236,229,301,301,269,258,326,340,319,351,380,381,377,345,321,336,405,416,420,373,370,325,330,334,332,395,430,350,370,388,409,430,409,461,452,377,386,358,315,301,300,313,346,270,348,335,355,310,270,313,333,305,353,314,273,261,238,294,292,310,241,210,205,227,201,364,385,334,393,325,355,307,264,319,315,317,309,321,310,320,291,329,300,336,304,299,307,334,255,269,317,297,274,278,270,342,401,394,290,308,331,424],"x/沙特":[10,7,5,11,11,9,9,23,28,20,8,14,32,13,15,11,19,18,18,23,15,18,10,37,30,50,52,28,23,17,13,12,17,22,16,15,17,53,21,19,18,18,16,18,23,71,34,28,22,37,63,34,24,14,20,13,24,32,40,53,142,109,152,29,29,22,22,19,15,14,14,17,7,19,17,10,19,38,149,58,33,24,71,38,28,13,24,14,21,14,12,6,6,6,6,4,8,8,10,23,5,3,10,23,11,7,5,19,7,15,11,16,9,12,8,4,4,8,9,10,11,5,6,11,9,4,4,3,2,2,4,4,4,10,5,4,2,2,1,5,5,3,2,2,2,3,2,5,5,2,2,2,5,5,2,3,5,4,4,9,4,4,3,3,7,4,6,3,2,6,3,3,2,2,2,7,5,5,6,8,7,3,9,7,5,8,2,2,4,3,7,4,4,2,6,5,3,8,5,7,14,9,8,5,7,6,6,4,6,3,5,4,8,6,9,4,5,8,6,7,8,5,4,6,4,3,2,5,3,4,3,3,2,6,3,5,6,25,27,9,8,4,3,4,6,3,3,6,7,5],"x/美国":[651,667,744,795,814,829,806,804,567,807,777,811,811,841,857,858,834,836,765,832,863,901,867,739,776,694,781,874,870,840,872,895,851,849,818,836,832,762,887,832,829,874,840,819,796,784,791,792,689,759,726,817,762,791,746,813,804,797,765,765,641,577,529,471,465,567,699,525,588,514,486,221,257,524,476,464,376,563,479,720,727,725,692,696,673,772,747,750,821,686,847,924,867,884,876,940,909,863,865,746,883,880,887,695,832,631,784,732,831,779,811,793,847,808,900,888,848,875,861,886,842,846,813,852,829,834,838,901,923,854,907,885,874,849,893,618,817,761,705,686,710,836,783,883,650,835,744,680,740,546,546,600,711,701,678,673,781,734,635,590,628,688,753,762,808,783,734,823,839,829,811,811,879,723,805,850,859,776,796,764,781,662,697,711,753,792,789,773,845,740,727,708,735,786,801,788,812,843,875,780,785,768,816,842,848,768,825,786,728,682,760,796,759,784,802,819,787,839,881,857,834,854,831,849,868,827,887,846,877,851,869,897,887,884,920,895,896,810,861,878,856,878,904,846,852,812,831,847,856,880],"a/通信":[45,44,40,50,42,48,46,47,34,39,34,47,64,53,54,51,63,96,70,53,57,57,66,48,44,67,83,78,76,63,50,51,75,65,54,73,47,56,55,48,40,44,49,47,40,37,31,35,34,28,24,29,41,24,32,27,34,24,17,29,27,17,34,37,28,40,38,28,55,28,37,28,26,49,26,42,39,29,26,23,38,28,45,51,38,39,28,32,57,63,39,61,42,35,53,47,48,39,46,52,45,72,50,60,76,72,59,58,59,58,85,63,65,90,115,131,80,74,66,54,60,75,68,58,76,74,84,85,72,86,75,83,87,86,75,79,91,97,104,124,131,122,160,148,137,134,162,130,138,137,132,100,109,140,112,136,180,158,142,133,126,107,102,113,107,134,98,78,131,98,114,135,104,131,111,87,72,80,118,107,133,111,73,119,143,92,94,90,70,106,90,94,96,91,100,81,94,105,91,71,108,103,75,81,82,84,75,125,105,108,90,109,109,101,118,126,140,112,108,101,118,153,113,75,119,95,100,108,100,96,83,93,86,113,103,107,90,86,104,119,98,72,96,108,95,80,83,74,140,111],"x/德国":[14,13,11,15,25,23,29,31,29,19,20,22,22,19,14,16,20,32,29,19,15,10,14,16,21,17,13,14,14,24,19,10,14,18,16,25,19,18,14,15,33,20,24,29,29,20,31,21,91,62,57,22,24,45,53,36,33,27,38,34,17,10,10,13,14,13,14,13,26,29,20,131,132,73,41,70,154,49,31,22,23,26,37,33,41,16,14,33,19,25,27,9,30,19,22,8,13,26,18,22,13,13,14,24,19,23,18,18,16,22,23,26,19,27,15,11,17,17,15,16,26,16,27,26,28,25,30,17,14,14,14,17,16,23,19,17,11,10,23,8,13,10,9,9,10,12,10,12,23,15,13,15,17,15,10,12,15,18,14,13,10,25,19,18,19,15,14,13,14,10,10,12,10,9,9,10,7,17,15,14,13,13,19,20,23,20,25,51,52,89,71,113,121,54,72,67,74,33,22,39,35,33,37,29,25,34,21,22,18,17,25,17,23,15,18,17,21,18,12,14,19,17,11,13,9,8,6,9,5,10,11,8,12,7,9,12,15,8,10,13,28,17,10,15,19,19,23,23,27,24],"a/地产基建":[8,7,9,6,7,7,7,6,7,10,12,9,10,27,12,24,12,13,15,10,11,12,9,8,10,9,12,23,14,8,10,8,9,8,11,8,6,7,11,8,8,4,8,9,6,7,8,7,5,5,6,7,5,6,10,9,13,15,10,9,10,20,15,10,12,18,16,12,14,12,11,9,8,10,22,19,10,11,9,9,7,11,11,9,11,10,10,10,11,11,11,10,9,8,13,8,6,16,9,8,19,8,10,7,6,5,16,15,7,11,11,6,9,7,7,6,8,6,7,8,10,13,8,12,11,8,8,6,9,9,7,4,7,7,5,5,5,8,6,6,5,5,5,5,5,5,5,6,4,5,9,6,7,5,6,6,5,4,3,4,3,4,4,4,4,3,4,4,3,5,5,5,4,4,4,5,5,4,7,5,5,4,5,3,3,5,5,7,5,9,7,6,5,4,4,7,5,5,6,8,5,6,13,8,7,9,11,7,9,7,7,5,7,9,4,5,10,19,14,24,11,10,34,45,21,14,12,8,10,10,12,8,6,9,7,5,10,7,5,6,6,6,6,6,5,5,9,4,4,4],"x/全球":[112,166,99,60,47,33,37,39,25,23,23,24,14,16,20,30,25,16,19,19,19,11,11,17,17,15,14,21,11,16,14,9,14,15,20,14,18,21,13,19,29,19,37,40,40,27,39,59,84,50,71,41,48,39,53,44,39,45,46,47,34,40,60,211,97,68,52,49,62,67,63,34,28,36,41,35,52,62,30,38,26,23,26,35,31,18,25,21,16,25,21,9,34,12,13,5,9,14,16,15,14,5,9,20,9,20,18,21,19,17,33,20,12,24,11,19,14,15,20,12,21,17,25,25,19,22,20,13,13,9,10,12,12,24,13,241,114,69,174,222,154,79,138,45,204,77,167,183,90,314,327,275,137,85,139,133,76,98,213,231,238,176,99,88,75,85,121,67,49,55,54,61,40,169,81,41,72,78,50,69,87,179,92,99,99,54,54,60,37,54,56,46,50,56,37,35,26,26,22,43,44,40,32,45,38,47,39,54,71,72,54,39,78,53,48,33,38,39,32,25,35,26,37,19,25,18,10,35,33,24,28,14,24,20,19,26,21,23,18,22,21,26,22,30,29,47,47,24,22,19],"a/传媒":[27,23,22,19,18,15,19,16,15,13,13,21,20,17,17,31,55,33,25,22,24,20,23,19,14,16,16,23,17,14,14,18,22,28,27,25,22,30,17,18,15,12,19,23,22,24,24,32,78,101,73,66,55,35,33,20,23,37,33,25,21,32,28,29,32,32,32,31,35,106,89,55,35,48,27,30,31,25,17,18,29,17,21,16,16,13,20,10,13,14,14,15,21,17,15,15,13,13,14,24,18,14,13,23,24,17,24,18,16,22,17,18,16,14,17,16,12,13,17,13,14,19,26,17,16,12,16,11,13,14,11,9,11,15,10,12,12,10,14,13,9,9,10,11,10,9,15,13,9,7,9,9,11,9,9,14,12,12,11,13,14,10,10,22,14,12,14,15,14,17,17,16,12,12,12,17,12,15,9,19,15,25,27,22,20,18,21,17,15,15,22,22,16,15,13,11,10,9,11,11,11,15,26,25,18,27,28,30,18,21,17,12,13,14,10,10,12,14,21,22,15,14,14,13,11,20,31,21,35,24,24,20,14,16,21,17,21,17,16,19,21,33,41,26,30,40,33,32,31,28],"x/日本":[195,134,126,103,88,88,91,64,64,49,136,94,91,78,55,61,73,63,88,51,56,38,66,149,94,69,80,35,56,64,48,36,59,57,92,74,67,61,34,90,53,36,33,63,74,59,55,62,73,69,64,46,114,65,68,51,52,43,62,57,50,24,14,25,58,54,75,48,117,177,271,145,173,109,147,109,113,163,62,71,81,112,115,113,113,66,84,80,51,166,65,28,37,31,39,23,35,57,66,100,49,32,49,161,86,151,64,123,83,118,69,92,61,74,40,46,87,48,56,48,68,86,75,51,80,83,61,52,35,25,44,32,69,66,44,52,33,61,72,57,92,54,53,49,117,59,68,91,102,98,73,91,106,170,148,163,107,114,117,130,100,85,99,102,73,96,97,68,71,81,106,99,58,86,92,72,40,101,100,116,95,121,156,138,98,105,107,81,45,64,104,109,65,81,66,78,65,57,58,96,99,112,80,56,66,89,76,94,142,71,92,92,95,102,85,92,118,70,50,67,73,73,104,98,78,48,30,44,59,65,48,50,57,46,36,48,49,41,41,53,61,48,39,78,60,101,71,67,60,50],"x/欧洲":[7,6,6,7,6,9,12,24,14,12,8,11,6,11,12,9,13,18,24,16,9,7,6,11,15,10,9,5,4,10,6,6,7,8,7,9,9,9,4,6,7,5,8,9,13,12,12,13,17,12,7,5,10,20,34,18,17,27,13,15,7,5,4,5,5,4,11,6,11,9,10,136,138,72,82,143,198,70,24,17,17,11,26,28,22,11,11,19,9,11,8,4,7,16,17,10,9,9,8,17,6,20,10,13,14,14,13,14,10,11,9,15,11,19,7,6,6,14,12,11,11,14,13,14,10,10,7,5,5,4,3,5,6,7,9,4,5,6,5,4,6,5,5,5,6,6,4,6,17,11,28,8,10,9,13,8,8,9,5,8,9,13,7,12,7,9,7,6,8,6,5,5,4,5,4,7,5,11,9,13,6,9,12,15,11,14,12,12,8,12,12,10,13,11,9,10,9,9,7,11,12,19,10,13,6,12,12,25,13,10,24,10,11,8,7,8,17,12,7,7,10,9,6,6,11,7,5,4,5,5,11,8,6,6,5,5,5,6,4,5,8,9,12,9,12,9,9,12,11,11],"x/中韩半导体":[921,725,672,742,564,494,495,541,303,284,404,521,377,345,641,604,621,714,947,975,408,277,305,518,538,1384,1322,556,455,691,390,325,668,534,562,840,943,992,628,810,1140,957,902,1163,2306,2447,1761,1233,830,439,633,1129,1189,856,945,1096,1030,885,513,2163,794,691,512,369,841,1440,1284,838,803,677,365,362,629,667,820,1479,2182,1134,613,773,686,1612,725,982,1032,572,1205,2217,1009,1676,897,326,483,553,468,191,589,529,506,599,308,338,584,740,1256,1116,746,1062,778,566,749,547,885,1856,757,1058,2245,2380,1324,1542,75,1754,2072,1426,5533,4581,1798,951,915,1988,710,1378,1557,855,1024,746,614,641,1139,1095,441,919,980,606,956,1193,549,1653,1442,1057,2066,1681,1599,1427,1937,2325,2059,2870,2177,2317,1878,2211,2537,2511,1851,2510,2612,1856,2745,1772,2006,1791,2519,2686,3192,4121,3094,3447,2378,5274,3923,2411,3631,4340,3906,5169,4149,2165,1747,2129,2014,1373,2232,2000,1551,1572,3331,1177,1805,2702,3067,1522,2745,2166,1283,2208,1867,3452,4386,1852,3115,1891,2227,3894,4674,2838,2765,1767,1722,1414,1027,1374,1721,1101,755,1265,607,1417,1109,1202,1420,1301,1363,1360,916,1730,1428,1185,2233,1970,2747,3469,2174,3575,2045,1352,1379,1756,3433,3687],"x/东南亚":[11,8,9,9,9,8,16,15,13,17,10,11,7,12,15,9,8,9,9,8,8,7,11,11,11,15,11,10,9,8,9,6,8,8,9,13,13,22,6,4,17,13,6,10,10,17,29,15,16,8,7,8,7,11,14,17,11,13,15,12,10,15,2,4,7,7,10,11,13,14,10,4,4,7,7,8,11,10,7,7,6,7,7,9,7,6,7,5,8,33,5,3,5,3,6,2,3,5,4,9,2,4,4,10,3,9,4,7,6,7,6,6,3,4,4,11,4,3,8,5,6,5,5,7,9,9,6,2,4,2,2,3,3,11,5,55,7,85,15,14,13,8,6,3,8,3,2,7,10,9,6,6,7,8,5,5,4,6,4,10,4,4,7,7,7,4,7,4,9,4,5,4,4,2,3,4,6,5,4,10,5,5,7,6,6,3,4,4,2,21,13,5,3,3,1,5,2,3,2,11,4,7,6,3,2,3,4,4,3,2,7,4,3,10,7,6,7,4,4,8,5,6,3,3,1,1,1,2,2,2,4,2,1,2,1,1,2,2,2,2,2,3,2,2,4,2,2,3,2,3]}};
-var MKT_HIST = {"d":["2025-10-31","2025-11-03","2025-11-04","2025-11-05","2025-11-06","2025-11-07","2025-11-10","2025-11-11","2025-11-12","2025-11-13","2025-11-14","2025-11-17","2025-11-18","2025-11-19","2025-11-20","2025-11-21","2025-11-24","2025-11-25","2025-11-26","2025-11-27","2025-11-28","2025-12-01","2025-12-02","2025-12-03","2025-12-04","2025-12-05","2025-12-08","2025-12-09","2025-12-10","2025-12-11","2025-12-12","2025-12-15","2025-12-16","2025-12-17","2025-12-18","2025-12-19","2025-12-22","2025-12-23","2025-12-24","2025-12-25","2025-12-26","2025-12-29","2025-12-30","2025-12-31","2026-01-05","2026-01-06","2026-01-07","2026-01-08","2026-01-09","2026-01-12","2026-01-13","2026-01-14","2026-01-15","2026-01-16","2026-01-19","2026-01-20","2026-01-21","2026-01-22","2026-01-23","2026-01-26","2026-01-27","2026-01-28","2026-01-29","2026-01-30","2026-02-02","2026-02-03","2026-02-04","2026-02-05","2026-02-06","2026-02-09","2026-02-10","2026-02-11","2026-02-12","2026-02-13","2026-02-24","2026-02-25","2026-02-26","2026-02-27","2026-03-02","2026-03-03","2026-03-04","2026-03-05","2026-03-06","2026-03-09","2026-03-10","2026-03-11","2026-03-12","2026-03-13","2026-03-16","2026-03-17","2026-03-18","2026-03-19","2026-03-20","2026-03-23","2026-03-24","2026-03-25","2026-03-26","2026-03-27","2026-03-30","2026-03-31","2026-04-01","2026-04-02","2026-04-03","2026-04-07","2026-04-08","2026-04-09","2026-04-10","2026-04-13","2026-04-14","2026-04-15","2026-04-16","2026-04-17","2026-04-20","2026-04-21","2026-04-22","2026-04-23","2026-04-24","2026-04-27","2026-04-28","2026-04-29","2026-04-30","2026-05-06","2026-05-07","2026-05-08","2026-05-11","2026-05-12","2026-05-13","2026-05-14","2026-05-15","2026-05-18","2026-05-19","2026-05-20","2026-05-21","2026-05-22","2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29","2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05","2026-06-08","2026-06-09","2026-06-10","2026-06-11","2026-06-12","2026-06-15","2026-06-16","2026-06-17","2026-06-18","2026-06-22","2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-29","2026-06-30","2026-07-01","2026-07-02","2026-07-03","2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-13","2026-07-14","2026-07-15","2026-07-16","2026-07-17","2026-07-20","2026-07-21","2026-07-22","2026-07-23","2026-07-24","2026-07-27","2026-07-28","2026-07-29","2026-07-30","2026-07-31","2026-08-03","2026-08-04","2026-08-05","2026-08-06","2026-08-07","2026-08-10","2026-08-11","2026-08-12","2026-08-13","2026-08-14","2026-08-17","2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28","2026-08-31","2026-09-01","2026-09-02","2026-09-03","2026-09-04","2026-09-07","2026-09-08","2026-09-09","2026-09-10","2026-09-11","2026-09-14","2026-09-15","2026-09-16","2026-09-17","2026-09-18","2026-09-21","2026-09-22","2026-09-23","2026-09-24","2026-09-28","2026-09-29","2026-09-30","2026-10-08","2026-10-09","2026-10-12","2026-10-13","2026-10-14","2026-10-15","2026-10-16","2026-10-19","2026-10-20","2026-10-21","2026-10-22","2026-10-23","2026-10-26","2026-10-27","2026-10-28","2026-10-29","2026-10-30","2026-11-02","2026-11-03","2026-11-04","2026-11-05","2026-11-06","2026-11-09","2026-11-10","2026-11-11"],"c":[185,165,153,169,178,180,170,171,165,189,179,168,174,168,169,160,156,164,188,213,186,186,189,177,172,176,188,190,188,194,200,175,169,186,186,181,196,185,186,182,162,167,178,173,170,168,178,168,160,161,158,165,172,196,189,186,196,195,168,159,189,205,185,187,191,192,176,170,164,194,168,153,180,179,172,155,180,180,155,156,158,195,176,166,179,174,158,155,168,165,186,168,205,169,183,205,197,185,172,178,179,170,191,198,196,206,228,217,214,209,206,216,203,214,225,217,240,244,223,217,235,249,235,217,237,238,237,241,255,251,255,268,261,266,284,282,292,290,284,277,273,300,285,287,266,284,272,276,275,269,278,301,290,277,278,291,307,303,310,312,298,279,278,276,293,311,336,332,318,339,311,309,307,290,313,334,288,286,342,325,311,313,310,270,291,308,282,297,286,264,278,276,270,313,292,288,261,267,273,255,240,279,268,239,228,217,209,217,269,256,241,236,271,270,277,302,294,318,279,297,264,252,269,253,238,252,239,217,243,223,243,230,243,246,239,249,248,233,223,246,237,226,215,230,248,250,241,228,231,266],"b":[703,678,319,638,566,408,642,525,323,742,381,499,244,225,277,65,793,812,326,551,790,628,302,278,279,813,638,252,468,146,507,438,171,698,552,832,571,291,799,726,358,387,344,475,781,762,409,700,745,769,300,507,428,445,672,423,591,665,735,303,364,320,338,466,144,899,616,314,513,859,427,395,391,281,737,698,473,627,215,106,320,759,795,270,845,381,286,285,544,161,674,95,120,56,942,899,172,813,557,177,832,174,135,745,944,217,731,460,700,334,802,412,637,378,526,256,392,626,328,736,531,719,643,667,599,249,602,197,332,456,662,312,129,736,416,256,182,542,283,683,268,320,251,588,128,636,297,263,724,724,515,310,384,531,500,268,233,147,471,569,785,417,690,357,124,303,471,685,151,763,624,465,78,334,564,282,778,103,948,470,772,322,863,751,672,682,522,527,756,308,760,212,461,803,362,81,765,478,272,771,544,637,552,592,608,244,355,448,605,637,339,182,117,585,204,774,495,780,822,451,343,213,169,643,464,320,586,216,552,179,77,602,435,674,389,86,826,410,111,767,147,166,851,399,850,883,139,404,789,672],"n":[5153,5154,5154,5154,5154,5155,5158,5158,5160,5159,5157,5156,5158,5160,5159,5161,5157,5155,5151,5150,5149,5148,5151,5157,5155,5153,5155,5156,5153,5156,5158,5157,5159,5160,5163,5162,5158,5163,5165,5167,5166,5168,5170,5171,5171,5173,5174,5173,5172,5172,5165,5167,5170,5172,5173,5179,5176,5176,5177,5173,5173,5173,5174,5171,5173,5174,5177,5177,5175,5174,5178,5178,5182,5180,5180,5177,5176,5176,5175,5177,5178,5179,5180,5183,5181,5184,5184,5183,5182,5180,5180,5180,5181,5183,5181,5182,5181,5177,5174,5179,5182,5182,5183,5181,5186,5187,5190,5188,5190,5188,5191,5190,5185,5190,5189,5187,5187,5185,5178,5152,5151,5180,5182,5180,5180,5179,5183,5183,5184,5187,5182,5186,5189,5191,5191,5191,5191,5191,5190,5192,5191,5195,5195,5197,5198,5198,5195,5193,5194,5189,5194,5190,5188,5191,5193,5192,5191,5193,5189,5186,5189,5194,5193,5194,5194,5194,5194,5194,5197,5197,5198,5197,5195,5197,5198,5198,5198,5197,5193,5194,5193,5197,5197,5197,5197,5199,5200,5202,5205,5205,5204,5205,5205,5203,5204,5204,5204,5205,5207,5208,5209,5209,5208,5206,5207,5208,5209,5207,5207,5207,5207,5206,5207,5207,5205,5206,5209,5209,5209,5209,5210,5210,5210,5211,5213,5209,5210,5212,5212,5214,5215,5216,5213,5217,5216,5218,5219,5217,5217,5217,5216,5217,5217,5216,5218,5217,5218,5218,5218,5219],"u":[3539,3432,1596,3198,2825,2033,3249,2630,1628,3722,1908,2510,1246,1148,1392,332,4008,4066,1629,2731,3982,3133,1508,1399,1410,4130,3184,1280,2339,750,2540,2191,872,3479,2748,4237,2835,1479,3988,3607,1785,1953,1732,2359,3959,3842,2076,3532,3717,3872,1520,2562,2167,2250,3409,2139,2961,3373,3706,1538,1856,1631,1718,2358,738,4583,3139,1587,2574,4371,2150,1977,1995,1430,3764,3537,2394,3163,1103,549,1627,3863,4068,1375,4302,1926,1457,1436,2746,822,3433,492,620,291,4866,4614,877,4155,2805,902,4228,894,698,3804,4878,1115,3709,2316,3516,1701,4065,2091,3197,1916,2654,1304,1992,3181,1661,3730,2671,3644,3246,3375,3029,1275,3036,1010,1692,2309,3356,1599,667,3737,2120,1314,935,2748,1446,3513,1372,1643,1294,2982,665,3215,1519,1348,3708,3668,2623,1596,1961,2691,2549,1382,1199,756,2393,2901,4043,2112,3527,1817,639,1533,2382,3512,780,3919,3198,2344,405,1709,2870,1432,3997,534,4885,2373,3968,1636,4395,3866,3406,3427,2639,2671,3878,1560,3860,1084,2322,4067,1841,421,3916,2407,1384,3967,2760,3191,2796,3000,3094,1247,1805,2249,3040,3257,1729,932,605,2939,1054,3887,2504,3937,4216,2284,1757,1084,862,3261,2346,1634,2989,1111,2791,918,400,3061,2202,3433,1941,448,4197,2082,576,3872,756,853,4382,2023,4331,4538,716,2043,4003,3381],"w":[1498,1629,3408,1811,2162,2953,1812,2380,3416,1292,3094,2519,3858,3945,3632,4812,1048,944,3374,2225,1059,1853,3493,3641,3641,949,1809,3800,2658,4374,2471,2810,4238,1502,2232,858,2132,3603,1003,1360,3208,3088,3305,2607,1111,1201,3003,1513,1271,1166,3546,2491,2898,2808,1663,2918,2046,1696,1334,3545,3237,3460,3363,2703,4395,514,1960,3462,2443,717,2884,3030,3109,3651,1344,1527,2668,1883,4026,4609,3464,1226,1051,3715,790,3126,3633,3606,2301,4289,1658,4669,4531,4886,299,521,4235,957,2228,4192,851,4236,4461,1302,292,4020,1362,2719,1505,3387,1004,2984,1822,3157,2390,3797,3085,1900,3409,1338,2360,1423,1800,1682,2024,3846,2008,4115,3404,2759,1714,3531,4489,1339,2976,3811,4213,2321,3672,1629,3742,3484,3855,2091,4513,1840,3602,3773,1413,1400,2468,3549,3142,2376,2548,3768,3940,4394,2689,2200,1110,2955,1584,3278,4534,3532,2674,1612,4377,1215,1930,2694,4758,3415,2219,3649,1143,4632,268,2673,1173,3447,695,1279,1664,1599,2416,2399,1253,3506,1217,4041,2720,1000,3240,4760,1204,2627,3705,1175,2310,1821,2270,2071,1995,3858,3274,2773,1987,1859,3369,4192,4567,2083,4102,1134,2558,1109,914,2782,3366,4001,4245,1810,2713,3466,2108,4036,2267,4213,4790,2023,2861,1661,3055,4739,887,2991,4601,1176,4400,4290,767,3045,764,603,4431,3009,1073,1647],"t3":["半导体","通信设备","元件"],"t":[[37,88,113],[37,88,113],[37,88,113],[37,89,88],[37,89,88],[37,88,89],[37,88,89],[37,88,113],[37,88,14],[88,37,14],[37,88,14],[88,37,113],[37,88,113],[37,88,113],[37,88,113],[37,88,113],[37,113,0],[37,113,88],[113,37,71],[37,113,88],[37,113,88],[37,113,88],[37,113,71],[113,37,71],[37,113,68],[37,113,114],[37,113,71],[37,113,13],[37,113,13],[113,37,71],[37,113,13],[37,113,114],[37,113,68],[37,113,68],[37,113,68],[37,113,68],[37,113,68],[37,113,88],[37,113,88],[37,113,68],[37,113,88],[37,113,68],[37,113,68],[37,113,68],[37,113,114],[37,113,68],[37,113,68],[37,113,20],[37,113,20],[37,111,113],[37,111,113],[37,111,0],[37,113,111],[37,113,89],[37,89,113],[37,89,113],[37,89,113],[37,113,68],[37,113,114],[37,48,113],[37,48,113],[37,48,113],[37,48,113],[37,113,48],[37,113,48],[37,113,48],[37,113,14],[37,113,14],[37,113,14],[37,113,14],[37,113,14],[113,37,0],[37,113,0],[37,113,0],[37,113,0],[37,113,114],[37,113,13],[37,113,0],[37,113,48],[37,113,114],[37,113,89],[37,113,89],[37,89,113],[37,89,113],[37,113,89],[37,113,88],[37,113,85],[37,113,85],[37,113,88],[37,113,13],[37,113,13],[37,113,85],[37,113,14],[37,113,14],[37,113,85],[37,113,85],[37,85,113],[37,113,85],[37,113,88],[37,113,88],[37,113,88],[37,113,30],[113,37,88],[37,113,88],[37,113,88],[113,37,88],[37,113,88],[37,113,88],[37,113,88],[37,113,88],[37,113,88],[37,113,88],[37,113,71],[37,113,88],[37,113,88],[37,113,13],[37,113,88],[37,113,88],[37,113,88],[37,88,113],[37,113,88],[37,113,88],[37,113,88],[37,113,88],[37,113,88],[37,113,13],[37,113,71],[37,113,71],[37,113,71],[37,113,71],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,13,113],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,13,113],[37,13,113],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,13,113],[37,13,113],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,13,113],[37,13,113],[37,13,113],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13],[37,113,13]],"ind":["IT服务Ⅱ","一般零售","专业工程","专业服务","专业连锁Ⅱ","专用设备","个护用品","中药Ⅱ","乘用车","互联网电商","休闲食品","体育Ⅱ","保险Ⅱ","元件","光伏设备","光学光电子","其他家电Ⅱ","其他电子Ⅱ","其他电源设备Ⅱ","养殖业","军工电子Ⅱ","农业综合Ⅱ","农产品加工","农化制品","冶钢原料","出版","动物保健Ⅱ","包装印刷","化妆品","化学制品","化学制药","化学原料","化学纤维","医疗器械","医疗服务","医疗美容","医药商业","半导体","厨卫电器","商用车","地面兵装Ⅱ","基础建设","塑料","多元金融","家居用品","家电零部件Ⅱ","小家电","小金属","工业金属","工程咨询服务Ⅱ","工程机械","广告营销","影视院线","房地产开发","房地产服务","房屋建设Ⅱ","摩托车及其他","教育","数字媒体","文娱用品","旅游及景区","旅游零售Ⅱ","普钢","服装家纺","林业Ⅱ","橡胶","水泥","汽车服务","汽车零部件","油服工程","油气开采Ⅱ","消费电子","渔业","游戏Ⅱ","炼化及贸易","焦炭Ⅱ","煤炭开采","照明设备Ⅱ","燃气Ⅱ","物流","特钢Ⅱ","环保设备Ⅱ","环境治理","玻璃玻纤","生物制品","电力","电子化学品Ⅱ","电机Ⅱ","电池","电网设备","电视广播Ⅱ","白色家电","白酒Ⅱ","种植业","纺织制造","综合Ⅱ","能源金属","自动化设备","航天装备Ⅱ","航海装备Ⅱ","航空机场","航空装备Ⅱ","航运港口","装修建材","装修装饰Ⅱ","计算机设备","证券Ⅱ","调味发酵品Ⅱ","贵金属","贸易Ⅱ","轨交设备Ⅱ","软件开发","通信服务","通信设备","通用设备","造纸","酒店餐饮","金属新材料","铁路公路","银行Ⅱ","非白酒","非金属材料Ⅱ","风电设备","食品加工","饮料乳品","饰品","饲料","黑色家电"],"inds":128,"p5":[430,405,404,404,423,411,419,400,402,409,388,390,409,401,417,388,413,418,438,440,413,411,414,417,417,427,441,449,432,441,443,430,416,437,434,409,428,441,431,422,431,431,443,448,439,432,435,426,419,398,408,405,415,417,403,404,411,421,405,394,411,433,434,421,428,456,441,421,417,424,422,429,429,425,413,417,423,425,406,400,414,428,407,411,421,423,415,410,417,413,428,420,439,394,412,434,430,419,408,422,421,407,419,426,427,439,459,450,456,446,441,447,446,444,453,455,470,450,427,438,444,448,446,437,440,444,447,449,451,438,442,445,441,457,468,477,486,480,476,476,483,509,485,494,469,489,478,483,487,478,488,503,509,499,510,509,523,528,519,513,505,497,491,485,492,508,534,526,504,532,507,498,489,482,501,533,511,499,534,520,502,509,506,474,491,517,496,506,496,482,477,486,474,496,480,483,465,472,478,449,444,473,469,447,423,425,427,425,461,449,439,434,450,450,460,475,481,477,438,456,425,420,431,422,420,427,418,410,418,410,425,407,411,423,440,438,424,426,406,425,422,403,402,433,427,442,435,423,417,448]};
+var MKT_HIST = {"d":["2025-11-03","2025-11-04","2025-11-05","2025-11-06","2025-11-07","2025-11-10","2025-11-11","2025-11-12","2025-11-13","2025-11-14","2025-11-17","2025-11-18","2025-11-19","2025-11-20","2025-11-21","2025-11-24","2025-11-25","2025-11-26","2025-11-27","2025-11-28","2025-12-01","2025-12-02","2025-12-03","2025-12-04","2025-12-05","2025-12-08","2025-12-09","2025-12-10","2025-12-11","2025-12-12","2025-12-15","2025-12-16","2025-12-17","2025-12-18","2025-12-19","2025-12-22","2025-12-23","2025-12-24","2025-12-25","2025-12-26","2025-12-29","2025-12-30","2025-12-31","2026-01-05","2026-01-06","2026-01-07","2026-01-08","2026-01-09","2026-01-12","2026-01-13","2026-01-14","2026-01-15","2026-01-16","2026-01-19","2026-01-20","2026-01-21","2026-01-22","2026-01-23","2026-01-26","2026-01-27","2026-01-28","2026-01-29","2026-01-30","2026-02-02","2026-02-03","2026-02-04","2026-02-05","2026-02-06","2026-02-09","2026-02-10","2026-02-11","2026-02-12","2026-02-13","2026-02-24","2026-02-25","2026-02-26","2026-02-27","2026-03-02","2026-03-03","2026-03-04","2026-03-05","2026-03-06","2026-03-09","2026-03-10","2026-03-11","2026-03-12","2026-03-13","2026-03-16","2026-03-17","2026-03-18","2026-03-19","2026-03-20","2026-03-23","2026-03-24","2026-03-25","2026-03-26","2026-03-27","2026-03-30","2026-03-31","2026-04-01","2026-04-02","2026-04-03","2026-04-07","2026-04-08","2026-04-09","2026-04-10","2026-04-13","2026-04-14","2026-04-15","2026-04-16","2026-04-17","2026-04-20","2026-04-21","2026-04-22","2026-04-23","2026-04-24","2026-04-27","2026-04-28","2026-04-29","2026-04-30","2026-05-06","2026-05-07","2026-05-08","2026-05-11","2026-05-12","2026-05-13","2026-05-14","2026-05-15","2026-05-18","2026-05-19","2026-05-20","2026-05-21","2026-05-22","2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29","2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05","2026-06-08","2026-06-09","2026-06-10","2026-06-11","2026-06-12","2026-06-15","2026-06-16","2026-06-17","2026-06-18","2026-06-22","2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-29","2026-06-30","2026-07-01","2026-07-02","2026-07-03","2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-13","2026-07-14","2026-07-15","2026-07-16","2026-07-17","2026-07-20","2026-07-21","2026-07-22","2026-07-23","2026-07-24","2026-07-27","2026-07-28","2026-07-29","2026-07-30","2026-07-31","2026-08-03","2026-08-04","2026-08-05","2026-08-06","2026-08-07","2026-08-10","2026-08-11","2026-08-12","2026-08-13","2026-08-14","2026-08-17","2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28","2026-08-31","2026-09-01","2026-09-02","2026-09-03","2026-09-04","2026-09-07","2026-09-08","2026-09-09","2026-09-10","2026-09-11","2026-09-14","2026-09-15","2026-09-16","2026-09-17","2026-09-18","2026-09-21","2026-09-22","2026-09-23","2026-09-24","2026-09-28","2026-09-29","2026-09-30","2026-10-08","2026-10-09","2026-10-12","2026-10-13","2026-10-14","2026-10-15","2026-10-16","2026-10-19","2026-10-20","2026-10-21","2026-10-22","2026-10-23","2026-10-26","2026-10-27","2026-10-28","2026-10-29","2026-10-30","2026-11-02","2026-11-03","2026-11-04","2026-11-05","2026-11-06","2026-11-09","2026-11-10","2026-11-11","2026-11-12"],"c":[120,115,111,124,113,109,114,109,115,106,100,106,105,107,107,121,128,154,163,137,145,144,140,132,130,151,164,160,159,165,143,131,146,148,143,153,142,154,143,125,130,141,140,136,130,137,131,128,122,119,126,123,146,139,135,156,156,136,121,133,143,115,131,146,147,129,123,118,137,124,118,132,127,134,128,147,138,121,125,119,142,118,115,128,128,120,112,127,129,144,126,147,120,128,138,130,124,120,131,135,126,146,154,157,164,168,164,165,163,151,167,157,158,170,173,192,187,170,157,177,188,178,166,191,190,186,187,195,200,206,218,218,226,242,242,251,239,230,223,220,239,230,235,216,233,216,216,206,208,219,244,234,218,219,230,243,241,247,244,231,219,211,217,222,234,251,251,246,259,230,228,232,220,236,248,218,214,218,245,233,242,236,202,219,235,218,231,221,199,210,209,207,240,221,219,192,199,202,191,176,207,208,190,176,168,162,165,207,197,189,182,212,212,216,228,223,238,215,229,201,186,198,185,179,190,178,161,177,168,186,176,188,190,183,190,193,182,173,189,180,178,164,179,188,185,175,172,176,201,216],"b":[678,319,639,568,409,642,525,323,744,381,499,243,225,277,64,793,812,326,551,790,629,302,278,280,814,639,252,469,146,508,439,171,699,552,833,570,290,799,726,358,388,344,475,782,761,410,701,746,769,300,508,429,445,673,423,591,665,736,302,364,321,338,466,144,902,616,314,513,861,427,395,392,281,738,698,474,627,216,106,320,760,795,271,845,380,287,284,544,161,675,95,119,55,942,900,172,813,558,177,834,174,135,747,945,218,732,460,700,334,802,413,639,378,527,256,393,627,328,737,531,719,644,668,599,249,602,197,332,456,662,311,129,736,416,256,182,542,282,684,268,321,251,588,128,637,297,263,724,723,515,310,384,531,501,269,233,146,470,568,784,417,690,357,124,302,471,686,151,764,624,465,78,333,564,282,778,103,948,470,772,322,864,752,672,682,522,527,756,307,761,211,461,803,362,81,765,478,271,772,544,637,552,592,608,244,355,448,605,637,339,181,117,585,204,774,494,780,822,451,343,213,169,643,464,320,586,216,552,179,77,603,435,674,389,86,826,411,111,767,147,166,851,399,850,883,139,404,788,673,162],"n":[5127,5127,5126,5126,5127,5131,5132,5134,5133,5131,5130,5130,5134,5135,5137,5133,5130,5129,5128,5127,5127,5129,5134,5133,5130,5133,5133,5129,5133,5135,5134,5135,5136,5137,5136,5133,5135,5139,5142,5141,5143,5142,5145,5146,5147,5149,5148,5147,5148,5141,5142,5144,5147,5149,5154,5152,5153,5154,5151,5151,5150,5151,5151,5153,5153,5156,5155,5155,5155,5156,5156,5161,5159,5160,5157,5156,5156,5155,5157,5158,5159,5159,5163,5161,5164,5164,5163,5162,5160,5160,5160,5161,5163,5161,5160,5161,5156,5153,5155,5159,5160,5161,5160,5164,5166,5167,5168,5171,5169,5170,5171,5167,5170,5171,5169,5168,5167,5162,5138,5142,5175,5177,5175,5174,5174,5178,5178,5178,5181,5176,5180,5183,5183,5185,5185,5184,5185,5184,5182,5181,5185,5185,5187,5185,5185,5183,5181,5182,5177,5182,5178,5175,5178,5182,5180,5180,5180,5177,5177,5180,5184,5184,5185,5184,5184,5184,5184,5188,5190,5191,5190,5189,5191,5191,5192,5192,5191,5186,5188,5187,5190,5191,5191,5190,5193,5193,5195,5199,5197,5198,5199,5199,5197,5197,5197,5197,5199,5202,5202,5204,5204,5202,5201,5201,5203,5205,5204,5203,5204,5203,5202,5203,5204,5204,5204,5207,5208,5208,5207,5209,5209,5209,5209,5210,5207,5208,5210,5209,5212,5212,5214,5211,5215,5214,5215,5216,5214,5214,5215,5214,5215,5215,5213,5216,5215,5216,5216,5215,5217,5216],"u":[3414,1586,3185,2816,2026,3234,2619,1619,3709,1897,2496,1234,1141,1383,327,3992,4045,1626,2720,3965,3124,1502,1394,1408,4115,3177,1272,2332,744,2533,2185,869,3465,2733,4222,2820,1468,3970,3587,1779,1949,1725,2347,3943,3821,2071,3519,3703,3858,1513,2552,2160,2242,3396,2128,2946,3357,3692,1530,1847,1626,1709,2347,735,4576,3128,1579,2566,4362,2141,1968,1993,1423,3754,3519,2389,3154,1103,547,1624,3853,4055,1374,4285,1915,1455,1426,2733,818,3422,487,613,286,4849,4602,875,4139,2800,898,4219,888,691,3797,4865,1113,3697,2307,3503,1694,4050,2086,3194,1907,2649,1301,1988,3174,1658,3726,2667,3641,3246,3372,3022,1273,3034,1008,1690,2306,3353,1594,665,3732,2116,1309,934,2747,1444,3510,1369,1641,1292,2978,661,3211,1518,1345,3701,3660,2617,1592,1957,2686,2548,1380,1195,750,2386,2894,4037,2106,3520,1814,638,1529,2376,3507,777,3914,3194,2340,404,1705,2867,1430,3993,534,4878,2370,3963,1632,4391,3862,3401,3423,2637,2669,3874,1554,3858,1079,2319,4065,1839,418,3911,2401,1380,3963,2757,3187,2795,2997,3090,1246,1802,2247,3038,3257,1728,929,604,2938,1053,3886,2502,3936,4214,2282,1757,1084,862,3260,2344,1633,2988,1109,2790,916,398,3061,2200,3432,1941,447,4196,2082,575,3871,756,852,4381,2021,4331,4537,716,2043,4000,3380,837],"w":[1619,3391,1798,2143,2932,1801,2366,3401,1279,3082,2509,3841,3926,3618,4793,1042,939,3356,2215,1052,1840,3477,3623,3619,940,1795,3785,2641,4358,2455,2794,4218,1491,2221,849,2125,3586,996,1353,3190,3068,3286,2594,1102,1197,2983,1502,1260,1158,3529,2476,2879,2793,1652,2906,2037,1691,1325,3531,3223,3442,3349,2693,4380,499,1950,3448,2434,707,2872,3018,3090,3637,1335,1524,2653,1873,4007,4590,3448,1216,1043,3696,787,3118,3615,3598,2293,4274,1650,4654,4518,4871,296,511,4217,952,2214,4173,838,4221,4443,1287,284,4000,1352,2708,1499,3374,998,2970,1806,3144,2377,3782,3070,1889,3396,1329,2354,1421,1794,1678,2022,3843,2004,4112,3399,2756,1711,3529,4485,1336,2973,3810,4207,2317,3669,1622,3737,3476,3847,2086,4504,1831,3591,3767,1410,1401,2466,3544,3134,2370,2540,3759,3935,4389,2686,2200,1109,2950,1580,3272,4524,3527,2670,1607,4371,1212,1927,2691,4753,3413,2215,3645,1139,4626,268,2670,1172,3444,693,1277,1662,1596,2410,2394,1249,3504,1212,4040,2714,996,3236,4756,1201,2624,3703,1172,2307,1820,2265,2069,1994,3855,3274,2771,1985,1855,3366,4191,4564,2081,4100,1133,2558,1109,913,2780,3365,4000,4244,1809,2712,3464,2107,4035,2265,4213,4789,2019,2861,1660,3054,4737,885,2988,4599,1175,4398,4290,766,3044,763,603,4429,3008,1073,1646,4317],"p5":[405,404,403,423,411,418,400,402,409,388,390,409,401,417,388,413,418,437,439,413,411,413,414,416,422,441,449,431,441,443,429,416,434,434,409,428,442,431,422,430,430,441,447,438,432,434,425,418,396,408,405,414,416,402,403,410,421,404,394,410,433,434,420,428,456,441,421,417,424,421,429,429,424,413,417,423,424,406,400,413,427,407,411,420,423,415,409,417,413,427,419,439,394,412,434,429,419,408,421,421,407,418,425,426,439,458,450,456,446,440,446,445,442,453,455,468,450,427,438,444,448,447,437,440,444,447,450,451,438,442,446,441,457,468,476,485,479,476,475,483,508,484,493,468,489,477,482,486,478,487,502,510,498,510,507,523,526,519,514,505,494,490,484,492,507,533,525,503,532,508,498,489,482,502,533,511,500,500,520,502,509,506,474,491,517,497,507,496,482,477,486,474,496,480,479,466,472,478,449,444,473,470,447,424,425,428,425,462,449,439,434,449,451,460,475,481,477,438,456,424,419,430,420,418,427,417,410,416,410,425,407,411,423,440,438,424,426,407,425,423,404,402,432,427,442,435,423,417,448,464],"a":[21033,19116,18677,20508,19936,21706,19900,19415,20384,19549,19070,19166,17219,17055,19621,17251,18076,17815,17083,15839,18718,15918,16605,15472,17088,20349,19020,17750,18557,20908,17722,17209,17985,16513,17179,18578,18928,18759,19220,21570,21367,21318,20415,25438,28006,28510,27973,31198,35976,36474,39368,28998,30229,27039,27740,25981,26889,30820,32443,28918,29585,32229,28325,25821,25407,24778,21715,21430,22474,20958,19805,21396,19803,21996,24603,25361,24854,30184,31268,23635,23883,21969,26456,23963,25069,24405,23980,23234,22060,20446,21092,22849,24283,20807,21736,19419,18516,19138,19868,20090,18413,16549,16130,24288,21327,23174,21487,23819,24133,23329,24222,25773,23954,25580,28029,26287,25876,25348,25888,27365,32249,31423,30473,35315,32412,32388,33609,33384,28897,28843,29517,34794,28956,32043,32422,32291,29666,33173,28756,27915,31288,27562,30677,27912,26355,26180,25507,32133,30297,30636,30908,33088,37353,34390,32731,35922,35371,35161,32723,36579,34313,31811,30896,25800,25625,29125,33814,28166,27027,25689,24017,26531,27003,29539,26516,21939,19302,19344,20245,22950,23392,25402,19961,22053,26584,25264,26606,25219,23095,21513,25496,21417,23866,23925,24864,20771,18784,20065,18272,18072,21246,20995,21294,20282,17883,17575,20296,19434,19582,18525,16434,19648,16275,16123,18372,18207,20766,20311,21328,17646,16529,17025,14026,14292,16817,19001,15373,16683,14139,16293,15550,14369,14557,14289,15255,19555,16083,14601,16279,15559,16739,17829,16999,20370,21174,16574,14823,15028,16759,19316],"t3":["集成电路","通信传输设备","电子元件"],"t":[[235,155,153],[235,129,155],[235,16,153],[235,153,155],[235,129,42],[235,153,155],[235,153,155],[235,153,155],[235,16,159],[235,155,159],[235,159,155],[235,153,159],[235,213,40],[235,153,213],[235,213,155],[235,213,40],[213,235,40],[213,235,153],[213,235,153],[213,235,153],[235,213,153],[213,235,153],[213,235,153],[235,213,129],[213,235,155],[213,235,153],[153,213,235],[213,235,153],[213,235,153],[213,235,153],[213,235,153],[235,213,129],[213,235,153],[213,235,129],[213,235,129],[213,235,153],[213,235,153],[235,213,153],[235,213,129],[235,129,213],[235,129,153],[235,129,213],[129,235,213],[235,155,213],[235,213,155],[235,155,213],[235,213,129],[235,213,155],[235,155,213],[235,213,40],[213,235,198],[235,213,155],[235,155,213],[235,129,155],[235,155,129],[235,155,129],[235,155,213],[235,155,213],[235,155,129],[235,155,213],[235,213,155],[235,155,213],[235,213,155],[235,213,155],[235,213,155],[213,235,155],[235,213,82],[213,235,153],[213,235,82],[235,213,155],[213,235,92],[235,213,155],[235,213,155],[235,213,153],[235,153,155],[235,153,155],[235,213,153],[213,235,155],[235,213,155],[235,213,155],[213,155,235],[213,155,235],[235,155,213],[213,235,155],[213,235,155],[213,155,235],[235,155,213],[235,213,155],[153,235,213],[235,213,153],[235,213,155],[213,235,155],[235,213,155],[235,213,155],[213,235,155],[213,155,235],[213,235,155],[213,235,155],[213,235,155],[235,213,155],[213,235,155],[213,235,155],[213,235,155],[213,235,153],[213,235,153],[213,235,155],[213,235,153],[213,235,153],[235,213,153],[235,213,155],[213,235,153],[213,235,153],[213,153,235],[213,235,153],[213,235,153],[213,235,153],[235,213,155],[235,213,153],[235,153,155],[235,153,213],[235,155,153],[235,213,155],[235,213,153],[235,213,155],[235,213,153],[235,153,155],[235,155,153],[235,155,213],[235,155,153],[235,155,213],[235,155,213],[235,155,153],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,153,213],[235,153,213],[235,153,155],[213,235,153],[213,235,153],[213,153,235],[235,153,213],[213,235,153],[235,153,213],[235,153,213],[153,235,213],[235,153,155],[235,153,155],[235,153,155],[235,153,213],[235,153,155],[235,153,213],[235,153,213],[235,155,153],[235,155,153],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,153,155],[235,213,153],[235,213,155],[235,155,153],[235,213,153],[235,153,155],[235,155,153],[235,213,155],[235,213,155],[235,213,153],[235,213,155],[235,153,213],[235,155,153],[235,153,155],[235,213,153],[235,213,153],[235,213,153],[235,213,153],[235,153,213],[235,213,153],[235,213,153],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,213,153],[235,153,213],[235,153,213],[235,153,213],[235,213,153],[235,213,153],[235,213,153],[235,213,153],[235,153,213],[235,153,213],[235,153,155],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[153,235,213],[153,213,235],[153,235,213],[153,213,235],[153,235,213],[153,235,213],[235,153,213],[153,235,213],[235,153,213],[235,153,213],[235,153,213],[153,235,155],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,213,153],[235,153,213],[235,153,155],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,153,213],[235,213,153],[235,213,153]],"ind":["LED","PC、服务器及硬件","一般物业经营","专业工程","专业市场","专用计算机设备","丝绸","中药生产","乘用车","乳制品","云服务(含IDC、CDN)","仪器仪表","体育服务","保健护理产品","保险","信托","储能设备","光学元件","公交","其他专业服务","其他专用机械","其他专用车辆","其他互联网服务","其他互联网金融","其他交运设备","其他休闲服务","其他化学制品","其他化学原料","其他发电","其他基础建设","其他家电","其他建材","其他文娱用品","其他橡胶制品","其他电子器件","其他电气设备","其他电源设备","其他稀有小金属","其他纤维","其他纺织","其他软件服务","其他轻工","其他输变电设备","其他通用机械","其他酒类","其他金属新材料","其他铁路设备","其他非银行金融","养殖","内燃机","农产品加工","农用机械","农药","制冷空调设备","动漫","动物用药","包装印刷","化学制剂","化学原料药","化学新材料","化学辅料药","医疗器械","医疗服务","医药商业","半导体分立器件","半导体材料","卫星应用","印刷包装机械","印染","印染化学品","合成树脂","商用车","啤酒","园区开发","园林工程","国有银行","在线教育","地面装备","基础件","基础软件","塑料制品","复合肥","太阳能","娱乐用品","家具制造","家纺","小家电","工业机器人","工程机械","平面媒体","幼儿教育","建筑装饰设计","影视","成人教育","房地产开发","房地产服务","房屋建筑","摩托车","教育信息化服务","文化用品","新能源发电","旅游服务","无机盐","日用化学品","显示器件","普钢","景区","有线电视","服务机器人","服装","服饰辅料","木材加工","机场","机床设备","林业种植","棉纺","楼宇设备","毛纺","民爆用品","氟化工","氨纶","氮肥","氯碱","水利建设","水务","水泥","水电","汽车服务","汽车销售","汽车零部件","油田服务","海洋工程装备","海洋渔业","涂料涂漆","消费电子设备","涤纶","淡水渔业","港口","游戏娱乐","火电","热电","焦炭","煤炭开采洗选","照明设备","燃气","物流","特钢","环保","环保设备","玻璃","玻纤","珠宝首饰","生物医药","电子元件","电子商务B2B","电子设备制造","电机","电气仪表","电气自控设备","电池材料","电线电缆","白色家电","白酒","百货","石油加工","石油天然气开采","石油天然气贸易","矿山冶金机械","磁性材料","磷化工","磷肥","种子","种植业","稀土","空气","第三方支付","管材","粘胶纤维","纯碱","纺织服装机械","维纶","综合","综合互联网服务","综合电力设备商","网上购物","网络媒体","网络电视","耐火材料","聚氨酯","肉制品","股份制与城商行","航天装备","航空","航空装备","航运","船舶制造","营销服务","葡萄酒","行业应用软件","装修装饰","视听器材","证券","调味品","调查与咨询服务","贸易","赛事运营与传播","起重运输设备","超市","路桥建设","轨道交通设备","轮胎","软饮料","连锁","通信传输设备","通信终端设备","通信运营","通信配套服务","造纸","酒店","金属制品","钢结构","钨","钾肥","铁矿石","铁路专用设备及器材","铁路城轨建设","铁路车辆及动车组","铁路运输","铅锌","铜","铝","锂","锡","锦纶","陶瓷","集成电路","非金属新材料","风能","食品综合","餐饮","饲料","高速公路","黄酒","黄金"],"inds":244,"cVer":"em2016-l3","cStale":false};
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -6721,10 +7355,11 @@ function loadSecBase(){
   }).catch(function(){ return null; });
 }
 
-/* 全 A 当天快照（集中度 / 宽度 / 涨跌行业数），给四象限卡片的「今天」那个点用。
-   60 秒边缘缓存，盘中不必秒级——这个数是「市场今天什么状态」，
-   不是「这一秒发生了什么」，一分钟的滞后不影响判断。
-   失败就保持 null：卡片退回基线最后一天，标日期，不留空白。 */
+/* 最近一个完整交易日的全 A 快照（集中度 / 宽度 / 涨跌家数），给四象限卡片的
+   「今天」那个点用。60 秒边缘缓存。
+   注意它不再是「盘中实时」：集中度要逐只个股按行业加总，Worker 端翻不完 56 页
+   个股列表，所以由管线在收盘后算一次，接口只读结果。盘中看到的是昨晚那根，
+   卡片上的日期标签会如实写成「11-12 收盘」。 */
 var MKT_REQ = false, MKT_RETRY = null;
 
 function loadMktSnap(){
@@ -6832,8 +7467,8 @@ function mktPct(arr, v){
   return n / arr.length * 100;
 }
 
-/* 当天的全 A 快照，来自 /api/mkt。null 的时候卡片退回基线最后一天，
-   并标注日期——宁可显示「截至 11-06」，也不要在页面上留一块空白。 */
+/* 最近完整交易日的全 A 快照，来自 /api/mkt。null 的时候卡片退回内联基线，
+   并标注日期——宁可显示「截至 11-12」，也不要在页面上留一块空白。 */
 var MKT_NOW = null;
 
 /* 散点的点阵（secQuadCard 填充）。250 个点若各做一个 <circle>，DOM 多 500 个节点、
@@ -6868,7 +7503,9 @@ function secQuadCard(){
   // （MKT_INDS 匹配不全时 /api/mkt 会直接抛错，这里再兜一层）。
   var upN = now ? now.stockUp : (H.u ? H.u[last] : 0);
   var dnN = now ? now.stockDn : (H.w ? H.w[last] : 0);
-  var nStk = now ? (now.stockN || (upN + dnN)) : (H.n ? H.n[last] : 0);
+  // n 是「当日有成交的个股数」，stockN 是「涨+跌」（不含平盘）。
+  // 文案写的是「有成交 X 只」，得用前者，否则平盘那几十只被悄悄漏掉。
+  var nStk = now ? (now.n || now.stockN || (upN + dnN)) : (H.n ? H.n[last] : 0);
   var top3 = (now && now.top3 && now.top3.length) ? now.top3 : (H.t3 || []);
   if (!(conc > 0) || !(upN + dnN >= 1000)) return '';
 
@@ -7032,8 +7669,8 @@ function secQuadCard(){
   return '<div class="scq">'
     + '<div class="scqhd"><span>全 A 集中度 × 宽度</span>'
     + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em>'
-    + '<span class="scqtag" title="全 A 个股口径：5563 只 A 股逐只统计涨跌，当日有成交的 '
-    + nStk + ' 只进样本。集中度按东财 128 个行业的个股成交额加总。'
+    + '<span class="scqtag" title="全 A 个股口径：5223 只 A 股逐只统计涨跌，当日有成交的 '
+    + nStk + ' 只进样本。集中度按 EM2016 三级行业（244 个）的个股成交额加总。'
     + '与下方 36 格（ETF 成交额，532 亿）不是同一套数据，差 30 倍是正常的。">'
     + nStk + ' 只 · ' + dayTag + '</span>'
     + '<i class="scqhelp" role="button" tabindex="0" title="四个象限是什么意思"'
@@ -7046,11 +7683,12 @@ function secQuadCard(){
     + '<div class="scqfoot"><div class="scqstats">'
     // 个股块紧挨着集中块：两个都是集中度，行业口径 24% vs 个股口径 43.5%，
     // 放一起才读得出「行业抱团」和「个股抱团」是两件事。放最后会被当成凑数的。
-    + '<div class="scqe" title="成交额最大的 3 个行业（东财 128 个行业口径）合计占全市场'
-    + '成交额的比重——抓「钱压在几个行业里」。高于近一年中位算高集中，虚线就是那条中位线。'
+    + '<div class="scqe" title="成交额最大的 3 个三级行业（EM2016，244 个）合计占全市场'
+    + '成交额的比重——抓「钱压在几个细分赛道里」。高于近一年中位算高集中，虚线就是那条中位线。'
     + '分位数＝今天这个数排在近一年第几：90 分位＝比一年里 90% 的日子都更集中。'
-    + '单看会误判：40% 可以是主线就在这儿，也可以是别的全塌了只剩它在成交，'
-    + '所以要配合右边「宽度」一起读。">'
+    + '单看会误判：25% 可以是主线就在这儿，也可以是别的全塌了只剩它在成交，'
+    + '所以要配合右边「宽度」一起读。2026-11 之前按申万二级 128 个行业算，'
+    + '行业更粗、数值偏高 5pt 左右，两段不要直接比。">'
     + '<span>集中</span><b>' + conc.toFixed(1) + '%</b>'
     + '<em>TOP3 行业 · ' + (c3 != null ? c3.toFixed(0) + ' 分位' : '—') + '</em></div>'
     + '<div class="scqe" title="成交额最大的 5% 个股占全市场成交额的比重——上一行的「集中」'
@@ -9525,12 +10163,15 @@ function setHMode(m, force){
 /* ================= 成分穿透 =================
    「ETF 涨了 0.4%，是哪几只票拉的？」——只有涨跌幅回答不了，得拆到底层。
 
-   /api/hold 给的是季报口径的前 N 大（宽基 40 只上下、行业 20 只、跨境 10 只），
-   带权重和实时涨跌。这里只做三件事：按贡献排序、画双向条、把「前 N 大能解释
-   多少 / 剩下的怎么解释」分开写清。不画图：这一栏的价值在排序，不在形态。
+   /api/hold 的主口径是交易所当日的申购赎回清单（PCF），覆盖全部成分；
+   清单取不到才退回基金季报的前 N 大（宽基 40 只上下、行业 20 只、跨境 10 只）。
+   两个口径在表头和脚注里分别标（PCF 写「权重合计 100%」，季报写「前 N 大 · 权重
+   合计 xx%」），不能混着说——混了就会出现「前 20 大 26%」这种 PCF 下不可能的
+   数字。这里只做三件事：按贡献排序、画双向条、把「前 N 大能解释多少 / 剩下的
+   怎么解释」分开写清。不画图：这一栏的价值在排序，不在形态。
 
    权重 × 涨跌 = 贡献（百分点）。ETF 的涨跌幅近似等于所有成分贡献之和，
-   差额来自没披露的仓位、现金、折溢价——所以「其余仓位」那是一个残差，
+   差额来自现金差额、折溢价与未归一化的零头——所以「其余」那是一个残差，
    不是算错。
 */
 function fpt(v){
@@ -12032,9 +12673,22 @@ var ON_USID = {
   BABA:'106.BABA', JD:'105.JD', PDD:'105.PDD', BIDU:'105.BIDU', NTES:'105.NTES',
   LLY:'106.LLY', MRK:'106.MRK', AZN:'106.AZN', NVO:'106.NVO', PFE:'106.PFE'
 };
-/* 美股 secid 前缀：弹窗里要把「北京时间」标出来，否则横轴 22:30 会被当成
-   早上开盘——东财给美股分时打的是北京时间标签（冬令时 22:30~05:00）。 */
-function isUsSid(sid){ return /^(105|106|107)\\./.test(sid || ''); }
+/* 横轴是不是北京时间。A 股、港股本来就是；美股与日韩、外盘期货这几类在源端
+   有的是美东钟点（腾讯美股、CNBC）、有的是本地钟点，取数时统一换成了北京，
+   副标题要标出来——不标的话，纳指那条 22:30 起的线会被读成「早上开盘」，
+   形状全对、时间全错。日经/韩国本地 09:00 对应北京 08:00，同样需要这一句。
+   这里用字符串切分而不是正则：本文件整段是一层模板字面量，正则里的反斜杠
+   要先写两个才会剩一个，只写一个会被当成无效转义吃掉，正则退化成「任意字符」，
+   于是 /^[01]./ 连 100.NDX100 也命中，标签永远不出现。 */
+function needsBjTag(sid){
+  var s = String(sid || '');
+  var dot = s.indexOf('.');
+  if (dot < 1) return false;
+  var pre = s.slice(0, dot);
+  if (pre === '0' || pre === '1' || pre === '124') return false;   // 深市、沪市、港股
+  return pre === '100' || pre === '101' || pre === '102' || pre === '103'
+    || pre === '104' || pre === '105' || pre === '106' || pre === '107';
+}
 
 var ON_TRACKS = [
   { k:'chip',  n:'算力芯片',    us:['NVDA','AMD','AVGO','TSM','MRVL'],
@@ -12068,6 +12722,30 @@ var ON_FUT_ORDER = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
 var ON_SECID = { NDX:'100.NDX100', INX:'100.SPX', DJI:'100.DJIA',
   'hf_NQ':'103.NQ00Y', 'hf_CHA50CFD':'104.CN00Y', 'hf_GC':'101.GC00Y', 'hf_CL':'102.CL00Y' };
 
+/* 十年美债收益率：隔夜那一行的最后一条。单独一个 300 秒缓存的接口，不并进
+   /api/overnight——那个接口 55 秒刷一次、整卡一起闪，而收益率一天动不了几个 bp，
+   为它多拉一次美股/期货的批量没有意义。取不到就整条不显示，不留占位空框。 */
+var BOND = null, BOND_TRIED = 0;
+function bondChip(){
+  if (!BOND || !(BOND.p > 0)) return '';
+  var bp = BOND.bp || 0;
+  var cls = bp > 0.05 ? 'up' : (bp < -0.05 ? 'down' : '');
+  return '<span class="ovbond" title="美国 10 年期国债收益率 · 变动单位 bp（1bp = 0.01 个百分点）'
+    + (BOND.t ? ' · ' + esc(String(BOND.t).slice(0, 16).replace('T', ' ')) : '') + '">'
+    + '美债10年 <b>' + BOND.p.toFixed(3) + '%</b>'
+    + '<i class="' + cls + '">' + (bp > 0 ? '+' : '') + bp.toFixed(1) + 'bp</i></span>';
+}
+function bondLoad(){
+  if (BOND_TRIED && Date.now() - BOND_TRIED < 180000) return;   // 失败别每轮都打
+  BOND_TRIED = Date.now();
+  fetch('/api/bond').then(function(r){ return r.json(); }).then(function(j){
+    if (!j || !j.ok) return;
+    BOND = j;
+    var el = document.getElementById('onBond');
+    if (el) el.innerHTML = bondChip();
+  }).catch(function(){});
+}
+
 function onCls(v){ return v > 0.05 ? 'up' : (v < -0.05 ? 'down' : ''); }
 function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
 
@@ -12075,7 +12753,7 @@ function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
  *  old=true 表示这一只是上一轮抓到的值（服务端只在这一只的源断掉时才这么标），
  *  压淡 + 单独说明，别让它跟旁边几条实时值长得一样。 */
 function ovChip(n, chg, sid, old){
-  var tip = old ? '这一只是上次抓到的值（源端刚断）· 点看分时 / 日线' : '点看分时 / 日线';
+  var tip = old ? '这一只是上次抓到的值，当前未刷新 · 点看分时 / 日线' : '点看分时 / 日线';
   return '<span class="ovclk' + (old ? ' old' : '') + '" data-ovsid="' + sid
     + '" data-ovnm="' + esc(n) + '" title="' + tip + '">'
     + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
@@ -12102,10 +12780,11 @@ function ovLoad(){
   var sid = OV.sid, nm = OV.nm, mode = OV.mode;
   var body = document.getElementById('ovBody');
   document.getElementById('ovTitle').textContent = nm;
-  /* 副标题里标时区。东财给美股分时打的是北京时间标签（22:30~05:00，冬令时），
-     不标的话横轴那个 22:30 会被读成「早上开盘」，图上形状全对、时间全错。 */
-  document.getElementById('ovSub').textContent = sid
-    + (mode === 'k' ? ' · 日线' : (isUsSid(sid) ? ' · 分时（北京时间）' : ''));
+  /* 副标题只写两件事：这是谁、横轴是什么时间基准。东财给美股分时打的是
+     北京时间标签（22:30~05:00，冬令时），不标会被读成「早上开盘」。 */
+  var subBase = sid
+    + (mode === 'k' ? ' · 日线' : (needsBjTag(sid) ? ' · 分时（北京时间）' : ''));
+  document.getElementById('ovSub').textContent = subBase;
   var els = document.getElementById('ovTabs').getElementsByClassName('ovtab');
   for (var i=0;i<els.length;i++){
     els[i].className = 'ovtab' + (els[i].getAttribute('data-ovt') === mode ? ' on' : '');
@@ -12126,12 +12805,28 @@ function ovLoad(){
     .then(function(j){
       if (!OV || OV.sid !== sid || OV.mode !== mode) return;
       if (!j.ok) throw new Error(j.error || '无数据');
+      /* 副标题不写源名。四档源是内部实现：用户看到「源 CNBC」既无法核对，
+         也没法据此做任何动作，反而会把注意力从「这只标的现在什么位置」上
+         挪开。数据是否陈旧由 body 里那行时间说明承担，不开源名。 */
       if (mode === 'k'){
         OV.bars = j.bars || [];
         if (!(OV.win > 0)) OV.win = Math.min(160, OV.bars.length);
         body.innerHTML = ovKlineHtml(OV.bars, OV.win);
       } else {
-        body.innerHTML = ovChartSvg(j.pts, j.pre);
+        /* 所有源都挂的时候服务端会回放「上一次成功的那份」，并把 stale 标出来。
+           不标的话，横轴上的 22:30 看着就是昨晚，其实可能是两小时前抓的。
+           时间带日期：隔夜条目在早八点看的是昨晚的图，只给 HH:MM 会让
+           「8:05 抓的」和「昨晚 8:05 抓的」看起来完全一样。 */
+        var tip = '';
+        if (j.stale){
+          var d0 = new Date(j.ts || Date.now());
+          var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+          tip = '<div class="iotip" style="color:var(--txt3)">这张图是 '
+            + (d0.getMonth() + 1) + '-' + pad(d0.getDate())
+            + ' ' + pad(d0.getHours()) + ':' + pad(d0.getMinutes())
+            + ' 抓到的，之后没能刷新</div>';
+        }
+        body.innerHTML = tip + ovChartSvg(j.pts, j.pre);
       }
     })
     .catch(function(e){
@@ -12470,7 +13165,8 @@ function renderOvernight(){
       if (q) fut += ovChip(q.n, q.chg, ON_SECID[ON_FUT_ORDER[i]]);
     }
   }
-  h += '<div class="onfut">' + fut + '</div>';
+  h += '<div class="onfut">' + fut + '<span id="onBond">' + bondChip() + '</span></div>';
+  if (!BOND) bondLoad();
 
   if (!ON_FOLD){
     h += '<div class="ontrks">';
@@ -12529,7 +13225,7 @@ function renderOvernight(){
     }
     // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
     // 别让「几分钟前抓的数」顶着「今日实时」的名头
-    var asub = ON.asiaStale ? '源端无响应 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
+    var asub = ON.asiaStale ? '未刷新 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
     ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">' + asub + '</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
@@ -12538,7 +13234,7 @@ function renderOvernight(){
     // 空数组＝这一轮抓取失败（主源整批断连，备源也没中）。已经有上一轮的值就留着，
     // 只把副标题改掉——把内容抹掉会让整块凭空消失，比给旧值更糟
     var asn = document.getElementById('asN');
-    if (asn) asn.textContent = '源端无响应 · 显示上次的值';
+    if (asn) asn.textContent = '未刷新 · 显示上次的值';
   } else {
     ac.style.display = 'none';
   }

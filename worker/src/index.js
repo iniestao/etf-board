@@ -1,6 +1,6 @@
 import { HTML } from './page.js';
 import { IDX_GROUPS } from './idx_data.js';
-import { MKT_INDS } from './mkt_hist.js';
+import { MKT_HIST } from './mkt_hist.js';
 
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
@@ -364,19 +364,12 @@ async function serveAll(env, ctx) {
    （A股和港股都有「医药」「消费」，只用板块名会互相覆盖）。 */
 
 const SEC_DAILY_KEY = 'sec-daily-v6';
-const MKT_LAST_KEY = 'mkt-last';   // /api/mkt 最近一次成功的结果，上游挂掉时兜底
 const SEC_DAILY_KEEP = 12;
 
-/* KV 免费额度是 1000 次写/天，而上面这份快照原来是「每次算完就写一份」。
-   页面 60 秒一刷、边缘缓存 TTL 也是 60 秒，等于每次都错过缓存、每次都写——
-   单个标签页开着 24 小时就是 1440 次写，一个人就把额度吃光。额度满了之后
-   KV 全线 429：自选存不上、PCF 预热停摆、失败兜底也读不到，页面看着就像挂了。
-   现在按「值变了 + 距上次写满 10 分钟」才落盘。这份快照的唯一用途是上游抽风时
-   退回上一次成功的结果，10 分钟的粒度远远够用（同一天里集中度不会十分钟就变个样）。
-   变量放模块级：同一个 isolate 内共享，isolate 被回收后最多多写一次，无妨。 */
-const MKT_SNAP_GAP = 30 * 60 * 1000;   // 30 分钟一次：一天 48 次，纯粹是兜底，不必更勤
-let mktSnapAt = 0;
-let mktSnapSig = '';
+/* 这里原本还有一份「/api/mkt 每次算完写 KV 快照，上游挂了退回上一次成功的结果」
+   的兜底（MKT_LAST_KEY / MKT_SNAP_GAP / mktSnapAt / mktSnapSig）。
+   现在 /api/mkt 改成读 mkt_hist.json，数据源是一个静态文件而不是会抽风的板块接口，
+   快照就没有存在的意义了——一并删掉，也省下每天几十次 KV 写。 */
 
 /**
  * 每日板块成交额日档。
@@ -2031,20 +2024,9 @@ async function serveOvK(sid, n, env, ctx) {
   return res;
 }
 
-/**
- * 全 A 行业口径的市场结构快照（集中度 × 宽度）。
- *
- * 板块地图上的四象限原本用 ETF 成交额算，那是错的：ETF 池子里只有 18 个行业格，
- * TOP3 天然占一半以上（11-06：58.7%），而全 A 真实的行业集中度只有 24.1%。
- * 更根本的是——ETF 二级市场成交是份额转让、不产生股票成交，半导体 ETF 一天
- * 200 亿和半导体个股一天 2245 亿是两套资金，前者不能代表后者。
- *
- * 口径：东财行业板块列表返回 496 个（含「电子」这种一级和「半导体」这种二级，
- * 直接加总会把同一批股票算两遍）。这里只取 MKT_INDS 里那 128 个扁平行业名——
- * 个股的 f100 就是这套名字，一只股票只归一个行业，所以互不重叠。
- *
- * 4 页 × 100 条，约 0.4 秒。60 秒边缘缓存：盘中不必秒级，收盘后基本不动。
- */
+/* 全 A 市场结构的说明见 serveMkt（下面）。这里原本还有一段「板块地图用 ETF
+   成交额算四象限是错的」的注释，结论仍然成立，只是算法已经换成个股口径，
+   注释里的 496 板块 / f100 / 128 行业那套已经作废了。 */
 // ---------------------------------------------------------------- 份额日档
 /**
  * 份额变化（清单里那一列 + 点开后的每日柱状图）。
@@ -2100,8 +2082,22 @@ async function serveShares(url, env, ctx) {
 }
 
 async function serveMkt(env, ctx) {
+  /* 全 A 市场结构快照（集中度 × 宽度）。
+   *
+   * 口径：TOP3 三级行业成交额 ÷ 全 A 个股成交额，行业取 EM2016（东方财富自建
+   * 分类，244 个三级）。逐只个股日线回算，250 天历史由 pipeline/gen_mkt_hist.mjs
+   * 每天 16:35 在 Actions 里重算，产物就是 mkt_hist.json。
+   *
+   * 这里不再现算。以前是拉东财 496 个板块、筛出互斥的 128 个求和——但板块名是
+   * 申万口径（带 Ⅱ/Ⅲ 后缀），和 EM2016 的 244 个三级名只重合 89 个，筛不全就
+   * 直接抛错，整块卡片跟着挂。改成按个股现算又要翻 56 页 clist，超过 Worker 的
+   * 子请求上限。读文件是唯一既能同口径又不会挂的路子。
+   *
+   * 代价：盘中的 c 停在上一交易日（管线收盘后才跑）。这张卡片本来就是「结构」
+   * 不是「行情」——用半截成交额算出来的集中度也没有可比性，宁可标清截止日期。
+   */
   const cache = await getCache();
-  const key = new Request('https://etf-board.internal/mkt/v1', { method: 'GET' });
+  const key = new Request('https://etf-board.internal/mkt/v2', { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
@@ -2109,136 +2105,48 @@ async function serveMkt(env, ctx) {
     } catch (e) { /* 缓存读失败不影响主流程 */ }
   }
 
-  // 排序键必须是**不变**的字段。用 fid=f6（成交额）翻页，盘中成交额每秒都在动，
-  // 第 2 页可能混进第 1 页已经出现过的板块、又漏掉另一批——实测只捞到 98/128 个行业。
-  // f12 是板块代码，天然稳定，5 页 496 条实测零重复零遗漏。
-  const CL = 'https://push2.eastmoney.com/api/qt/clist/get?pn=%d&pz=100&po=1&np=1'
-    + '&fltt=2&invt=2&fid=f12&fs=m:90+t:2&fields=f12,f14,f3,f6,f104,f105';
-  const one = async (pn) => {
-    let last;
-    for (let k = 0; k < 2; k++) {
-      try {
-        const r = await fetch(CL.replace('%d', pn), {
-          headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-          cf: { cacheTtl: 30 }
-        });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return await r.json();
-      } catch (e) { last = e; }
-    }
-    throw last;
+  /** 把一份 250 天的历史压成「最新一天 + 全量历史」。c/b 存的是千分位整数，
+   *  出口统一换成百分数，页面直接显示。 */
+  const pack = (h, src) => {
+    const i = h.d.length - 1;
+    const u = h.u[i] || 0, w = h.w[i] || 0;
+    return {
+      ok: true, d: h.d[i], asOf: h.d[i], cVer: h.cVer || 'em2016-l3',
+      c: h.c[i] / 10, b: h.b[i] / 10,
+      // 页面历史上用 stockUp/stockDn/stockN 这三个名字，保持兼容
+      stockUp: u, stockDn: w, stockN: (u + w) || h.n[i] || 0,
+      n: h.n[i] || 0, p5: (h.p5 && h.p5[i] / 10) || 0,
+      amt: (h.a && h.a[i]) || 0,
+      top3: h.t3 || [], inds: h.inds || (h.ind || []).length,
+      src,
+      // 点散点时要用 t/ind 回答「那天钱压在哪条线」，光两个数字不够
+      hist: { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w, a: h.a,
+        t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5, cVer: h.cVer || '' },
+    };
   };
 
+  let out = null;
   try {
-    // 顺序拉，不并发：并发 4 页会被上游断连（socket closed）。
-    // 5 页约 0.5 秒，比一次失败的 1.5 秒快。
-    const all = [];
-    let total = 0;
-    for (let pn = 1; pn <= 8; pn++) {
-      const j = await one(pn);
-      if (!j || !j.data || !j.data.diff) throw new Error('上游无数据 p' + pn);
-      total = j.data.total || total;
-      all.push(...j.data.diff);
-      if (!j.data.diff.length || all.length >= total) break;
-    }
-
-    const want = new Set(MKT_INDS);
-    const pick = [];
-    for (const b of all) if (want.has(b.f14)) pick.push(b);
-    if (pick.length < want.size * 0.9) throw new Error('行业匹配不全 ' + pick.length + '/' + want.size);
-
-    let amt = 0, upInd = 0, n = 0, sUp = 0, sDn = 0;
-    for (const b of pick) {
-      const a = +b.f6 || 0;
-      amt += a;
-      if (+b.f3 > 0) upInd++;
-      if (a > 0) n++;
-      sUp += +b.f104 || 0;
-      sDn += +b.f105 || 0;
-    }
-    pick.sort((x, y) => (+y.f6 || 0) - (+x.f6 || 0));
-    const top3 = pick.slice(0, 3);
-    const t3 = amt > 0 ? top3.reduce((s, b) => s + (+b.f6 || 0), 0) / amt * 100 : 0;
-
-    // 报「行情对应的交易日」，不是「北京今天」。周六早上打开页面，成交额还是周五
-    // 收盘的，报成今天会让人以为周末在交易。周末和开盘前一律退到上一个工作日；
-    // 盘中（09:15 之后）就是今天。法定节假日识别不了——那天本来就没人看。
-    const bj = new Date(Date.now() + 8 * 3600e3);
-    const mins = bj.getUTCHours() * 60 + bj.getUTCMinutes();
-    const wd = bj.getUTCDay();
-    const back = new Date(bj);
-    if (wd === 0 || wd === 6 || mins < 9 * 60 + 15) {
-      do { back.setUTCDate(back.getUTCDate() - 1); } while (back.getUTCDay() === 0 || back.getUTCDay() === 6);
-    }
-    const d = back.toISOString().slice(0, 10);
-    const t = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
-
-    // 宽度的分母是个股，不是行业：128 个行业里 9 个在涨（7.0%）和
-    // 716 只个股在涨（13.9%）是同一件事的两个切面，后者才是「有多少票在涨」。
-    // sUp/sDn 来自板块的 f104/f105（板块内上涨/下跌家数），128 个行业加总
-    // 就是全 A——11-06 实测 716 涨 4431 跌，与逐只个股 K 线回算的 716/4431 完全一致。
-    const sDir = sUp + sDn;
-    const out = {
-      ok: true, d, t,
-      inds: want.size, n,
-      c: +t3.toFixed(2), b: sDir ? +(sUp / sDir * 100).toFixed(2) : 0,
-      up: upInd, top3: top3.map((b) => b.f14),
-      amt: +(amt / 1e8).toFixed(0),
-      stockUp: sUp, stockDn: sDn, stockN: sDir,
-      src: 'eastmoney'
-    };
-
-    // 顺带把 250 天的历史也带回去：页面内联的那份是部署时固化的，
-    // 一个月不重新发布，「今天」就会飘到散点云外面去。这份由 Actions 每天重写。
-    // 读不到就不带，页面继续用内联兜底——不会因此让整张卡片挂掉。
-    try {
-      if (histSource(env)) {
-        const a = await readAsset(env, 'mkt_hist.json');
-        if (a) {
-          const h = JSON.parse(await a.text());
-          if (h && Array.isArray(h.d) && h.d.length >= 60) {
-            // t/ind 是「每天的前三大行业」+ 行业名表：点散点时要用它回答
-            // 「那天钱压在哪条线」，光两个数字不够。
-            out.hist = { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w,
-              t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5 };
-          }
-        }
+    if (histSource(env)) {
+      const a = await readAsset(env, 'mkt_hist.json');
+      if (a) {
+        const h = JSON.parse(await a.text());
+        if (h && Array.isArray(h.d) && h.d.length >= 60) out = pack(h, 'file');
       }
-    } catch (e) { /* 历史读不到，只有今天这个点 */ }
-    const res = json(out, 60);
-    if (cache && ctx && typeof ctx.waitUntil === 'function') {
-      ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
     }
-    // 留一份最近成功的快照。东财的板块接口限流比 ETF 行情狠，连续翻几页就可能被断，
-    // 失败时退回「几小时前的那份」，比让卡片掉回基线（可能是好几天前）强得多。
-    // 但写要有节制，见 MKT_SNAP_GAP 那段：十分钟一次、且数值真变了才写。
-    const sig = [out.c, out.b, out.u, out.w, out.t, out.p5].join('|');
-    const nowMs = Date.now();
-    if (env && env.WATCH && sig !== mktSnapSig && nowMs - mktSnapAt >= MKT_SNAP_GAP && kvWriteAllowed('mkt-snap')) {
-      mktSnapAt = nowMs;
-      mktSnapSig = sig;
-      const keep = { ...out };
-      delete keep.hist;
-      const put = env.WATCH.put(MKT_LAST_KEY, JSON.stringify(keep), { expirationTtl: 259200 });
-      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(Promise.resolve(put).catch(() => {}));
-      else await put.catch(() => {});
-    }
-    return res;
-  } catch (e) {
-    // 上游挂了：先看有没有最近成功的快照，没有才报错
-    try {
-      if (env && env.WATCH) {
-        const raw = await env.WATCH.get(MKT_LAST_KEY);
-        if (raw) {
-          const saved = JSON.parse(raw);
-          if (saved && saved.c > 0) {
-            return json({ ...saved, ok: true, stale: true, src: 'kv' }, 60);
-          }
-        }
-      }
-    } catch (e2) { /* KV 也读不到，往下报错 */ }
-    return json({ ok: false, error: String((e && e.message) || e) });
+  } catch (e) { /* 读不到就走内联那份，卡片不能因此空掉 */ }
+
+  // 内联那份是部署时固化的，只作兜底：它的「最新一天」会随着不重新部署越来越旧
+  if (!out && MKT_HIST && Array.isArray(MKT_HIST.d) && MKT_HIST.d.length >= 60) {
+    out = pack(MKT_HIST, 'inline');
   }
+  if (!out) return json({ ok: false, code: 'NO_MKT', error: '市场结构数据还没有生成' }, 60);
+
+  const res = json(out, 60);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
 }
 
 async function serveEvents(env, ctx) {
