@@ -2211,7 +2211,9 @@ async function mktClist(host, fs, pz) {
 /* 一批 500 只。实测（线上探针 ?t=ulist2）：500 只 370ms、600 只 1.3s、
    800 只直接把 URL 顶到 7.2KB 被上游回 502，所以 500 是稳的上界。 */
 const MKT_BATCH = 500;
-const MKT_CONC = 4;   // 4 并发：东财对同一出口的短时连打会整批断连，别贪多
+/* 串行，不并发。4 并发实测第一组就整批 502——东财对同一出口的短时连打会直接断，
+   这不是「慢一点」，是「全挂」。11 批 × 约 0.4 秒 ≈ 5 秒，30 秒缓存足够摊平。 */
+const MKT_CONC = 1;
 
 async function mktUlistBatch(codes) {
   const q = codes.map((c) => (c[0] === '6' ? '1.' : '0.') + c).join(',');
@@ -2245,8 +2247,10 @@ async function fetchAAll() {
   const t0 = Date.now();
   for (let i = 0; i < batches.length; i += MKT_CONC) {
     const group = batches.slice(i, i + MKT_CONC);
-    const part = await Promise.all(group.map((b) =>
-      mktUlistBatch(b).catch(() => mktUlistBatch(b).catch(() => null))));
+    const part = [];
+    for (const b of group) {
+      part.push(await mktUlistBatch(b).catch(() => mktUlistBatch(b).catch(() => null)));
+    }
     const bad = part.findIndex((x) => !x || !x.length);
     if (bad >= 0) {
       const err = new Error('批量行情缺第 ' + (i + bad + 1) + ' 组（' + rows.length + ' 只已取）');
