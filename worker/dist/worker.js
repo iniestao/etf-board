@@ -2210,31 +2210,53 @@ async function mktClist(host, fs, pz) {
   return { rows: Array.isArray(d.diff) ? d.diff : Object.values(d.diff), total: d.total || 0 };
 }
 
-/* 一批 500 只。实测（线上探针 ?t=ulist2）：500 只 370ms、600 只 1.3s、
-   800 只直接把 URL 顶到 7.2KB 被上游回 502，所以 500 是稳的上界。 */
-const MKT_BATCH = 500;
-/* 串行，不并发。4 并发实测第一组就整批 502——东财对同一出口的短时连打会直接断，
-   这不是「慢一点」，是「全挂」。11 批 × 约 0.4 秒 ≈ 5 秒，30 秒缓存足够摊平。 */
-const MKT_CONC = 1;
+/* 一批 700 只。线上探针实测（?t=sina）：700 只 169KB / 1.4 秒正常，
+   900 只 URL 顶到 8.1KB 直接被新浪回 431，所以 700 是稳的上界。
+   8 批 3 并发，约 4~5 秒。 */
+const MKT_BATCH = 700;
+const MKT_CONC = 3;
 
-async function mktUlistBatch(codes) {
-  const q = codes.map((c) => (c[0] === '6' ? '1.' : '0.') + c).join(',');
-  const r = await fetch('https://push2delay.eastmoney.com/api/qt/ulist.np/get'
-    + '?fltt=2&invt=2&fields=f12,f3,f6,f124&secids=' + q, {
-    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-    signal: AbortSignal.timeout(6000),
+/** 一次批量报价。返回 {rows, day}，rows 的形状与东财 clist 对齐（f12/f3/f6/f124），
+ *  下游 aggLive 不用区分来源。
+ *
+ *  为什么用新浪 hq：东财 ulist 连打 11 批会被限流（第 1 组就 502，快速失败不是超时）；
+ *  新浪这个是老接口，全网行情软件在用，限流宽得多，而且一次能带 700 只。
+ *  返回 GBK，按 utf-8 解出来中文是乱码——不管它：只需要 昨收/现价/成交额/日期
+ *  四个位置，GBK 双字节不会落在 0x2C（逗号）和 0x22（引号）上，分隔符安全。 */
+async function mktSinaBatch(codes) {
+  const q = codes.map((c) => (c[0] === '6' ? 'sh' : 'sz') + c).join(',');
+  const r = await fetch('https://hq.sinajs.cn/list=' + q, {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn' },
+    signal: AbortSignal.timeout(8000),
   });
   if (!r.ok) throw new Error('HTTP ' + r.status);
-  const j = await r.json();
-  const d = (j && j.data && j.data.diff) || [];
-  return Array.isArray(d) ? d : Object.values(d);
+  const txt = new TextDecoder('utf-8').decode(await r.arrayBuffer());
+  const re = /hq_str_(?:sh|sz)(\d{6})="([^"]*)"/g;
+  const rows = [];
+  let day = '', m;
+  while ((m = re.exec(txt))) {
+    const f = m[2].split(',');
+    if (f.length < 32) continue;
+    if (!day && /^\d{4}-\d{2}-\d{2}$/.test(f[30])) day = f[30];
+    const prev = +f[2], last = +f[3];
+    rows.push({
+      f12: m[1],
+      // 停牌时现价为 0：算成平盘，成交额也是 0，aggLive 会把它排除在 n 之外
+      f3: (prev > 0 && last > 0) ? (last - prev) / prev * 100 : 0,
+      f6: +f[9] || 0,
+      f124: 0,      // 下面按批统一填，见 dsec
+    });
+  }
+  const dsec = day ? Date.parse(day + 'T00:00:00+08:00') / 1000 : 0;
+  for (const x of rows) x.f124 = dsec;
+  return { rows, day };
 }
 
 /** 拿全 A 的当日快照。
  *
  * 为什么不是 clist：它的 pz 被硬卡在 100（要 6000 只也只回 100 条，而且直接 502），
  * 5564 只按 100 翻页要 56 个子请求，免费版 50 就爆了。
- * ulist 一次能带一批 secid，而代码表本来就在 MKT_IND_OF 里——5223 只分 11 批。
+ * 新浪批量 700 只一次，5223 只分 8 批。
  *
  * 已知偏差：表是每周刷新的，当期新上市的几只不在里面，不进分母（占比影响 <0.1pt）。
  * 北交所本来就不在表里，历史回算也剔了它，口径一致。
@@ -2247,26 +2269,19 @@ async function fetchAAll() {
 
   const rows = [];
   const t0 = Date.now();
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  for (let i = 0; i < batches.length; i++) {
-    /* 每批之间留 220ms 空隙、失败最多试 3 次。连打 11 次东财会挑一批回 502
-       （实测 4 并发直接整批断、串行不间隔也会在第 2 组翻车），限的是频率不是容量。 */
-    let got = null;
-    for (let k = 0; k < 3 && !got; k++) {
-      if (k) await wait(500);
-      got = await mktUlistBatch(batches[i]).catch(() => null);
-      if (got && !got.length) got = null;
-    }
-    if (!got) {
-      const err = new Error('批量行情第 ' + (i + 1) + '/' + batches.length + ' 组三次都失败'
+  for (let i = 0; i < batches.length; i += MKT_CONC) {
+    const part = await Promise.all(batches.slice(i, i + MKT_CONC).map((b) =>
+      mktSinaBatch(b).catch(() => mktSinaBatch(b).catch(() => null))));
+    const bad = part.findIndex((x) => !x || !x.rows.length);
+    if (bad >= 0) {
+      const err = new Error('批量报价缺第 ' + (i + bad + 1) + '/' + batches.length + ' 组'
         + '（已取 ' + rows.length + ' 只）');
-      err.tried = ['ulist ' + batches.length + ' 批'];
+      err.tried = ['sina ' + batches.length + ' 批'];
       throw err;
     }
-    for (const x of got) rows.push(x);
-    if (i < batches.length - 1) await wait(220);
+    for (const x of part) rows.push(...x.rows);
   }
-  return { rows, tried: ['ulist ' + batches.length + ' 批 / ' + rows.length + ' 只 / ' + (Date.now() - t0) + 'ms'] };
+  return { rows, tried: ['sina ' + batches.length + ' 批 / ' + rows.length + ' 只 / ' + (Date.now() - t0) + 'ms'] };
 }
 
 /** 纯聚合：一次遍历出 c / b / n / amt，再排一次出 p5。
