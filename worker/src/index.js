@@ -2292,6 +2292,11 @@ async function fetchAAll() {
 function aggLive(rows) {
   const NI = MKT_IND_NAMES.length;
   const indAmt = new Float64Array(NI);
+  /* 行业的「今天涨了多少」，按成交额加权（一只票成交越大，说的话越算数）。
+     之前 top3 只有名字，卡片上顺手写成「领涨 集成电路、电子元件、通信传输设备」，
+     但那三个是成交额前三，跌的时候也是它们三个——名字后面不带数字，
+     读者只能自己去猜，普跌的日子里就变成了明显的错话。 */
+  const indPv = new Float64Array(NI);
   const amts = new Float64Array(rows.length);
   // f124 只会落在少数几天里（活跃股今天、停牌股停牌前），用 8 格线性表数众数
   const dayKey = [], dayCnt = [];
@@ -2314,7 +2319,10 @@ function aggLive(rows) {
     const p = +r.f3;                       // fltt=2 时停牌给 '-'，转成 NaN，两边都不计
     if (p > 0) up++; else if (p < 0) dn++;
     const ix = MKT_IND_OF[r.f12];          // 没有三级归属的只进分母，与历史口径一致
-    if (ix != null) indAmt[ix] += a;
+    if (ix != null) {
+      indAmt[ix] += a;
+      if (p === p) indPv[ix] += a * p;     // 停牌那条 f3 是 '-'，NaN 不进分子
+    }
   }
   if (!n) return null;
 
@@ -2332,7 +2340,12 @@ function aggLive(rows) {
     else if (v > v1) { v2 = v1; i2 = i1; v1 = v; i1 = i; }
     else if (v > v2) { v2 = v; i2 = i; }
   }
-  const top3 = [i0, i1, i2].filter((x) => x >= 0).map((x) => MKT_IND_NAMES[x]);
+  const t3i = [i0, i1, i2].filter((x) => x >= 0);
+  const top3 = t3i.map((x) => MKT_IND_NAMES[x]);
+  /* 名字后面必须跟数字。只给名字的「成交额前三」，在普跌的日子里会被读成
+     「这三个在涨」——加涨幅（加权）和成交额，是涨是跌一眼就看出来。 */
+  const top3p = t3i.map((x) => (indAmt[x] > 0 ? +(indPv[x] / indAmt[x]).toFixed(2) : 0));
+  const top3a = t3i.map((x) => +(indAmt[x] / 1e8).toFixed(1));
 
   // 前 5% 个股成交额占比。typed array 的 sort 是纯数值排序，比普通数组快一个量级
   const sub = amts.subarray(0, k).sort();
@@ -2346,7 +2359,7 @@ function aggLive(rows) {
     u: up, w: dn, n,
     amt: Math.round(amt / 1e8),
     p5: amt > 0 ? tail / amt * 100 : 0,
-    top3,
+    top3, top3p, top3a,
   };
 }
 
@@ -2370,6 +2383,8 @@ function mktLiveOut(live, base) {
     cVer: MKT_CVER, c: +live.c.toFixed(2), b: +live.b.toFixed(2),
     stockUp: live.u, stockDn: live.w, stockN: live.u + live.w,
     n: live.n, p5: +live.p5.toFixed(2), amt: live.amt, top3: live.top3,
+    // 名字 + 涨幅 + 成交额：前端要和名字并排显示，缺一个就得回头再查
+    t3p: live.top3p || [], t3a: live.top3a || [],
     inds: MKT_IND_NAMES.length, src: 'em', hist,
   };
 }

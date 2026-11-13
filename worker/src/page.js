@@ -733,7 +733,7 @@ font-size:10.5px;color:var(--txt3);line-height:1.55}
    不跟随鼠标——移动端没有 hover，跟随毫无意义，固定锚点反而稳。 */
 .scqplot{position:relative}
 .scqtip{display:none;position:absolute;z-index:6;box-sizing:border-box;
-min-width:230px;max-width:min(320px,calc(100% - 14px));
+min-width:230px;max-width:min(376px,calc(100% - 14px));
 padding:7px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
 box-shadow:0 8px 28px rgba(23,32,54,.16);font-size:11.5px;color:var(--txt2);
 line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
@@ -745,6 +745,10 @@ line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
 .scqtip b{color:var(--txt);font-weight:600}
 .scqtip i{font-style:normal;color:var(--txt);font-weight:700}
 .scqtip em{font-style:normal;color:var(--txt3)}
+/* 涨跌色要盖过上面的 .scqtip i（0,1,1），否则「额前三」的涨幅全是黑的 */
+.scqtip i.up{color:var(--up)}.scqtip i.down{color:var(--down)}.scqtip i.flat{color:var(--txt3)}
+.scqtip .t3h{display:inline-block;margin-right:2px;padding:0 4px;border-radius:3px;
+background:#f1f3f7;color:var(--txt3);font-size:10px;line-height:15px;vertical-align:1px}
 .scqtip .esc{font-size:10.5px}
 .scqplot svg{cursor:crosshair}
 /* 电脑为主：图独占一行、放到 1000px，统计和描述缩到图下方一行。
@@ -2380,9 +2384,11 @@ function secQuadCard(){
   var tally = upN + ' 涨 ' + dnN + ' 跌';
   var desc;
   if (hiC && !wide) desc = '钱压在 ' + names + ' 上（TOP3 占 ' + conc.toFixed(1) + '%），'
-    + '全 A ' + tally + '——赚了指数不赚面。';
-  else if (hiC && wide) desc = names + ' 领涨（TOP3 占 ' + conc.toFixed(1) + '%），'
-    + tally + '——有主线，也在扩散。';
+    + '全 A ' + tally + '——钱只挤在这几个赛道，面没跟上。';
+  // 这里原来写「X 领涨」：TOP3 取的是成交额，不是涨幅，普跌的日子里照样是它们三个，
+  // 一句「领涨」就把结论说反了。改成只说「钱集中在哪」，涨跌交给数字。
+  else if (hiC && wide) desc = '钱集中在 ' + names + '（TOP3 占 ' + conc.toFixed(1) + '%），'
+    + tally + '——主线在，也在往外扩散。';
   else if (!hiC && wide) desc = tally + '，TOP3 只占 ' + conc.toFixed(1)
     + '%——钱在轮着走，追高容易挨打。';
   else desc = tally + '，TOP3 只占 ' + conc.toFixed(1)
@@ -7211,6 +7217,25 @@ function scqRing(svg, sel){
     g.appendChild(c);
   });
 }
+/* TOP3 是「成交额最大的三个三级行业」，不是「涨幅最大的三个」。
+   普跌的日子里照样是这三个（钱没地方去，还是它们成交量最大），
+   所以名字后面必须跟当天涨幅——只写名字会被读成「这三个在涨」，
+   早先那版甚至写成了「领涨」，全 A 只有 14% 的票在涨的时候格外刺眼。
+   涨幅按成交额加权（IND 口径，见 aggLive），历史点没存涨幅，只列名字。 */
+function scqT3(names, pcts, amts){
+  if (!names || !names.length) return '';
+  var out = '<br><em class="t3h">额前三</em>', i, p, a;
+  for (i = 0; i < names.length; i++){
+    p = pcts ? pcts[i] : null;
+    a = amts ? amts[i] : null;
+    out += (i ? '<br>' : ' ')
+      + '<b>' + esc(names[i]) + '</b>'
+      + (p != null ? '<i class="' + (p > 0 ? 'up' : p < 0 ? 'down' : 'flat') + '"> '
+        + fpc(p) + '</i>' : '')
+      + (a ? '<em> ' + a + ' 亿</em>' : '');
+  }
+  return out;
+}
 function scqShow(svg, sel){
   var P = SCQ_PTS;
   var card = svg.closest ? svg.closest('.scq') : null;
@@ -7233,7 +7258,7 @@ function scqShow(svg, sel){
       + (cq0 != null ? '<em>（' + cq0.toFixed(0) + ' 分位）</em>' : '')
       + ' · 宽度 <i>' + P.BRD.toFixed(0) + '%</i>'
       + (bq0 != null ? '<em>（' + bq0.toFixed(0) + ' 分位）</em>' : '')
-      + ((nw.top3 && nw.top3.length) ? '<br>领涨 <b>' + nw.top3.join('、') + '</b>' : '')
+      + scqT3(nw.top3, nw.t3p, nw.t3a)
       + ' <em class="esc">再点一次取消</em>';
     var G0 = scqGeo(svg);
     if (G0){
@@ -7263,7 +7288,7 @@ function scqShow(svg, sel){
     + ' · 集中 <i>' + c.toFixed(1) + '%</i><em>（' + (cq != null ? cq.toFixed(0) + ' 分位' : '—') + '）</em>'
     + ' · 宽度 <i>' + b.toFixed(0) + '%</i><em>（' + u + ' 涨 ' + w + ' 跌'
     + (bq != null ? '，' + bq.toFixed(0) + ' 分位' : '') + '）</em>'
-    + (nm.length ? '<br>领涨 <b>' + nm.join('、') + '</b>' : '')
+    + (nm.length ? '<br><em class="t3h">额前三</em> <b>' + nm.join('、') + '</b>' : '')
     + (dcs.length ? ' <em>较今天 ' + dcs.join('、') + '</em>' : '')
     + ' <em class="esc">再点一次取消</em>';
 

@@ -725,6 +725,19 @@ async function runContracts(base, pass) {
       const miss = mk.top3.filter((x) => inds.indexOf(x) < 0);
       if (miss.length) bad('/api/mkt top3 不在行业名表里：' + miss.join('、'));
       else ok('/api/mkt TOP3 ' + mk.top3.join('、'));
+      /* 名字必须带涨跌幅和成交额：只给名字的「成交额前三」会被读成「这三个在涨」。
+         三个数组等长是前端并排渲染的前提，缺一个就少一列数字。 */
+      if (mk.mode !== 'close' || mk.t3p) {
+        if (!Array.isArray(mk.t3p) || mk.t3p.length !== mk.top3.length
+          || !Array.isArray(mk.t3a) || mk.t3a.length !== mk.top3.length) {
+          bad('/api/mkt t3p/t3a 与 top3 不等长：' + JSON.stringify([mk.top3, mk.t3p, mk.t3a]));
+        } else if (mk.t3p.some((v) => typeof v !== 'number' || Math.abs(v) > 25)) {
+          bad('/api/mkt t3p 数值异常：' + JSON.stringify(mk.t3p));
+        } else {
+          ok('/api/mkt TOP3 带涨幅 ' + mk.t3p.map((v) => (v > 0 ? '+' : '') + v.toFixed(2) + '%').join(' / ')
+            + ' · 成交 ' + mk.t3a.join(' / ') + ' 亿');
+        }
+      }
     }
     // 这一条是防回退的：上一版 b 用的是 upInd/n（行业口径），
     // 数字看着也像模像样，只是系统性偏低一半。

@@ -438,7 +438,7 @@ node build.mjs && node dev_server.mjs     # → http://127.0.0.1:8899
 | `GET /api/hist?code=` | 单只历史二进制 `ETH1` | 6h |
 | `GET /api/watch` | 云端自选 `{ok, exists, list}` | 无 |
 | `POST /api/watch` | 覆盖写，body `{"list":["510300",...]}` | — |
-| `GET /api/mkt` | 全 A 集中度/宽度，盘中现算、收盘读日档 `{ok, mode, d, snapAt, c, b, n, p5, amt, stockUp, stockDn, stockN, top3, inds, cVer, hist}` | 30s |
+| `GET /api/mkt` | 全 A 集中度/宽度，盘中现算、收盘读日档 `{ok, mode, d, snapAt, c, b, n, p5, amt, stockUp, stockDn, stockN, top3, t3p, t3a, inds, cVer, hist}` | 30s |
 | `GET /api/ind` | 某个三级行业的成分股 `?n=行业名`（或 `?i=下标`） `{ok, ind, n, day, amt, pct, up, dn, flat, halt, mem:[{c,n,p,px,a}]}` | 30s |
 | `GET /api/mktprobe` | 同一套链路的诊断口：`?t=raw` 打上游计时、`?t=agg` 样本验算、`?t=kv` 看快照 | 0 |
 | `GET /api/secdaily` | 36 格日档 `{ok, days:[{d,s}], src}`（主读 data 分支，KV 兜底） | 30min |
@@ -892,6 +892,24 @@ timerFast = setInterval(loadTXQuotes, open ? 5000 : 30000); // 自选（浏览�
 末尾附跟今天的差值（「集中度 −2.7pt、宽度 −34.0pt」）。单点没参照没意义，
 差值才读得出「这天是不是更极端」；TOP3 行业名回答的是「这次抱团抱的是谁」——
 同样是半导体居首，2015 年那次抱的是中小创，完全是两回事。
+
+**「额前三」不是「领涨」（2026-11-13 修）。** 那三个行业是按**成交额**取的，
+普跌的日子照样是它们三个。早先浮窗写成「领涨 集成电路、电子元件、通信传输设备」，
+而当天全 A 只有 14% 的票在涨、这三个是 −2.7% / −7.5% / −7.4%，一片绿——
+一句话把结论说反，读者的第一反应只能是「并没有涨啊」。现在：
+
+- 标签改「额前三」，每个名字后跟**当日加权涨幅**（成交额加权，`aggLive` 里
+  顺手累一个 `indPv` 数组，成本 O(1)）和成交额，涨红跌绿；
+- `/api/mkt` 新增 `t3p`（三个涨幅）、`t3a`（三个成交额，亿元），随 KV 快照一起写，
+  断连降到 `snap` 时也带着；
+- 历史点没有行业涨幅（管线没存），只列名字，标签同样是「额前三」——不带数字，
+  也就不会被读成「在涨」；
+- 描述句 `hiC && wide` 分支原来写「X 领涨」，一并改成「钱集中在 X」；
+  `hiC && !wide` 的「赚了指数不赚面」改成「钱只挤在这几个赛道，面没跟上」——
+  指数当天也可能跌，前半句把方向说死了。
+
+浮窗 `max-width` 同时从 320px 提到 376px：多了数字之后，第一行
+「盘中 14:44 · 集中 20.1%（68 分位） · 宽度 14%（7 分位）」会在「（7 分」处断词。
 
 实现上 250 个点不做 250 个 `<circle>`（DOM 多 500 个节点、HTML 多 25KB）：
 SVG 的 `data-g` 带出绘图区几何，点击坐标反算回 viewBox，在点阵里取最近点，
