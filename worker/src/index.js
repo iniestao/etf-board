@@ -2163,10 +2163,16 @@ function mktPack(h, src) {
     n: h.n[i] || 0, p5: (h.p5 && h.p5[i] / 10) || 0,
     amt: (h.a && h.a[i]) || 0,
     top3: h.t3 || [], inds: h.inds || (h.ind || []).length,
+    /* TOP3 是成交额前三，不是涨幅前三，所以名字后面必须跟当天的涨幅：
+       只给名字的「额前三」在普跌的日子会被读成「这三个在涨」。
+       存的是「百分数 ×100」的整数（−292 = −2.92%），出口还原成小数。 */
+    t3p: (h.t3p && h.t3p[i]) ? h.t3p[i].map((v) => v / 100) : [],
+    t3a: (h.t3a && h.t3a[i]) || [],
     src,
     // 点散点时要用 t/ind 回答「那天钱压在哪条线」，光两个数字不够
     hist: { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w, a: h.a,
-      t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5, cVer: h.cVer || '' },
+      t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5, cVer: h.cVer || '',
+      t3p: h.t3p || [] },
   };
 }
 
@@ -2369,9 +2375,10 @@ function mktLiveOut(live, base) {
   let hist = null;
   if (base && Array.isArray(base.d) && base.d.length >= 60) {
     hist = { d: base.d, c: base.c, b: base.b, n: base.n, u: base.u, w: base.w, a: base.a,
-      t3: base.t3 || [], t: base.t, ind: base.ind, p5: base.p5, cVer: base.cVer || '' };
+      t3: base.t3 || [], t: base.t, ind: base.ind, p5: base.p5, cVer: base.cVer || '',
+      t3p: base.t3p || [] };
     if (hist.d.length && hist.d[hist.d.length - 1] === live.day) {
-      for (const k of ['d', 'c', 'b', 'n', 'u', 'w', 'a', 'p5', 't']) {
+      for (const k of ['d', 'c', 'b', 'n', 'u', 'w', 'a', 'p5', 't', 't3p']) {
         if (Array.isArray(hist[k])) hist[k] = hist[k].slice(0, -1);
       }
       hist.t3 = live.top3;

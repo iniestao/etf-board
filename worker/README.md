@@ -438,7 +438,7 @@ node build.mjs && node dev_server.mjs     # → http://127.0.0.1:8899
 | `GET /api/hist?code=` | 单只历史二进制 `ETH1` | 6h |
 | `GET /api/watch` | 云端自选 `{ok, exists, list}` | 无 |
 | `POST /api/watch` | 覆盖写，body `{"list":["510300",...]}` | — |
-| `GET /api/mkt` | 全 A 集中度/宽度，盘中现算、收盘读日档 `{ok, mode, d, snapAt, c, b, n, p5, amt, stockUp, stockDn, stockN, top3, t3p, t3a, inds, cVer, hist}` | 30s |
+| `GET /api/mkt` | 全 A 集中度/宽度，盘中现算、收盘读日档 `{ok, mode, d, snapAt, c, b, n, p5, amt, stockUp, stockDn, stockN, top3, t3p, t3a, inds, cVer, hist}`，`hist` 里带 `t3p`（每日 TOP3 行业涨幅） | 30s |
 | `GET /api/ind` | 某个三级行业的成分股 `?n=行业名`（或 `?i=下标`） `{ok, ind, n, day, amt, pct, up, dn, flat, halt, mem:[{c,n,p,px,a}]}` | 30s |
 | `GET /api/mktprobe` | 同一套链路的诊断口：`?t=raw` 打上游计时、`?t=agg` 样本验算、`?t=kv` 看快照 | 0 |
 | `GET /api/secdaily` | 36 格日档 `{ok, days:[{d,s}], src}`（主读 data 分支，KV 兜底） | 30min |
@@ -902,8 +902,17 @@ timerFast = setInterval(loadTXQuotes, open ? 5000 : 30000); // 自选（浏览�
   顺手累一个 `indPv` 数组，成本 O(1)）和成交额，涨红跌绿；
 - `/api/mkt` 新增 `t3p`（三个涨幅）、`t3a`（三个成交额，亿元），随 KV 快照一起写，
   断连降到 `snap` 时也带着；
-- 历史点没有行业涨幅（管线没存），只列名字，标签同样是「额前三」——不带数字，
-  也就不会被读成「在涨」；
+- 历史点也有数字（2026-11-13 补齐）：`gen_mkt_hist.mjs` 多累一个 `indPvByDay`
+  （行业 → 日 → Σ 成交额×涨跌幅，与盘中同一算法），落盘成 `t3p`（250×3，
+  「百分数×100」的整数，−380 = −3.80%）和 `t3a`（亿元）。`/api/mkt` 的
+  `hist` 里带 `t3p`，浮窗点历史点时显示「额前三 集成电路 +5.55%、电子元件 +5.54%…」；
+  三行改一行紧凑写法，否则浮窗会顶到图外面；
+- 收盘 20:00 之后读静态日档那段，`mktPack` 从 `t3p[last]` / `t3a[last]` 还原，
+  和盘中显示同一套数字——之前这个时段只有三个裸名字；
+- 顺手修了一个错配：历史浮窗的行业名原来取 `P.T[sel]`，而涨跌家数取 `P.U[hi]`，
+  点云跳过 `c=0` 的天时两者会指向不同的日子，统一到 `hi`；
+- 收盘后浮窗标题不再写死「今天」：`close` 模式下那个点代表最后一个交易日，
+  周六打开页面还写「今天」等于说周末在交易，现在显示「11-12 收盘」；
 - 描述句 `hiC && wide` 分支原来写「X 领涨」，一并改成「钱集中在 X」；
   `hiC && !wide` 的「赚了指数不赚面」改成「钱只挤在这几个赛道，面没跟上」——
   指数当天也可能跌，前半句把方向说死了。
@@ -914,8 +923,8 @@ timerFast = setInterval(loadTXQuotes, open ? 5000 : 30000); // 自选（浏览�
 实现上 250 个点不做 250 个 `<circle>`（DOM 多 500 个节点、HTML 多 25KB）：
 SVG 的 `data-g` 带出绘图区几何，点击坐标反算回 viewBox，在点阵里取最近点，
 屏幕 16px 内才算命中。历史里每天的行业用索引存（`t`: 250×3 个数字，
-`ind`: 128 个行业名表，共约 3KB），比存中文名省一半。「现在」那个点也参与
-命中——想看今天的数字，点它就行。
+`ind`: 244 个行业名表；`t3p`/`t3a` 各 250×3，合计约 8KB），比存中文名省一半。
+「现在」那个点也参与命中——想看今天的数字，点它就行。
 
 详情用**锚在点上的浮窗**（第一版是卡片底部的固定条）：位置取点的 viewBox
 百分比坐标，靠右翻到左侧、靠下翻到上方，390px 屏上不会裁出去。不跟随鼠标——

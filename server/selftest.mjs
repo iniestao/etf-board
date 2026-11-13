@@ -726,17 +726,31 @@ async function runContracts(base, pass) {
       if (miss.length) bad('/api/mkt top3 不在行业名表里：' + miss.join('、'));
       else ok('/api/mkt TOP3 ' + mk.top3.join('、'));
       /* 名字必须带涨跌幅和成交额：只给名字的「成交额前三」会被读成「这三个在涨」。
-         三个数组等长是前端并排渲染的前提，缺一个就少一列数字。 */
-      if (mk.mode !== 'close' || mk.t3p) {
-        if (!Array.isArray(mk.t3p) || mk.t3p.length !== mk.top3.length
-          || !Array.isArray(mk.t3a) || mk.t3a.length !== mk.top3.length) {
-          bad('/api/mkt t3p/t3a 与 top3 不等长：' + JSON.stringify([mk.top3, mk.t3p, mk.t3a]));
-        } else if (mk.t3p.some((v) => typeof v !== 'number' || Math.abs(v) > 25)) {
-          bad('/api/mkt t3p 数值异常：' + JSON.stringify(mk.t3p));
+         三个数组等长是前端并排渲染的前提，缺一个就少一列数字。
+         三种模式都要求：close 读的是日档里的 t3p/t3a（管线落盘），
+         live/snap 读的是 aggLive 现算的。哪一路缺了，界面上就是三个裸名字。 */
+      if (!Array.isArray(mk.t3p) || mk.t3p.length !== mk.top3.length
+        || !Array.isArray(mk.t3a) || mk.t3a.length !== mk.top3.length) {
+        bad('/api/mkt ' + mk.mode + ' 模式 t3p/t3a 与 top3 不等长：'
+          + JSON.stringify([mk.top3, mk.t3p, mk.t3a]));
+      } else if (mk.t3p.some((v) => typeof v !== 'number' || Math.abs(v) > 25)) {
+        bad('/api/mkt t3p 数值异常：' + JSON.stringify(mk.t3p));
+      } else {
+        ok('/api/mkt ' + mk.mode + ' TOP3 带涨幅 '
+          + mk.t3p.map((v) => (v > 0 ? '+' : '') + v.toFixed(2) + '%').join(' / ')
+          + ' · 成交 ' + mk.t3a.join(' / ') + ' 亿');
+      }
+      // 日档也要能回答「那天钱压在哪条线」：没有 hist.t3p，历史点就只有名字。
+      if (mk.hist && mk.hist.t3p && mk.top3.length) {
+        const n3 = mk.hist.t3p.length;
+        if (n3 !== (mk.hist.d || []).length) {
+          bad('/api/mkt hist.t3p 天数与 hist.d 不一致：' + n3 + ' vs ' + (mk.hist.d || []).length);
         } else {
-          ok('/api/mkt TOP3 带涨幅 ' + mk.t3p.map((v) => (v > 0 ? '+' : '') + v.toFixed(2) + '%').join(' / ')
-            + ' · 成交 ' + mk.t3a.join(' / ') + ' 亿');
+          ok('/api/mkt hist.t3p ' + n3 + ' 天 · 末条 '
+            + JSON.stringify(mk.hist.t3p[n3 - 1]));
         }
+      } else if (mk.mode === 'close' || (mk.hist && mk.hist.d)) {
+        bad('/api/mkt 缺 hist.t3p：历史点会只剩行业名，没有涨跌');
       }
     }
     // 这一条是防回退的：上一版 b 用的是 upInd/n（行业口径），

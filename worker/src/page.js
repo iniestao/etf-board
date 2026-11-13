@@ -2359,8 +2359,11 @@ function secQuadCard(){
 
   // 点阵挂到模块级，事件监听里直接查，不用把闭包层层传下去。
   // T/IND 是「那天的前三大行业」：只有 24% 这个数字回答不了「钱堆在哪条线」。
+  // T3P 是那三个行业当天的涨幅（百分数×100）——名字不带数字，
+  // 普跌的日子会被读成「这三个在涨」。老日档没有这个数组，读了给空。
   SCQ_PTS = { C: C, B: B, I: CI, D: H.d, U: H.u || [], W: H.w || [],
-              T: H.t || [], IND: H.ind || [], RC: H.c, RB: H.b,
+              T: H.t || [], IND: H.ind || [], T3P: H.t3p || [],
+              RC: H.c, RB: H.b,
               cur: C.length - 1, BRD: brd, CONC: conc };
 
   var c3 = mktPct(H.c, conc), b3 = mktPct(H.b, brd);
@@ -7221,10 +7224,23 @@ function scqRing(svg, sel){
    普跌的日子里照样是这三个（钱没地方去，还是它们成交量最大），
    所以名字后面必须跟当天涨幅——只写名字会被读成「这三个在涨」，
    早先那版甚至写成了「领涨」，全 A 只有 14% 的票在涨的时候格外刺眼。
-   涨幅按成交额加权（IND 口径，见 aggLive），历史点没存涨幅，只列名字。 */
-function scqT3(names, pcts, amts){
+   涨幅按成交额加权（IND 口径，见 aggLive），历史点读日档里的 t3p/t3a。 */
+function scqT3(names, pcts, amts, oneLine){
   if (!names || !names.length) return '';
-  var out = '<br><em class="t3h">额前三</em>', i, p, a;
+  var i, p, a;
+  if (oneLine){
+    // 历史点用的是同一行紧凑写法：浮窗里已经有一行「较今天 −4.2pt」，
+    // 再拆三行会把浮窗顶到图外面去。
+    var parts = [];
+    for (i = 0; i < names.length; i++){
+      p = pcts ? pcts[i] : null;
+      parts.push('<b>' + esc(names[i]) + '</b>'
+        + (p != null ? '<i class="' + (p > 0 ? 'up' : p < 0 ? 'down' : 'flat') + '"> '
+          + fpc(p) + '</i>' : ''));
+    }
+    return '<br><em class="t3h">额前三</em> ' + parts.join('、');
+  }
+  var out = '<br><em class="t3h">额前三</em>';
   for (i = 0; i < names.length; i++){
     p = pcts ? pcts[i] : null;
     a = amts ? amts[i] : null;
@@ -7251,9 +7267,15 @@ function scqShow(svg, sel){
   if (sel === P.C.length){
     var nw = MKT_NOW || {};
     var cq0 = mktPct(P.RC, P.CONC), bq0 = mktPct(P.RB, P.BRD);
-    bar.innerHTML = '<b>今天</b> '
-      + (nw.mode === 'live' ? '盘中 ' + (nw.snapAt || '')
-        : nw.mode === 'snap' ? '快照 ' + (nw.snapAt || '') : '')
+    /* 这个点的头衔要跟着数据走。收盘后（close）它代表的是**最后一个交易日**，
+       不是「今天」——周六打开页面还写「今天」，等于说周末在交易。 */
+    var bjNow0 = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+    var ttl0 = nw.mode === 'live' ? '今天 盘中 ' + (nw.snapAt || '')
+      : nw.mode === 'snap' ? '快照 ' + (nw.snapAt || '')
+        : nw.mode === 'close'
+          ? (nw.d === bjNow0 ? '今天收盘' : (nw.d || '').slice(5) + ' 收盘')
+          : '今天';
+    bar.innerHTML = '<b>' + ttl0 + '</b>'
       + ' · 集中 <i>' + P.CONC.toFixed(1) + '%</i>'
       + (cq0 != null ? '<em>（' + cq0.toFixed(0) + ' 分位）</em>' : '')
       + ' · 宽度 <i>' + P.BRD.toFixed(0) + '%</i>'
@@ -7273,8 +7295,12 @@ function scqShow(svg, sel){
   }
   var hi = P.I[sel], d = P.D[hi];
   var c = P.C[sel], b = P.B[sel], u = P.U[hi] || 0, w = P.W[hi] || 0;
-  var nm = (P.T[sel] || []).map(function (k) { return P.IND[k] || ''; })
+  // 行业名按原始下标取（U/W 也是 hi）。之前这里用 sel：点云跳过了 c=0 的天时
+  // sel 与 hi 会错开，名字和涨跌家数会指向不同的日子。
+  var nm = (P.T[hi] || []).map(function (k) { return P.IND[k] || ''; })
     .filter(function (x) { return !!x; });
+  // 那三个行业当天的涨幅（老日档没有这个数组，取了是空）
+  var pv3 = (P.T3P && P.T3P[hi]) || [];
   var cq = mktPct(P.RC, c), bq = mktPct(P.RB, b);
   var wd = '日一二三四五六'.charAt(new Date(d + 'T00:00:00+08:00').getUTCDay());
   // 跟今天比：单看「那天 15.5%」没有参照，加减量才读得出这次是不是更极端
@@ -7288,7 +7314,7 @@ function scqShow(svg, sel){
     + ' · 集中 <i>' + c.toFixed(1) + '%</i><em>（' + (cq != null ? cq.toFixed(0) + ' 分位' : '—') + '）</em>'
     + ' · 宽度 <i>' + b.toFixed(0) + '%</i><em>（' + u + ' 涨 ' + w + ' 跌'
     + (bq != null ? '，' + bq.toFixed(0) + ' 分位' : '') + '）</em>'
-    + (nm.length ? '<br><em class="t3h">额前三</em> <b>' + nm.join('、') + '</b>' : '')
+    + (nm.length ? scqT3(nm, pv3.length ? pv3.map(function (v) { return v / 100; }) : null, null, true) : '')
     + (dcs.length ? ' <em>较今天 ' + dcs.join('、') + '</em>' : '')
     + ' <em class="esc">再点一次取消</em>';
 

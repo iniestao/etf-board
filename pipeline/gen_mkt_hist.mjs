@@ -127,6 +127,12 @@ const dayUp = new Map(), dayDn = new Map(), dayFlat = new Map(), dayN = new Map(
 const dayAllAmt = new Map();
 const dayAmts = new Map();          // 每天个股成交额列表，算 p5
 const indAmtByDay = new Map();      // 三级行业 -> Map(day -> amt)
+/* 三级行业 -> Map(day -> Σ(amt × 当日涨跌幅))。除以当日行业成交额就是
+   **成交额加权的行业涨幅**，和盘中 aggLive 里那个 indPv 完全同一个算法。
+   不加这个，收盘 20:00 之后卡片改读静态日档，浮窗就只剩三个名字、
+   没有涨跌——用户看到「额前三 集成电路、电子元件、通信传输设备」会直接
+   读成「这三个在涨」，而当天它们可能全绿。 */
+const indPvByDay = new Map();
 const indAmtL2 = new Map();         // 二级行业 -> Map(day -> amt)，只用于口径对比
 const failed = [];
 const empty = [];
@@ -140,9 +146,10 @@ async function one(sym) {
   const em = indOf(sym);
   const l3 = em ? em.split('-')[2] : null;
   const l2 = em ? em.split('-')[1] : null;
-  let m3 = null, m2 = null;
+  let m3 = null, m2 = null, m3p = null;
   if (l3) {
     m3 = indAmtByDay.get(l3); if (!m3) { m3 = new Map(); indAmtByDay.set(l3, m3); }
+    m3p = indPvByDay.get(l3); if (!m3p) { m3p = new Map(); indPvByDay.set(l3, m3p); }
   }
   if (l2) {
     m2 = indAmtL2.get(l2); if (!m2) { m2 = new Map(); indAmtL2.set(l2, m2); }
@@ -164,6 +171,7 @@ async function one(sym) {
     if (m3) m3.set(d, (m3.get(d) || 0) + amt);
     if (m2) m2.set(d, (m2.get(d) || 0) + amt);
     const chg = close / prev - 1;
+    if (m3p) m3p.set(d, (m3p.get(d) || 0) + amt * chg);
     if (chg > 0.0001) dayUp.set(d, (dayUp.get(d) || 0) + 1);
     else if (chg < -0.0001) dayDn.set(d, (dayDn.get(d) || 0) + 1);
     else dayFlat.set(d, (dayFlat.get(d) || 0) + 1);
@@ -226,6 +234,10 @@ const dates = complete.slice(-DAYS);
 if (dates.length < 200) throw new Error(`交易日不足 200 天（${dates.length}），上游可能限流`);
 
 const C = [], C2 = [], B = [], N = [], UP = [], DN = [], P5 = [], T = [], A = [];
+/* 每天 TOP3 行业的当日涨幅与成交额，和 T 一一对应（250 × 3）。
+   涨幅存「百分数 × 100」的整数（−292 = −2.92%），与盘中 live 两位小数同精度；
+   成交额存亿元整数。没它，「额前三」这三个名字在静态日档里就是没有数字的裸名。 */
+const T3P = [], T3A = [];
 const l3Names = [...new Set([...indAmtByDay.keys()])].sort();
 const l3Idx = new Map(l3Names.map((n, i) => [n, i]));
 /** 某日成交额 TOP3 行业。排序只在这 250 天内做，全量 244 个键 × 250 天 = 6 万次比较，可忽略。 */
@@ -244,6 +256,15 @@ for (let i = 0; i < dates.length; i++) {
   const top = tops(indAmtByDay, d);
   T.push(top.map(([k]) => (l3Idx.has(k) ? l3Idx.get(k) : -1)));
   if (i === dates.length - 1) lastTop3 = top.map(([k]) => k);
+
+  /* 三个行业的涨幅：Σ(amt×chg) ÷ Σamt，与盘中 aggLive 的 indPv/indAmt 同算法。
+     除出来是比例（−0.0292），×10000 变成「百分数 ×100」的整数（−292）。 */
+  T3P.push(top.map(([k, amt]) => {
+    const m = indPvByDay.get(k);
+    const pv = m ? (m.get(d) || 0) : 0;
+    return amt > 0 ? Math.round(pv / amt * 10000) : 0;
+  }));
+  T3A.push(top.map(([, amt]) => Math.round(amt / 1e8)));
 
   C.push(tot > 0 ? Math.round(top.reduce((s, x) => s + x[1], 0) / tot * 1000) : 0);
   const top2 = tops(indAmtL2, d);
@@ -269,6 +290,8 @@ console.log('自检：');
 console.log(`  最后交易日 ${dates[last]} · 全 A 成交 ${(amtLast / 1e8).toFixed(0)} 亿`
   + ` · ${N[last]} 只有成交（${UP[last]} 涨 ${DN[last]} 跌 ${(dayFlat.get(dates[last]) || 0)} 平）`);
 console.log(`  集中度 L3 ${(C[last] / 10).toFixed(1)}% · TOP3 ${lastTop3.join('、')}`);
+console.log(`  TOP3 涨幅 ${T3P[last].map((v) => (v > 0 ? '+' : '') + (v / 100).toFixed(2) + '%').join(' / ')}`
+  + ` · 成交 ${T3A[last].join(' / ')} 亿`);
 console.log(`  集中度 L2 ${(C2[last] / 10).toFixed(1)}%（对照，不写入）`);
 console.log(`  宽度 ${(B[last] / 10).toFixed(1)}% · 个股前5%成交占比 ${(P5[last] / 10).toFixed(1)}%`);
 
@@ -287,6 +310,7 @@ console.log(`  250 天宽度极差 ${(bSpread / 10).toFixed(0)} 分位点 · 集
 const payload = {
   d: dates, c: C, b: B, n: N, u: UP, w: DN, p5: P5, a: A,
   t3: lastTop3, t: T, ind: l3Names, inds: l3Names.length,
+  t3p: T3P, t3a: T3A,
   cVer: 'em2016-l3', cStale: false,
 };
 const head = '// 由 pipeline/gen_mkt_hist.mjs 回算生成，勿手改。\n'
@@ -296,6 +320,7 @@ const head = '// 由 pipeline/gen_mkt_hist.mjs 回算生成，勿手改。\n'
   + '//   n = 当日有成交的个股数（分母规模，随上市/停牌浮动）\n'
   + '//   u / w = 当日上涨 / 下跌家数（绝对数，卡片直接显示）\n'
   + '//   a = 当日全 A 成交额（亿元）\n'
+  + '//   t / t3p / t3a = 当日成交额 TOP3 行业的下标 / 涨幅（百分数×100）/ 成交额（亿元）\n'
   + `// ${dates.length} 个交易日（${dates[0]} → ${dates[dates.length - 1]}）\n`;
 const js = head + 'export const MKT_HIST = ' + JSON.stringify(payload) + ';\n'
   + 'export const MKT_INDS = ' + JSON.stringify(l3Names) + ';\n';
