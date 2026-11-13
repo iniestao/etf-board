@@ -205,8 +205,17 @@ console.log('\n[内联快照] worker.js 里的常量与 data 分支 json 是否�
     let jd = null, sd = null;
     try { jd = JSON.parse(fs.readFileSync(jf, 'utf8')).last_trade_date || null; } catch { /* 下面报 */ }
     try {
-      const ds = fs.readFileSync(sf, 'utf8').match(/20\d\d-\d\d-\d\d/g) || [];
-      sd = ds.length ? ds[ds.length - 1] : null;
+      /* 不能拿「文件里最后一个日期」当快照日：payload 末尾还有 cAsOf（增量模式下
+         集中度停在上一日），正则扫全文会取到它，于是天天报「不同日」。解析 JSON 取 d 末项。 */
+      const txt = fs.readFileSync(sf, 'utf8');
+      const mm = /export const \w+ = (\{[\s\S]*?\});/.exec(txt);
+      if (mm) {
+        const o = JSON.parse(mm[1]);
+        sd = o.last_trade_date || (Array.isArray(o.d) && o.d.length ? o.d[o.d.length - 1] : null);
+      } else {
+        const ds = txt.match(/20\d\d-\d\d-\d\d/g) || [];
+        sd = ds.length ? ds[ds.length - 1] : null;
+      }
     } catch { /* 下面报 */ }
     if (!jd || !sd) { bad(label + '快照日期读不出来（json=' + jd + ' src=' + sd + '）'); continue; }
     jd === sd
