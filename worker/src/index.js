@@ -2365,9 +2365,10 @@ function mktLiveOut(live, base) {
   }
   return {
     ok: true, mode: 'live', d: live.day, asOf: live.day, snapAt: live.hhmm,
-    cVer: MKT_CVER, c: live.c, b: live.b,
+    // 保留两位：JSON 里挂一串 21.212649572002377 既难看又白占字节
+    cVer: MKT_CVER, c: +live.c.toFixed(2), b: +live.b.toFixed(2),
     stockUp: live.u, stockDn: live.w, stockN: live.u + live.w,
-    n: live.n, p5: live.p5, amt: live.amt, top3: live.top3,
+    n: live.n, p5: +live.p5.toFixed(2), amt: live.amt, top3: live.top3,
     inds: MKT_IND_NAMES.length, src: 'em', hist,
   };
 }
