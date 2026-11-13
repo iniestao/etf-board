@@ -2418,6 +2418,47 @@ async function serveMktProbe(url, env) {
     return json({ ok: true, t, clock, snap });
   }
 
+  /* 摸清 clist 到底能一次要多少：线上两个域都回 502，得知道是 pz 太大还是
+     这个 fs（全市场四段）本身被拒。单板块 + 递增 pz 是最小成本的切分。 */
+  if (t === 'matrix') {
+    const one = async (host, fs, pz) => {
+      const t0 = Date.now();
+      try {
+        const a = await mktClist(host, fs, pz);
+        return { host, fs: fs.length > 20 ? 'ALL' : fs, pz, rows: a.rows.length,
+          total: a.total, ms: Date.now() - t0 };
+      } catch (e) {
+        return { host, fs: fs.length > 20 ? 'ALL' : fs, pz, error: String((e && e.message) || e).slice(0, 60),
+          ms: Date.now() - t0 };
+      }
+    };
+    const out = [];
+    for (const pz of [100, 500, 1000, 3000, 6000]) out.push(await one('push2delay', 'm:1+t:2', pz));
+    out.push(await one('push2delay', MKT_FS_ALL, 100));
+    out.push(await one('push2', 'm:1+t:2', 1000));
+    return json({ ok: true, t, clock, list: out });
+  }
+
+  if (t === 'clist') {
+    const fs = url.searchParams.get('fs') || MKT_FS_ALL;
+    const pz = +(url.searchParams.get('pz') || 6000);
+    const host = url.searchParams.get('host') || 'push2delay';
+    const t0 = Date.now();
+    try {
+      const a = await mktClist(host, fs, pz);
+      const t1 = Date.now();
+      const agg = aggLive(a.rows);
+      return json({ ok: true, t, host, fs, pz, rows: a.rows.length, total: a.total,
+        fetchMs: t1 - t0, aggMs: Date.now() - t1,
+        dayMatch: !!(agg && agg.day === clock.day),
+        agg: agg && { day: agg.day, c: +agg.c.toFixed(2), b: +agg.b.toFixed(2),
+          n: agg.n, amt: agg.amt, top3: agg.top3 } });
+    } catch (e) {
+      return json({ ok: false, t, host, fs, pz, error: String((e && e.message) || e).slice(0, 120),
+        ms: Date.now() - t0 });
+    }
+  }
+
   if (t === 'agg') {
     const now = Math.floor(Date.now() / 1000);
     const fixture = [
@@ -12756,17 +12797,19 @@ function scqHit(svg, cx, cy){
   if (!P || !G) return -1;
   var mx = (cx - G.r.left) * G.kx;
   var my = (cy - G.r.top) * (G.vb.height / G.r.height);
+  /* 今天那个大圆点优先判。它半径 9（光晕）、是图上唯一的视觉焦点，
+     点它就是要看今天；不先判会被旁边一两个历史点抢走——历史点离得更近，
+     但它们只是背景点云里的一个，用户根本瞄不到那么准。 */
+  var tp = scqXY(G, P.CONC, P.BRD);
+  var tx0 = tp[0] - mx, ty0 = tp[1] - my;
+  if (Math.sqrt(tx0 * tx0 + ty0 * ty0) <= 11) return P.C.length;
   var best = -1, bd = 1e9, i, x, y, p, dx, dy, d2;
   for (i = 0; i < P.C.length; i++){
     p = scqXY(G, P.C[i], P.B[i]); x = p[0]; y = p[1];
     dx = x - mx; dy = y - my; d2 = dx * dx + dy * dy;
     if (d2 < bd){ bd = d2; best = i; }
   }
-  if (Math.sqrt(bd) <= 16 * G.kx) return best;
-  // 今天的点是单独画的（收盘后才进历史），单独比一次，否则盘中点它没反应
-  var tp = scqXY(G, P.CONC, P.BRD);
-  var tx = tp[0] - mx, ty = tp[1] - my;
-  return Math.sqrt(tx * tx + ty * ty) <= 16 * G.kx ? P.C.length : -1;
+  return Math.sqrt(bd) <= 16 * G.kx ? best : -1;
 }
 function scqRing(svg, sel){
   var g = svg.querySelector('.scqs');
