@@ -30,7 +30,7 @@
  * 用法：node pipeline/gen_mkt_hist.mjs [--days 250] [--out worker/src/mkt_hist.js]
  */
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -82,9 +82,182 @@ async function clistAll(fs, fields, cap = 9000) {
   return out;
 }
 
+/* ---------------- 降级：东财清单接口不可用时的增量模式 ----------------
+ *
+ * 2026-11-11 起，东财 push2 / push2his / push2delay 的 /api/qt/* 对数据中心出口
+ * 一律「TLS 握手成功后直接断连」（curl 报 exit 52，Node 报 fetch failed，
+ * Actions 上是 HTTP 502）。域名首页还能开，是接口路径被拦，换 ut、换 Referer、
+ * 换 82./17. 编号域都没用。分时/K 线早就是这毛病，见 README「东财单点的现状」。
+ *
+ * 拿不到 clist 就没有 f100 行业归属，250 天全量重算无从谈起（集中度要行业）。
+ * 但「今天涨了多少家」不需要行业——宽度 b、家数 u/w、有成交量 n、前 5% 成交占比
+ * 都只依赖个股日线。所以降级成：读上一版 MKT_HIST，用腾讯日线补今天这一根，
+ * 集中度 c 沿用上一日并标 cStale。宁可图上 c 平一天，也不要整张卡片停在 11-11。
+ *
+ * 全量重算要 5564 只 × 250 天；这里只要每只最近 3 根，8 并发约 2 分钟。
+ */
+const SINA_LIST = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php'
+  + '/Market_Center.getHQNodeData';
+const SINA_UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/124.0 Safari/537.36', Referer: 'https://finance.sina.com.cn/' };
+
+/** 新浪全 A 清单。沪深都带 sh/sz 前缀；北交所（bj）剔除，口径同 FS_STOCK。 */
+async function sinaList() {
+  const out = [];
+  for (let p = 1; p <= 70; p++) {
+    const r = await fetch(`${SINA_LIST}?page=${p}&num=100&sort=symbol&asc=1&node=hs_a`,
+      { headers: SINA_UA, signal: AbortSignal.timeout(12000) });
+    if (!r.ok) break;
+    let arr; try { arr = JSON.parse(await r.text()); } catch (e) { break; }
+    if (!Array.isArray(arr) || !arr.length) break;
+    out.push(...arr);
+  }
+  return out.filter((x) => /^(sh|sz)/.test(x.symbol || ''));
+}
+
+/** 腾讯日线后 3 根，每根都带上「前一根收盘」当涨跌基准。
+ *  盘中跑时最后一根只走了一半，靠下面的完整性闸门筛掉，不能在取数阶段就认定它。 */
+async function txTail(sym) {
+  const r = await fetch('https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param='
+    + sym + ',day,,,3,qfq',
+  { headers: { 'User-Agent': SINA_UA['User-Agent'], Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(9000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  const n = j && j.data && j.data[sym];
+  const rows = (n && (n.qfqday || n.day)) || [];
+  if (rows.length < 2) return null;
+  /* 列序：[日期, 开, 收, 高, 低, 量(手), {}, 涨跌幅%, 成交额(万元), '']。
+     涨跌用「前复权收盘比」而不是第 7 列：除权日那列是未复权口径，会虚高。 */
+  const bars = [];
+  for (let i = 1; i < rows.length; i++) {
+    const a = rows[i];
+    bars.push({ d: a[0], c: +a[2], prev: +rows[i - 1][2], amt: (+a[8] || 0) * 1e4 });
+  }
+  return bars;
+}
+
+async function incremental() {
+  /* 续接基准固定读仓库里那一份，不读 --out：测试时 --out 指向临时文件，
+     那里没有上一版数据，而增量模式的意义就是从上一版接着写。 */
+  const js = readFileSync('worker/src/mkt_hist.js', 'utf8');
+  const m = /export const MKT_HIST = (\{[\s\S]*?\});/.exec(js);
+  if (!m) throw new Error('旧 MKT_HIST 解析失败，增量模式无从续接');
+  const old = JSON.parse(m[1]);
+  const indNames = old.ind || [];
+
+  const list = await sinaList();
+  if (list.length < 3000) throw new Error(`新浪清单只有 ${list.length} 只，上游也不正常`);
+  console.log(`  清单 ${list.length} 只（新浪 hs_a，已剔北交所）`);
+
+  console.log('拉个股日线（每只 3 根，8 并发）…');
+  const rows = [];
+  const CH2 = 8;
+  const t0 = Date.now();
+  for (let i = 0; i < list.length; i += CH2) {
+    const res = await Promise.all(list.slice(i, i + CH2).map((x) => txTail(x.symbol).catch(() => null)));
+    for (const r of res) if (r) rows.push(r);
+    if ((i + CH2) % 800 === 0) {
+      process.stdout.write(`  ${i + CH2}/${list.length} ${((Date.now() - t0) / 1000).toFixed(0)}s\r`);
+    }
+  }
+  console.log('');
+
+  /* 按日期聚合成「完整交易日」再挑最新一根。盘中跑的时候最后一根只走了半小时
+     （实测 3424 只有成交、88 亿），照收就会把半天当全天写进历史，宽度 65% 也失真。
+     闸门放在这里而不是取数阶段：每只都给了 3 根，退回上一根是免费的。 */
+  const byDay = new Map();
+  for (const bars of rows) {
+    for (const b of bars) {
+      if (!(b.amt > 0 && b.prev > 0)) continue;
+      let o = byDay.get(b.d);
+      if (!o) { o = { up: 0, dn: 0, flat: 0, tot: 0, amts: [] }; byDay.set(b.d, o); }
+      const chg = b.c / b.prev - 1;
+      if (chg > 0.0001) o.up++; else if (chg < -0.0001) o.dn++; else o.flat++;
+      o.tot += b.amt;
+      o.amts.push(b.amt);
+    }
+  }
+  // 全 A 单日成交常态 8000 亿 ~ 3 万亿；低于 5000 亿只可能是半天或大面积停牌
+  const okDays = [...byDay.entries()]
+    .filter(([, o]) => o.tot > 5e11 && o.amts.length > 4500)
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  if (!okDays.length) {
+    throw new Error('没有完整的交易日（成交额或家数不足），可能刚开盘，稍后再跑');
+  }
+  const [today, agg] = okDays[0];
+  const { up, dn, flat, tot } = agg;
+  const amts = agg.amts;
+  if (byDay.size > 1 && today !== [...byDay.keys()].sort().pop()) {
+    console.log(`  最新一根 ${[...byDay.keys()].sort().pop()} 未走完（${(byDay.get([...byDay.keys()].sort().pop()).tot / 1e8).toFixed(0)} 亿），回退到 ${today}`);
+  }
+  const b = up + dn > 0 ? Math.round(up / (up + dn) * 1000) : 0;
+  amts.sort((x, y) => y - x);
+  const k5 = Math.max(1, Math.round(amts.length * 0.05));
+  const p5 = Math.round(amts.slice(0, k5).reduce((s, x) => s + x, 0) / tot * 1000);
+  console.log(`  ${today} · ${amts.length} 只有成交 · ${up} 涨 ${dn} 跌 ${flat} 平`
+    + ` · 成交 ${(tot / 1e8).toFixed(0)} 亿 · 宽度 ${(b / 10).toFixed(1)}%`);
+
+  /* 续接。注意 old.d 一旦 push 就不再是「上一版」——判定必须落在 push 之前，
+     否则后面对 c/b/n 的 put 会误判成「同一天」而覆盖掉 11-11 的值，
+     再叠加一次裁剪，数组之间就错位一天（c 有 251 项、d 只有 250 项）。 */
+  const n0 = old.d.length;
+  const same = old.d[n0 - 1] === today;
+  if (!same) {
+    old.d.push(today);
+    old.c.push(old.c[n0 - 1]);          // 集中度无法重算，沿用上一日
+    old.b.push(b); old.n.push(amts.length); old.u.push(up); old.w.push(dn); old.p5.push(p5);
+    const t0 = old.t || [];
+    t0.push(t0[t0.length - 1] || [-1, -1, -1]);
+    old.t = t0;
+  } else {
+    // 同一天重跑：c 保持不动（本来就没算），其余覆盖
+    old.b[n0 - 1] = b; old.n[n0 - 1] = amts.length;
+    old.u[n0 - 1] = up; old.w[n0 - 1] = dn; old.p5[n0 - 1] = p5;
+  }
+  const over = old.d.length - DAYS;
+  if (over > 0) {
+    for (const k of ['d', 'c', 'b', 'n', 'u', 'w', 'p5']) {
+      if (Array.isArray(old[k])) old[k].splice(0, over);
+    }
+    if (Array.isArray(old.t) && old.t.length > over) old.t.splice(0, over);
+  }
+
+  const payload = { d: old.d, c: old.c, b: old.b, n: old.n, u: old.u, w: old.w,
+    t3: old.t3, t: old.t || [], ind: indNames, inds: indNames.length, p5: old.p5,
+    cStale: true, cAsOf: old.d[old.d.length - 2] || old.d[0] };
+  const head = '// 由 pipeline/gen_mkt_hist.mjs 回算生成，勿手改。\n'
+    + '// 全 A 个股口径（东财 f100 归行业）：\n'
+    + '//   c = TOP3 行业成交额 ÷ 全 A 个股成交额（千分位，24.1% → 241）\n'
+    + '//   b = 上涨家数 ÷ (上涨+下跌) 家数（千分位；平盘/停牌不进分母，50% = 涨跌各半）\n'
+    + '//   n = 当日有成交的个股数（分母规模，随上市/停牌浮动）\n'
+    + '//   u / w = 当日上涨 / 下跌家数（绝对数，卡片直接显示）\n'
+    + `// ${old.d.length} 个交易日（${old.d[0]} → ${old.d[old.d.length - 1]}）· 增量模式`
+    + `（东财清单不可用，c 停在 ${payload.cAsOf}）\n`;
+  writeFileSync(OUT, head + 'export const MKT_HIST = ' + JSON.stringify(payload) + ';\n'
+    + 'export const MKT_INDS = ' + JSON.stringify(indNames) + ';\n');
+  mkdirSync(dirname(JSON_OUT), { recursive: true });
+  writeFileSync(JSON_OUT, JSON.stringify({
+    generated_at: new Date().toISOString(),
+    last_trade_date: today,
+    inds: indNames.length,
+    stocks: amts.length,
+    mode: 'incremental',
+    ...payload,
+  }));
+  console.log(`  写出 ${OUT}（增量，${old.d.length} 天）`);
+}
+
 // ---- 1. 全 A 个股清单：代码 / 市场 / 行业归属 ----
 console.log('拉全 A 个股清单…');
-const stocks = await clistAll(FS_STOCK, 'f12,f13,f14,f100');
+let stocks;
+try {
+  stocks = await clistAll(FS_STOCK, 'f12,f13,f14,f100');
+} catch (e) {
+  console.log(`  东财清单不可用：${e.message}`);
+  await incremental();
+  process.exit(0);
+}
 const indSet = new Set();
 let noInd = 0;
 for (const x of stocks) {
