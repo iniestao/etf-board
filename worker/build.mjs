@@ -8,7 +8,17 @@ import { RESEARCH } from './src/research_data.js';
 import { ALPHA_META } from './src/alpha_meta.js';
 import { LAB } from './src/lab_data.js';
 import { SEC_HIST } from './src/sec_hist.js';
-import { MKT_HIST } from './src/mkt_hist.js';
+import { MKT_HIST, MKT_INDS } from './src/mkt_hist.js';
+import { MKT_IND_NAMES, MKT_IND_OF } from './src/mkt_ind.js';
+
+/* 两份文件各自生成，唯一会悄悄错位的地方就是行业名的顺序：mkt_hist 里存的是
+   每天 TOP3 的**下标**，mkt_ind 里存的是「代码 → 下标」。顺序一错，盘中算出来的
+   集中度就是拿 A 行业的钱除以 B 行业的名字，数字看着还挺正常。让它构建失败。 */
+if (JSON.stringify(MKT_IND_NAMES) !== JSON.stringify(MKT_INDS)) {
+  console.error('mkt_ind.js 的行业名顺序与 mkt_hist.js 不一致，'
+    + '先跑 node pipeline/gen_mkt_hist.mjs 重新生成这一对');
+  process.exit(1);
+}
 
 const page = readFileSync('src/page.js', 'utf8');
 const core = readFileSync('src/index.js', 'utf8');

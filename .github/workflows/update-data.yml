@@ -439,7 +439,7 @@ jobs:
         run: |
           git config user.name "etf-board-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          FILES="worker/src/mkt_hist.js worker/src/sec_hist.js pipeline/ind_em2016.json"
+          FILES="worker/src/mkt_hist.js worker/src/mkt_ind.js worker/src/sec_hist.js pipeline/ind_em2016.json"
           if git diff --quiet -- $FILES; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "内联快照无变化（回算失败时会走到这里，属正常降级）"
@@ -447,7 +447,7 @@ jobs:
           fi
           git diff --stat -- $FILES
           echo "--- 其它脏文件（rebase 会因它们失败）---"
-          git status --porcelain | grep -v -E '(src/(mkt_hist|sec_hist)\.js|pipeline/ind_em2016\.json)' | head -10 || true
+          git status --porcelain | grep -v -E '(src/(mkt_hist|mkt_ind|sec_hist)\.js|pipeline/ind_em2016\.json)' | head -10 || true
           ( cd worker && node build.mjs && node --check dist/worker.js )
           git add $FILES worker/dist/worker.js
           git commit -q -m "chore(data): 内联快照跟随 $(date -u '+%Y-%m-%d') 回算结果"

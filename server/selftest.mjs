@@ -706,6 +706,26 @@ async function runContracts(base, pass) {
     const su = mk.stockUp | 0, sd = mk.stockDn | 0;
     const bExpect = (su + sd) > 0 ? su / (su + sd) * 100 : 0;
     ok('/api/mkt ' + mk.d + ' 集中 ' + mk.c + '% · 宽度 ' + mk.b + '%（' + su + ' 涨 ' + sd + ' 跌）');
+
+    /* 盘中这条路：mode 决定前端怎么标日期。
+       live 必须是「今天 + 带时刻 + 历史里没有今天」——历史若也留着今天，
+       散点会在同一个坐标叠两个点，看着像重影。 */
+    const mode = mk.mode || 'close';
+    if (!['live', 'snap', 'close'].includes(mode)) bad('/api/mkt mode 取值异常：' + mode);
+    else ok('/api/mkt mode=' + mode + (mk.snapAt ? ' @' + mk.snapAt : '') + ' src=' + mk.src);
+    if (mk.cVer !== 'em2016-l3') bad('/api/mkt 口径版本不对：' + mk.cVer);
+    if (mode !== 'close') {
+      if (!/^\d{2}:\d{2}$/.test(mk.snapAt || '')) bad('/api/mkt ' + mode + ' 模式缺时刻 snapAt');
+      if (mk.hist && mk.hist.d && mk.hist.d[mk.hist.d.length - 1] === mk.d) {
+        bad('/api/mkt 实时值那天也留在历史里了，散点会叠点');
+      }
+    }
+    const inds = (mk.hist && mk.hist.ind) || [];
+    if ((mk.top3 || []).length) {
+      const miss = mk.top3.filter((x) => inds.indexOf(x) < 0);
+      if (miss.length) bad('/api/mkt top3 不在行业名表里：' + miss.join('、'));
+      else ok('/api/mkt TOP3 ' + mk.top3.join('、'));
+    }
     // 这一条是防回退的：上一版 b 用的是 upInd/n（行业口径），
     // 数字看着也像模像样，只是系统性偏低一半。
     if (Math.abs(mk.b - bExpect) > 0.05) {
@@ -732,6 +752,24 @@ async function runContracts(base, pass) {
       } else bad('/api/mkt 历史 u/w 与日期长度不一致，前端按索引取会错位');
     } else bad('/api/mkt 历史缺少 u/w 家数数组，横轴无法显示个股口径');
   } else bad('/api/mkt 失败：' + r.text.slice(0, 160));
+
+  /* 聚合逻辑的离线自检：不碰上游，喂一段固定样本进去对数。
+     5 条里 1 条停牌（f6=0、f3='-'）、1 条代码不在映射表里。
+     有效 4 只、合计 150 亿、3 涨 1 跌 1 平 → b=2/3、p5=8e9/15e9。
+     这些数错了说明「盘中现算」的结果不可信，比接口挂掉更难发现。 */
+  r = await rawRequest(base, '/api/mktprobe?t=agg', { cookie });
+  const pa = r.json();
+  if (pa && pa.ok && pa.agg) {
+    const a = pa.agg;
+    ok('/api/mktprobe 聚合 c=' + a.c.toFixed(1) + '% b=' + a.b.toFixed(0)
+      + '% n=' + a.n + ' amt=' + a.amt + '亿 p5=' + a.p5.toFixed(1) + '%');
+    if (a.n !== 4) bad('/api/mktprobe 样本应剩 4 只有成交，实际 ' + a.n);
+    if (Math.abs(a.amt - 150) > 1) bad('/api/mktprobe 样本成交额应为 150 亿，实际 ' + a.amt);
+    if (Math.abs(a.b - 66.67) > 0.1) bad('/api/mktprobe 样本宽度应为 66.7%，实际 ' + a.b.toFixed(1));
+    if (Math.abs(a.c - 13 / 15 * 100) > 0.2) bad('/api/mktprobe 样本集中度应为 86.7%，实际 ' + a.c.toFixed(1));
+    if (Math.abs(a.p5 - 8 / 15 * 100) > 0.2) bad('/api/mktprobe 样本 p5 应为 53.3%，实际 ' + a.p5.toFixed(1));
+    if (a.day.length !== 10) bad('/api/mktprobe 没算出数据归属日：' + a.day);
+  } else bad('/api/mktprobe?t=agg 失败：' + r.text.slice(0, 160));
 
   // 自选读写
   const wkey = 'watch:list:__selftest__';

@@ -42,7 +42,7 @@
  */
 
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const argv = process.argv.slice(2);
 const argOf = (k, d) => {
@@ -53,6 +53,8 @@ const DAYS = +argOf('--days', 250);
 const OUT = argOf('--out', 'worker/src/mkt_hist.js');
 const JSON_OUT = argOf('--json', 'dist/mkt_hist.json');
 const IND_MAP = argOf('--ind', 'pipeline/ind_em2016.json');
+// 紧跟 --out 走：本地用 --out /tmp/x.js 试跑时不该往仓库里写东西
+const IND_OUT = join(dirname(OUT), 'mkt_ind.js');
 const CH = +argOf('--concurrency', 10);
 const SNAP = DAYS + 70;   // 多要一些根：第一根没有前收要丢，停牌股还会少几根
 
@@ -314,3 +316,32 @@ writeFileSync(JSON_OUT, JSON.stringify({
 
 console.log('');
 console.log(`${OUT}  ${(js.length / 1024).toFixed(1)} KB · ${dates.length} 天 · ${l3Names.length} 个三级行业`);
+
+/* ---------------- 7. 盘中实时用的「代码 → 行业」映射 ----------------
+ * Worker 的 /api/mkt 盘中要拿当天逐只成交额现算集中度，就得知道每只票落在
+ * 哪个三级行业。mkt_hist.js 里只有行业名表和每天的前三名下标，没有这个映射。
+ *
+ * 顺序必须与 MKT_IND_NAMES 完全一致——两边都取自同一次运行里的 l3Names，
+ * Worker 端 build.mjs 会断言 MKT_IND_NAMES === MKT_INDS，顺序错了构建直接失败。
+ * 所以这份表只能在这个脚本里生成，不能挪到 gen_ind_map.mjs：那边没有 l3Names，
+ * 它按「当天有成交的行业」排序，换个脚本算出来的下标就会整体错位。 */
+const indIdx = new Map(l3Names.map((n, i) => [n, i]));
+const indFlat = {};
+let noL3 = 0;
+for (const [code, it] of Object.entries(indFile.items)) {
+  const p = it && it.em ? it.em.split('-') : null;
+  const k = p && p.length > 2 ? indIdx.get(p[2]) : undefined;
+  // 没有三级归属的不塞进来：Worker 那边查不到就只计入全市场分母、不进行业，
+  // 与历史口径一致（历史也是「有行业的算行业，没行业的只进分母」）
+  if (k == null) { noL3++; continue; }
+  indFlat[code] = k;
+}
+const indJs = '// 由 pipeline/gen_mkt_hist.mjs 生成，勿手改。\n'
+  + '// EM2016 三级行业映射：MKT_IND_OF[6 位代码] = MKT_IND_NAMES 的下标。\n'
+  + '// 顺序与 mkt_hist.js 的 MKT_INDS 严格一致（build.mjs 会断言）。\n'
+  + `// ${Object.keys(indFlat).length} 只 / ${l3Names.length} 个行业`
+  + `（${noL3} 只没有三级归属，只计入全市场分母）。\n`
+  + 'export const MKT_IND_NAMES = ' + JSON.stringify(l3Names) + ';\n'
+  + 'export const MKT_IND_OF = ' + JSON.stringify(indFlat) + ';\n';
+writeFileSync(IND_OUT, indJs);
+console.log(`${IND_OUT}  ${(indJs.length / 1024).toFixed(1)} KB · ${Object.keys(indFlat).length} 只映射`);

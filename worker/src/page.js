@@ -2028,16 +2028,29 @@ function loadSecBase(){
    卡片上的日期标签会如实写成「11-12 收盘」。 */
 var MKT_REQ = false, MKT_RETRY = null;
 
+/* 只换四象限那张卡，不重建整个板块地图。
+   整块重画会把 hover 态、展开的明细、滚动位置一起清掉，而每 60 秒来一次
+   就够烦了——盘中这张卡片要跟着 30 秒的接口节奏动，更不能整块刷。 */
+function repaintQuad(){
+  var el = document.getElementById('scqCard');
+  if (!el) return;
+  var wrap = document.createElement('div');
+  wrap.innerHTML = secQuadCard();
+  var nw = wrap.firstChild;
+  if (nw && nw.className && nw.className.indexOf('scq') >= 0) el.parentNode.replaceChild(nw, el);
+}
+
 function loadMktSnap(){
   if (MKT_REQ) return;
   MKT_REQ = true;
   return fetch('/api/mkt').then(function(r){ return r.json(); }).then(function(j){
+    MKT_REQ = false;                    // 每轮都重新拉：盘中这个数是会动的
     if (!(j && j.ok && j.c > 0 && j.n >= 100)) throw new Error('empty');
     MKT_NOW = j;
     // 接口顺带带回 250 天历史（Actions 每天重写）。内联那份是部署时固化的，
     // 不覆盖的话，一个月不发布散点云就停在原地，而「今天」每天往里走。
     if (j.hist && j.hist.d && j.hist.d.length >= 60) MKT_HIST = j.hist;
-    if (SECS.length) renderSectors();   // 盘子已经画出来了，补上今天这个点
+    repaintQuad();
     return MKT_NOW;
   }).catch(function(){
     // 失败时卡片显示的是基线最后一天（日期标签会写明是哪天），不会有错数。
@@ -2179,7 +2192,13 @@ function secQuadCard(){
   // 标成「今天」会让人以为周末在交易。
   var bjDay = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
   var curDay = now ? now.d : H.d[last];
-  var dayTag = curDay === bjDay ? '今天' : curDay.slice(5) + ' 收盘';
+  // 盘中的 c 只走了半截成交额，收盘值会和它不一样。标出来，别让人把 14:30 的
+  // 21.6% 当成今天的终值记在心里。
+  var mode = (now && now.mode) || 'close';
+  var snapAt = (now && now.snapAt) || '';
+  var dayTag = mode === 'live' ? '盘中 ' + snapAt
+    : mode === 'snap' ? '快照 ' + snapAt
+      : curDay === bjDay ? '今天收盘' : curDay.slice(5) + ' 收盘';
 
   var i, C = [], B = [], CI = [];
   for (i=0;i<H.c.length;i++){
@@ -2265,7 +2284,8 @@ function secQuadCard(){
       + '<text x="' + (tX + txDx).toFixed(1) + '" y="' + (tY - dot * 2.7).toFixed(1)
       + '" text-anchor="' + txAnchor + '" font-size="' + (fs * 1.1).toFixed(1)
       + '" font-weight="700" fill="' + q.c + '">'
-      + (curDay === bjDay ? '今天' : curDay.slice(5)) + '</text>'
+      + (mode === 'live' ? '盘中' : mode === 'snap' ? '快照'
+        : curDay === bjDay ? '今天' : curDay.slice(5)) + '</text>'
       + lbl('抱团', x0 + 5, y0 + fs + 2, 'start')
       + lbl('主线上攻', x1 - 5, y0 + fs + 2, 'end')
       + lbl('涣散', x0 + 5, y1 - 5, 'start')
@@ -2332,11 +2352,13 @@ function secQuadCard(){
     + sameN + '/' + C.length + '）。同格天数越多，说明眼下越像常态；'
     + '越少，越可能是转折。</p></div>';
 
-  return '<div class="scq">'
+  return '<div class="scq" id="scqCard">'
     + '<div class="scqhd"><span>全 A 集中度 × 宽度</span>'
     + '<em class="scqb" style="color:' + q.c + '">' + q.n + '</em>'
     + '<span class="scqtag" title="全 A 个股口径：5223 只 A 股逐只统计涨跌，当日有成交的 '
     + nStk + ' 只进样本。集中度按 EM2016 三级行业（244 个）的个股成交额加总。'
+    + '盘中每 30 秒按当时的累计成交额重算一次，所以数字会一直动；收盘后由管线'
+    + '按全天成交额回算，以那个为准。'
     + '与下方 36 格（ETF 成交额，532 亿）不是同一套数据，差 30 倍是正常的。">'
     + nStk + ' 只 · ' + dayTag + '</span>'
     + '<i class="scqhelp" role="button" tabindex="0" title="四个象限是什么意思"'
@@ -7092,6 +7114,12 @@ function scqHit(svg, cx, cy){
   if (!P || !G) return -1;
   var mx = (cx - G.r.left) * G.kx;
   var my = (cy - G.r.top) * (G.vb.height / G.r.height);
+  /* 今天那个大圆点优先判。它半径 9（光晕）、是图上唯一的视觉焦点，
+     点它就是要看今天；不先判会被旁边一两个历史点抢走——历史点离得更近，
+     但它们只是背景点云里的一个，用户根本瞄不到那么准。 */
+  var tp = scqXY(G, P.CONC, P.BRD);
+  var tx0 = tp[0] - mx, ty0 = tp[1] - my;
+  if (Math.sqrt(tx0 * tx0 + ty0 * ty0) <= 11) return P.C.length;
   var best = -1, bd = 1e9, i, x, y, p, dx, dy, d2;
   for (i = 0; i < P.C.length; i++){
     p = scqXY(G, P.C[i], P.B[i]); x = p[0]; y = p[1];
@@ -7106,7 +7134,8 @@ function scqRing(svg, sel){
   while (g.firstChild) g.removeChild(g.firstChild);
   var P = SCQ_PTS, G = scqGeo(svg);
   if (!P || !G || sel < 0) return;
-  var p = scqXY(G, P.C[sel], P.B[sel]);
+  // 盘中「今天」那个点不在历史序列里，用哨兵 P.C.length 表示，坐标取实时的
+  var p = sel === P.C.length ? scqXY(G, P.CONC, P.BRD) : scqXY(G, P.C[sel], P.B[sel]);
   var NS = 'http://www.w3.org/2000/svg';
   // 白圈描边 + 外圈灰：点云密的时候单环会跟邻居粘成一片
   [[10, 'none', '#fff', 3.2], [10, 'none', '#6b7280', 1.3]].forEach(function (a) {
@@ -7127,6 +7156,30 @@ function scqShow(svg, sel){
   if (!bar) return;
   if (sel < 0){
     bar.className = 'scqtip'; bar.innerHTML = ''; card.removeAttribute('data-sel'); return;
+  }
+  // 哨兵：今天那个点。它不在历史序列里，所有字段直接从实时值取
+  if (sel === P.C.length){
+    var nw = MKT_NOW || {};
+    var cq0 = mktPct(P.RC, P.CONC), bq0 = mktPct(P.RB, P.BRD);
+    bar.innerHTML = '<b>今天</b> '
+      + (nw.mode === 'live' ? '盘中 ' + (nw.snapAt || '')
+        : nw.mode === 'snap' ? '快照 ' + (nw.snapAt || '') : '')
+      + ' · 集中 <i>' + P.CONC.toFixed(1) + '%</i>'
+      + (cq0 != null ? '<em>（' + cq0.toFixed(0) + ' 分位）</em>' : '')
+      + ' · 宽度 <i>' + P.BRD.toFixed(0) + '%</i>'
+      + (bq0 != null ? '<em>（' + bq0.toFixed(0) + ' 分位）</em>' : '')
+      + ((nw.top3 && nw.top3.length) ? '<br>领涨 <b>' + nw.top3.join('、') + '</b>' : '')
+      + ' <em class="esc">再点一次取消</em>';
+    var G0 = scqGeo(svg);
+    if (G0){
+      var p0 = scqXY(G0, P.CONC, P.BRD);
+      var px0 = p0[0] / G0.vb.width * 100, py0 = p0[1] / G0.vb.height * 100;
+      bar.style.left = px0.toFixed(1) + '%';
+      bar.style.top = py0.toFixed(1) + '%';
+      bar.className = 'scqtip on' + (px0 > 60 ? ' rx' : '') + (py0 > 52 ? ' ry' : '');
+    } else bar.className = 'scqtip on';
+    card.setAttribute('data-sel', sel);
+    return;
   }
   var hi = P.I[sel], d = P.D[hi];
   var c = P.C[sel], b = P.B[sel], u = P.U[hi] || 0, w = P.W[hi] || 0;

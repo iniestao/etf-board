@@ -1,6 +1,7 @@
 import { HTML } from './page.js';
 import { IDX_GROUPS } from './idx_data.js';
 import { MKT_HIST } from './mkt_hist.js';
+import { MKT_IND_NAMES, MKT_IND_OF } from './mkt_ind.js';
 
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
@@ -366,10 +367,9 @@ async function serveAll(env, ctx) {
 const SEC_DAILY_KEY = 'sec-daily-v6';
 const SEC_DAILY_KEEP = 12;
 
-/* 这里原本还有一份「/api/mkt 每次算完写 KV 快照，上游挂了退回上一次成功的结果」
-   的兜底（MKT_LAST_KEY / MKT_SNAP_GAP / mktSnapAt / mktSnapSig）。
-   现在 /api/mkt 改成读 mkt_hist.json，数据源是一个静态文件而不是会抽风的板块接口，
-   快照就没有存在的意义了——一并删掉，也省下每天几十次 KV 写。 */
+/* /api/mkt 的 KV 快照从这一版起又回来了，但换了个用途：不再是「板块接口抽风」的
+   兜底（那时上游是东财板块列表），而是「盘中逐只聚合断了」的兜底——给 5 分钟内
+   算出来的那个数，比退回上一交易日收盘强。键叫 mkt-live-v1，见 serveMkt。 */
 
 /**
  * 每日板块成交额日档。
@@ -2081,81 +2081,375 @@ async function serveShares(url, env, ctx) {
   return resp;
 }
 
-async function serveMkt(env, ctx) {
-  /* 全 A 市场结构快照（集中度 × 宽度）。
-   *
-   * 口径：TOP3 三级行业成交额 ÷ 全 A 个股成交额，行业取 EM2016（东方财富自建
-   * 分类，244 个三级）。逐只个股日线回算，250 天历史由 pipeline/gen_mkt_hist.mjs
-   * 每天 16:35 在 Actions 里重算，产物就是 mkt_hist.json。
-   *
-   * 这里不再现算。以前是拉东财 496 个板块、筛出互斥的 128 个求和——但板块名是
-   * 申万口径（带 Ⅱ/Ⅲ 后缀），和 EM2016 的 244 个三级名只重合 89 个，筛不全就
-   * 直接抛错，整块卡片跟着挂。改成按个股现算又要翻 56 页 clist，超过 Worker 的
-   * 子请求上限。读文件是唯一既能同口径又不会挂的路子。
-   *
-   * 代价：盘中的 c 停在上一交易日（管线收盘后才跑）。这张卡片本来就是「结构」
-   * 不是「行情」——用半截成交额算出来的集中度也没有可比性，宁可标清截止日期。
-   */
+/* ================================================================
+ * 全 A 市场结构：集中度 × 宽度
+ * ================================================================
+ * 口径：TOP3 三级行业成交额 ÷ 全 A 个股成交额，行业取 EM2016（244 个三级）。
+ * 一只股票只归一个三级行业，互不重叠；没有三级归属的（极少数）只进分母。
+ *
+ * 两条取数路，同一个口径：
+ *   盘中 —— 拉一次全 A 列表（f12/f3/f6），按 MKT_IND_OF 归行业现算
+ *   其余 —— 读 mkt_hist.json（管线每天 16:35 回算的 250 天）
+ *
+ * 为什么不用东财板块接口现算了：那张表是申万口径（名字带 Ⅱ/Ⅲ），和 EM2016
+ * 的 244 个三级名只重合 89 个，筛不全就抛错，整块卡片跟着挂。
+ */
+const MKT_CVER = 'em2016-l3';
+const MKT_LIVE_KEY = 'mkt-live-v1';    // 最近一次成功的盘中快照
+const MKT_LIVE_GAP = 5 * 60 * 1000;    // 5 分钟写一次：一天 60 来次，够“最近”，也不吃 KV 额度
+
+/* 沪深主板 + 创业板 + 科创板。北交所在历史回算里就剔了，这里保持一致，
+   否则盘中 c 的分母比历史大 1% 左右，点会整体往下飘。
+   分四段是为了 pz 被限流时能逐段重试——比按页翻 53 次省得多。 */
+const MKT_FS = ['m:1+t:2', 'm:1+t:23', 'm:0+t:6', 'm:0+t:80'];
+const MKT_FS_ALL = MKT_FS.join(',');
+
+/* 北京时间的「现在是哪一段」。
+ *   live   09:15–15:05  每 30 秒重算
+ *   settle 15:05–20:00  收盘值已成定局，但静态文件要等管线 16:35 才更新，
+ *                       这段仍然现算，缓存放宽到 120 秒
+ *   closed 其余         直接读静态
+ * 不判节假日：休市日 clist 回来的是上一交易日的数据，由 f124 验日拦掉，
+ * 自然落到静态。集合竞价（09:15–09:25）成交额还没起来，也会被 n>=1500 拦掉。 */
+function mktClock() {
+  const bj = new Date(Date.now() + 8 * 3600e3);
+  const wd = bj.getUTCDay();
+  const mins = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+  const day = bj.toISOString().slice(0, 10);
+  const hhmm = String(bj.getUTCHours()).padStart(2, '0') + ':'
+    + String(bj.getUTCMinutes()).padStart(2, '0');
+  const workday = wd >= 1 && wd <= 5;
+  const phase = !workday ? 'closed'
+    : (mins >= 555 && mins < 905) ? 'live'
+      : (mins >= 905 && mins < 1200) ? 'settle'
+        : 'closed';
+  return { phase, day, mins, hhmm, workday };
+}
+
+/* 250 天历史。isolate 内缓存 60 秒：盘中的 live 路径每次都要借它当 hist，
+   不缓存就变成每分钟读一遍 30KB 的 JSON。 */
+let _mktBase = { at: 0, h: null };
+async function mktBase(env) {
+  if (_mktBase.h && Date.now() - _mktBase.at < 60000) return _mktBase.h;
+  let h = null;
+  try {
+    if (histSource(env)) {
+      const a = await readAsset(env, 'mkt_hist.json');
+      if (a) {
+        const j = JSON.parse(await a.text());
+        /* 只认自家口径。data 分支上那份是上一次发布留下的，换口径的当天它还是旧的，
+           不校验就会拿旧口径的 c 配新口径的点云，当天的点直接被甩到云最顶上。 */
+        if (j && Array.isArray(j.d) && j.d.length >= 60 && j.cVer === MKT_CVER) h = j;
+      }
+    }
+  } catch (e) { /* 读不到就走内联那份，卡片不能因此空掉 */ }
+  // 内联那份是部署时固化的，只作兜底：它的「最新一天」会随着不重新部署越来越旧
+  if (!h && MKT_HIST && Array.isArray(MKT_HIST.d) && MKT_HIST.d.length >= 60) h = MKT_HIST;
+  if (h) _mktBase = { at: Date.now(), h };
+  return h;
+}
+
+/** 把一份 250 天的历史压成「最新一天 + 全量历史」。c/b 存的是千分位整数，
+ *  出口统一换成百分数，页面直接显示。 */
+function mktPack(h, src) {
+  const i = h.d.length - 1;
+  const u = h.u[i] || 0, w = h.w[i] || 0;
+  return {
+    ok: true, mode: 'close', d: h.d[i], asOf: h.d[i], snapAt: '',
+    cVer: h.cVer || MKT_CVER,
+    c: h.c[i] / 10, b: h.b[i] / 10,
+    // 页面历史上用 stockUp/stockDn/stockN 这三个名字，保持兼容
+    stockUp: u, stockDn: w, stockN: (u + w) || h.n[i] || 0,
+    n: h.n[i] || 0, p5: (h.p5 && h.p5[i] / 10) || 0,
+    amt: (h.a && h.a[i]) || 0,
+    top3: h.t3 || [], inds: h.inds || (h.ind || []).length,
+    src,
+    // 点散点时要用 t/ind 回答「那天钱压在哪条线」，光两个数字不够
+    hist: { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w, a: h.a,
+      t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5, cVer: h.cVer || '' },
+  };
+}
+
+async function serveMktStatic(env, ctx) {
   const cache = await getCache();
-  const key = new Request('https://etf-board.internal/mkt/v2', { method: 'GET' });
-  // 集中度口径版本。管线和这里必须同时改，改了这里等于强制所有读者重取
-  // （缓存键 v2 只在响应结构变时才动）。
-  const MKT_CVER = 'em2016-l3';
+  const key = new Request('https://etf-board.internal/mkt/static/v3', { method: 'GET' });
   if (cache) {
     try {
       const hit = await cache.match(key);
       if (hit) return hit;
     } catch (e) { /* 缓存读失败不影响主流程 */ }
   }
-
-  /** 把一份 250 天的历史压成「最新一天 + 全量历史」。c/b 存的是千分位整数，
-   *  出口统一换成百分数，页面直接显示。 */
-  const pack = (h, src) => {
-    const i = h.d.length - 1;
-    const u = h.u[i] || 0, w = h.w[i] || 0;
-    return {
-      ok: true, d: h.d[i], asOf: h.d[i], cVer: h.cVer || 'em2016-l3',
-      c: h.c[i] / 10, b: h.b[i] / 10,
-      // 页面历史上用 stockUp/stockDn/stockN 这三个名字，保持兼容
-      stockUp: u, stockDn: w, stockN: (u + w) || h.n[i] || 0,
-      n: h.n[i] || 0, p5: (h.p5 && h.p5[i] / 10) || 0,
-      amt: (h.a && h.a[i]) || 0,
-      top3: h.t3 || [], inds: h.inds || (h.ind || []).length,
-      src,
-      // 点散点时要用 t/ind 回答「那天钱压在哪条线」，光两个数字不够
-      hist: { d: h.d, c: h.c, b: h.b, n: h.n, u: h.u, w: h.w, a: h.a,
-        t3: h.t3 || [], t: h.t, ind: h.ind, p5: h.p5, cVer: h.cVer || '' },
-    };
-  };
-
-  let out = null;
-  try {
-    if (histSource(env)) {
-      const a = await readAsset(env, 'mkt_hist.json');
-      if (a) {
-        const h = JSON.parse(await a.text());
-        /* 只认自家口径。data 分支上那份是上一次发布留下的，换口径的当天它还是旧的
-           （申万 128 个行业，c 中位 22.8%），而内联这份已经按新口径重算过。
-           不做这个校验，页面就会拿「昨天的旧口径 c」配「今天的新口径散点云」，
-           当天的点直接被甩到点云最顶上。cVer 不匹配就退到内联，等管线跑完自然切回。 */
-        if (h && Array.isArray(h.d) && h.d.length >= 60 && h.cVer === MKT_CVER) {
-          out = pack(h, 'file');
-        }
-      }
-    }
-  } catch (e) { /* 读不到就走内联那份，卡片不能因此空掉 */ }
-
-  // 内联那份是部署时固化的，只作兜底：它的「最新一天」会随着不重新部署越来越旧
-  if (!out && MKT_HIST && Array.isArray(MKT_HIST.d) && MKT_HIST.d.length >= 60) {
-    out = pack(MKT_HIST, 'inline');
-  }
-  if (!out) return json({ ok: false, code: 'NO_MKT', error: '市场结构数据还没有生成' }, 60);
-
-  const res = json(out, 60);
+  const h = await mktBase(env);
+  if (!h) return json({ ok: false, code: 'NO_MKT', error: '市场结构数据还没有生成' }, 60);
+  const out = mktPack(h, h === MKT_HIST ? 'inline' : 'file');
+  const res = json(out, 120);
   if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
   }
   return res;
+}
+
+/** 一次 clist：pn=1 + 大 pz。字段只要代码/涨跌幅/成交额/时间戳，别的一律不带——
+ *  5200 只 × 4 个字段约 250KB，多带 f14（名字）这份就要 600KB，白烧 CPU。 */
+async function mktClist(host, fs, pz) {
+  const qs = new URLSearchParams({
+    pn: '1', pz: String(pz), po: '0', np: '1', fltt: '2', invt: '2',
+    ut: 'bd1d9ddb04089700cf9c27f6f7426281', fid: 'f12',
+    fs, fields: 'f12,f3,f6,f124',
+  });
+  const r = await fetch('https://' + host + '.eastmoney.com/api/qt/clist/get?' + qs, {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  const d = j && j.data;
+  if (!d || !d.diff) throw new Error('空壳');
+  return { rows: Array.isArray(d.diff) ? d.diff : Object.values(d.diff), total: d.total || 0 };
+}
+
+/** 拿全 A 的当日快照。先按「一次拿全」试，条数不够说明 pz 被限流，改按板块分四次。
+ *  任一段失败就整份丢弃——半份列表会让集中度凭空偏低，比拿不到更糟。 */
+async function fetchAAll() {
+  const tried = [];
+  for (const host of ['push2delay', 'push2']) {
+    try {
+      const a = await mktClist(host, MKT_FS_ALL, 6000);
+      if (a.rows.length >= 4200) return { rows: a.rows, tried: tried.concat(host + ':一次 ' + a.rows.length) };
+      tried.push(host + ':只回 ' + a.rows.length + '/' + (a.total || '?'));
+      const parts = await Promise.all(MKT_FS.map((fs) => mktClist(host, fs, 3000).catch(() => null)));
+      if (parts.every((p) => p && p.rows.length >= 300)) {
+        const rows = [].concat(...parts.map((p) => p.rows));
+        return { rows, tried: tried.concat(host + ':分块 ' + rows.length) };
+      }
+      tried.push(host + ':分块不全');
+    } catch (e) {
+      tried.push(host + ':' + String((e && e.message) || e).slice(0, 40));
+    }
+  }
+  const err = new Error(tried.join(' / '));
+  err.tried = tried;
+  throw err;
+}
+
+/** 纯聚合：一次遍历出 c / b / n / amt，再排一次出 p5。
+ *  不建中间对象、不 split、不写正则——5200 只要压在几毫秒里。
+ *  返回 day 是这批数据归属的交易日（按 f124 取众数），调用方拿它跟今天比对。 */
+function aggLive(rows) {
+  const NI = MKT_IND_NAMES.length;
+  const indAmt = new Float64Array(NI);
+  const amts = new Float64Array(rows.length);
+  // f124 只会落在少数几天里（活跃股今天、停牌股停牌前），用 8 格线性表数众数
+  const dayKey = [], dayCnt = [];
+  let n = 0, up = 0, dn = 0, amt = 0, k = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const t = r.f124;
+    if (t > 0) {
+      const dk = Math.floor((t + 8 * 3600) / 86400);
+      const at = dayKey.indexOf(dk);
+      if (at >= 0) dayCnt[at]++;
+      else if (dayKey.length < 8) { dayKey.push(dk); dayCnt.push(1); }
+    }
+    const a = +r.f6;
+    // 停牌、未上市、当日无成交：不进 n、不进成交额、不进 p5 分母
+    if (!(a > 0)) continue;
+    n++; amt += a; amts[k++] = a;
+    const p = +r.f3;                       // fltt=2 时停牌给 '-'，转成 NaN，两边都不计
+    if (p > 0) up++; else if (p < 0) dn++;
+    const ix = MKT_IND_OF[r.f12];          // 没有三级归属的只进分母，与历史口径一致
+    if (ix != null) indAmt[ix] += a;
+  }
+  if (!n) return null;
+
+  // 众数日：取计数最大的那格
+  let best = -1, bc = 0;
+  for (let i = 0; i < dayKey.length; i++) if (dayCnt[i] > bc) { bc = dayCnt[i]; best = dayKey[i]; }
+  const day = best < 0 ? '' : new Date(best * 86400e3).toISOString().slice(0, 10);
+
+  // TOP3 一次遍历：不排序 244 个数，只维护三个槽
+  let i0 = -1, i1 = -1, i2 = -1, v0 = 0, v1 = 0, v2 = 0;
+  for (let i = 0; i < NI; i++) {
+    const v = indAmt[i];
+    if (v <= 0) continue;
+    if (v > v0) { v2 = v1; i2 = i1; v1 = v0; i1 = i0; v0 = v; i0 = i; }
+    else if (v > v1) { v2 = v1; i2 = i1; v1 = v; i1 = i; }
+    else if (v > v2) { v2 = v; i2 = i; }
+  }
+  const top3 = [i0, i1, i2].filter((x) => x >= 0).map((x) => MKT_IND_NAMES[x]);
+
+  // 前 5% 个股成交额占比。typed array 的 sort 是纯数值排序，比普通数组快一个量级
+  const sub = amts.subarray(0, k).sort();
+  let cut = Math.max(1, Math.round(k * 0.05)), tail = 0;
+  for (let i = k - cut; i < k; i++) tail += sub[i];
+
+  return {
+    day,
+    c: amt > 0 ? (v0 + v1 + v2) / amt * 100 : 0,
+    b: (up + dn) > 0 ? up / (up + dn) * 100 : 0,
+    u: up, w: dn, n,
+    amt: Math.round(amt / 1e8),
+    p5: amt > 0 ? tail / amt * 100 : 0,
+    top3,
+  };
+}
+
+/** live 值 + 历史序列。历史里若已经有今天（管线提前跑过），切掉尾巴，
+ *  否则散点会在同一个位置叠两层点。 */
+function mktLiveOut(live, base) {
+  let hist = null;
+  if (base && Array.isArray(base.d) && base.d.length >= 60) {
+    hist = { d: base.d, c: base.c, b: base.b, n: base.n, u: base.u, w: base.w, a: base.a,
+      t3: base.t3 || [], t: base.t, ind: base.ind, p5: base.p5, cVer: base.cVer || '' };
+    if (hist.d.length && hist.d[hist.d.length - 1] === live.day) {
+      for (const k of ['d', 'c', 'b', 'n', 'u', 'w', 'a', 'p5', 't']) {
+        if (Array.isArray(hist[k])) hist[k] = hist[k].slice(0, -1);
+      }
+      hist.t3 = live.top3;
+    }
+  }
+  return {
+    ok: true, mode: 'live', d: live.day, asOf: live.day, snapAt: live.hhmm,
+    cVer: MKT_CVER, c: live.c, b: live.b,
+    stockUp: live.u, stockDn: live.w, stockN: live.u + live.w,
+    n: live.n, p5: live.p5, amt: live.amt, top3: live.top3,
+    inds: MKT_IND_NAMES.length, src: 'em', hist,
+  };
+}
+
+let _mktLiveAt = 0;
+let _mktLiveSig = '';
+
+async function serveMkt(env, ctx) {
+  const clock = mktClock();
+  const base = await mktBase(env);
+
+  // 静态已经是最新（管线跑完之后），不必再打上游
+  const baseDay = base && base.d.length ? base.d[base.d.length - 1] : '';
+  if (!base || baseDay === clock.day) return serveMktStatic(env, ctx);
+  if (clock.phase === 'closed') return serveMktStatic(env, ctx);
+
+  const ttl = clock.phase === 'live' ? 30 : 120;
+  const cache = await getCache();
+  // 日期进键：跨日不会读到昨天那份
+  const key = new Request('https://etf-board.internal/mkt/live/v3/' + clock.day, { method: 'GET' });
+  const failKey = new Request('https://etf-board.internal/mkt/fail/v3/' + clock.day, { method: 'GET' });
+  if (cache) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    } catch (e) { /* 缓存读失败不影响主流程 */ }
+    /* 刚断过就 20 秒内别再打。两个域名各等 6 秒，一轮 12 秒——不记这一笔，
+       盘中页面每个请求都要白等 12 秒才拿到昨天的数，比不实时更难受。 */
+    try {
+      if (await cache.match(failKey)) return serveMktStatic(env, ctx);
+    } catch (e) { /* 忽略 */ }
+  }
+  const noteFail = () => {
+    if (cache && ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(cache.put(failKey,
+        new Response('1', { headers: { 'Cache-Control': 'max-age=20' } })).catch(() => {}));
+    }
+  };
+
+  let live = null, err = '';
+  try {
+    const got = await fetchAAll();
+    const agg = aggLive(got.rows);
+    if (!agg) err = '无有效成交';
+    else if (agg.day !== clock.day) err = '数据归属 ' + agg.day + '，不是今天（休市？）';
+    else if (agg.n < 1500) err = '有效成交只有 ' + agg.n + ' 只（集合竞价？）';
+    else { agg.hhmm = clock.hhmm; live = agg; }
+  } catch (e) {
+    err = String((e && e.message) || e);
+  }
+
+  if (live) {
+    const out = mktLiveOut(live, base);
+    const res = json(out, ttl);
+    if (cache && ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+    }
+    /* 留一份盘中快照。断连时给「几分钟前的盘中值」，比退回昨天收盘强——
+       但写入要节制：5 分钟一次、值真变了才写。 */
+    const sig = [live.day, live.c, live.b, live.amt].join('|');
+    if (env && env.WATCH && sig !== _mktLiveSig
+      && Date.now() - _mktLiveAt >= MKT_LIVE_GAP && kvWriteAllowed('mkt-live')) {
+      _mktLiveAt = Date.now();
+      _mktLiveSig = sig;
+      const keep = { ...out };
+      delete keep.hist;                    // 快照只要数字，30KB 的历史没必要跟着写
+      const put = env.WATCH.put(MKT_LIVE_KEY, JSON.stringify(keep), { expirationTtl: 259200 });
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(Promise.resolve(put).catch(() => {}));
+      else await put.catch(() => {});
+    }
+    return res;
+  }
+
+  // 上游不给：先给最近一次盘中快照，再给静态
+  noteFail();
+  try {
+    if (env && env.WATCH) {
+      const raw = await env.WATCH.get(MKT_LIVE_KEY);
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s && s.d === clock.day && s.c > 0) {
+          return json({ ...s, ok: true, mode: 'snap', src: 'kv', note: err }, 20);
+        }
+      }
+    }
+  } catch (e) { /* KV 也读不到，往下走静态 */ }
+  return serveMktStatic(env, ctx);
+}
+
+/** 盘中这条链唯一的诊断口。上线后先打 ?t=raw：它会顺带跑一遍聚合并计时，
+ *  一次就能回答三个问题——CF 出口能不能连 push2delay、pz=6000 是否被接受、
+ *  5200 只的聚合吃多少 CPU。 */
+async function serveMktProbe(url, env) {
+  const t = url.searchParams.get('t') || 'raw';
+  const clock = mktClock();
+
+  if (t === 'kv') {
+    let snap = null;
+    try {
+      if (env && env.WATCH) snap = JSON.parse((await env.WATCH.get(MKT_LIVE_KEY)) || 'null');
+    } catch (e) { /* 忽略 */ }
+    return json({ ok: true, t, clock, snap });
+  }
+
+  if (t === 'agg') {
+    const now = Math.floor(Date.now() / 1000);
+    const fixture = [
+      { f12: '600519', f3: 1.2, f6: 8.0e9, f124: now },
+      { f12: '300750', f3: -2.5, f6: 4.0e9, f124: now },
+      { f12: '000001', f3: 0, f6: 1.0e9, f124: now },
+      { f12: '601318', f3: '-', f6: 0, f124: now - 86400 * 30 },   // 停牌样本
+      { f12: '999999', f3: 3.0, f6: 2.0e9, f124: now },            // 映射里没有的代码
+    ];
+    const agg = aggLive(fixture);
+    return json({ ok: true, t, clock, fixture: fixture.length, agg });
+  }
+
+  const list = [];
+  for (const host of ['push2delay', 'push2']) {
+    const t0 = Date.now();
+    try {
+      const a = await mktClist(host, MKT_FS_ALL, 6000);
+      const t1 = Date.now();
+      const agg = aggLive(a.rows);
+      list.push({
+        host, pz: 6000, rows: a.rows.length, total: a.total,
+        fetchMs: t1 - t0, aggMs: Date.now() - t1,
+        dayMatch: !!(agg && agg.day === clock.day), agg,
+        sample: a.rows[0] || null,
+      });
+    } catch (e) {
+      list.push({ host, pz: 6000, error: String((e && e.message) || e).slice(0, 120), ms: Date.now() - t0 });
+    }
+  }
+  return json({ ok: true, t, clock, ver: MKT_CVER, hosts: list });
 }
 
 async function serveEvents(env, ctx) {
@@ -5268,8 +5562,13 @@ export default {
     }
 
     if (p === '/api/mkt') {
-      // 全 A 行业口径的集中度 / 宽度（四象限卡片的当天点）
+      // 全 A 个股口径的集中度 / 宽度：盘中现算，收盘后读回算好的日档
       return serveMkt(env, ctx);
+    }
+
+    if (p === '/api/mktprobe') {
+      // 盘中那条链的诊断口：?t=raw 打上游并计时，?t=agg 用内置样本验算，?t=kv 看快照
+      return serveMktProbe(url, env);
     }
 
     if (p === '/api/secdaily') {
