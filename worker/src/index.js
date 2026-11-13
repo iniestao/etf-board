@@ -2170,7 +2170,7 @@ function mktPack(h, src) {
   };
 }
 
-async function serveMktStatic(env, ctx) {
+async function serveMktStatic(env, ctx, note) {
   const cache = await getCache();
   const key = new Request('https://etf-board.internal/mkt/static/v3', { method: 'GET' });
   if (cache) {
@@ -2182,6 +2182,8 @@ async function serveMktStatic(env, ctx) {
   const h = await mktBase(env);
   if (!h) return json({ ok: false, code: 'NO_MKT', error: '市场结构数据还没有生成' }, 60);
   const out = mktPack(h, h === MKT_HIST ? 'inline' : 'file');
+  // note 只在盘中现算失败时出现，页面不显示，留给 /api/mktprobe?t=kv 和排查用
+  if (note) out.note = String(note).slice(0, 200);
   const res = json(out, 120);
   if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
@@ -2374,7 +2376,7 @@ async function serveMkt(env, ctx) {
     /* 刚断过就 20 秒内别再打。两个域名各等 6 秒，一轮 12 秒——不记这一笔，
        盘中页面每个请求都要白等 12 秒才拿到昨天的数，比不实时更难受。 */
     try {
-      if (await cache.match(failKey)) return serveMktStatic(env, ctx);
+      if (await cache.match(failKey)) return serveMktStatic(env, ctx, '刚刚失败过');
     } catch (e) { /* 忽略 */ }
   }
   const noteFail = () => {
@@ -2431,7 +2433,7 @@ async function serveMkt(env, ctx) {
       }
     }
   } catch (e) { /* KV 也读不到，往下走静态 */ }
-  return serveMktStatic(env, ctx);
+  return serveMktStatic(env, ctx, err);
 }
 
 /** 盘中这条链唯一的诊断口。上线后先打 ?t=raw：它会顺带跑一遍聚合并计时，
