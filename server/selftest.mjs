@@ -933,6 +933,35 @@ async function runContracts(base, pass) {
         }
       }
     } else bad('/api/senti 没返回近 20 日轨迹');
+
+    /* 当日曲线。这张图错起来最隐蔽：线还是那条线，只是「今天在历史之上」变成了
+       插值出来的错觉，或者末档被未来时点灌满。所以把结构关系钉死。 */
+    if (sn.curve) {
+      const cv = sn.curve;
+      for (const k of ['at', 'today', 'med']) {
+        if (!Array.isArray(cv[k]) || cv[k].length !== cv.at.length) {
+          bad('/api/senti 曲线 ' + k + ' 与 at 不等长');
+        }
+      }
+      if (cv.at.length < 5) bad('/api/senti 曲线只有 ' + cv.at.length + ' 个时点');
+      for (let i = 1; i < cv.at.length; i++) {
+        if (!(cv.at[i] > cv.at[i - 1])) { bad('/api/senti 曲线时点没有严格递增'); break; }
+      }
+      for (let i = 1; i < cv.today.length; i++) {
+        if (cv.today[i] < cv.today[i - 1]) { bad('/api/senti 曾触板曲线出现回退（累积量不可能减少）'); break; }
+      }
+      if (cv.today[cv.today.length - 1] !== sn.touch) {
+        bad('/api/senti 曲线末点 ' + cv.today[cv.today.length - 1] + ' ≠ 曾触板 ' + sn.touch);
+      }
+      if (!(cv.n >= 5)) bad('/api/senti 曲线基准只有 ' + cv.n + ' 天');
+      if (!['pool', 'hist'].includes(cv.src)) bad('/api/senti 曲线来源不明 ' + cv.src);
+      /* 「今日」不能给自己当基准：末点若与中位完全相等，多半是没把今天剔出去。 */
+      const sameDay = cv.today.length === cv.med.length
+        && cv.today.every((v, i) => v === cv.med[i]);
+      if (sameDay) bad('/api/senti 历史中位与今日曲线逐点相同（基准里含了今天）');
+    } else {
+      bad('/api/senti 没返回当日曲线（senti_base 里没有这一天，或池子拿不到）');
+    }
   } else bad('/api/senti 失败：' + r.text.slice(0, 160));
 
   // 三份名单：条数必须和卡片上的家数对得起来，否则「点开数不上」
@@ -973,6 +1002,12 @@ async function runContracts(base, pass) {
   if (!/data-t="onCard">[\s\S]{0,120}data-t="sentiSec"[\s\S]{0,120}data-t="secSec"/.test(r.text)) {
     bad('导航顺序不对：情绪应夹在隔夜与板块地图之间');
   }
+  /* 曲线和采样是两段独立的路：曲线靠服务端回算（页面没打开也有），
+     采样靠本地记录（补涨停家数，池子算不出「此刻是否封住」）。缺任一段
+     卡片都还能看，但那条线会静默地少一层。 */
+  (r.text.includes('function curveChart(') && r.text.includes('function sntRecord('))
+    ? ok('首页已含当日曲线与本地采样两段')
+    : bad('首页缺曲线渲染或采样记录函数');
 
   r = await rawRequest(base, '/api/mktprobe?t=senti', { cookie });
   const sp = r.json();

@@ -2861,6 +2861,159 @@ function sentiRef(mins) {
   return { at: B.at[j], n, med: v[(n - 1) >> 1], lo: v[0], hi: v[n - 1] };
 }
 
+/* ---- 当日情绪曲线：从今天两个池的首次封板时间回算 ----
+ *
+ * 面板上所有指标都只回答「现在多冷」，没有一个回答「还在往下掉还是已经横住」。
+ * 而这个维度恰好能精确重建：东财涨停池与炸板池的 fbt 都是首次封板时间，所以
+ * 「到 t 时刻曾触板几家」对**今天**同样成立——一次请求就能把 09:30 到现在整条
+ * 曲线画出来，包括页面根本没打开的那些时段。这比前端采样强的地方就在这儿：
+ * 采样只能记录「我打开着的时候」，曲线从这里开始才是完整的一天。
+ *
+ * 只画曾触板，不画涨停家数：炸板池没有炸板时间（只有炸板次数 zbc），
+ * 「t 时刻是否封住」重建不出来。涨停家数的当日轨迹交给前端采样（page.js 的
+ * SENTI_SAMPLES），两者量纲都是「家」，所以能同轴叠在一张图上。
+ *
+ * 两条线必须共用一组横坐标。今日曲线用基准那份 AT（17 档 15 分钟）+ 末尾一个
+ * 「此刻」，历史那条只在这些档上有值——插值出来的「今天在历史之上」是画出来的
+ * 错觉，不是数据。
+ */
+
+const SENTI_POOL_QS = 'ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt'
+  + '&Pageindex=0&pagesize=600';
+const SENTI_POOL_HEAD = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  Referer: 'https://data.eastmoney.com/',
+};
+
+/* 日期在这条链上有两种写法：senti_hist.d 是 2026-11-13（带横线，跟 clock.day
+   一致），senti_base.days 是 20261113（东财池接口要的格式）。差一个横线，
+   indexOf 就永远找不到，曲线会静默变成 null。统一在入口压平。 */
+const flatDay = (d) => String(d || '').replace(/-/g, '');
+
+async function sentiPool(kind, day) {
+  const u = 'https://push2ex.eastmoney.com/getTopic' + kind + 'Pool?' + SENTI_POOL_QS
+    + '&sort=fbt:asc&date=' + flatDay(day);
+  const r = await fetch(u, { headers: SENTI_POOL_HEAD, signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error('pool ' + kind + ' HTTP ' + r.status);
+  const j = await r.json();
+  /* data 为 null 表示这天超出上游回溯窗口（约 14 个交易日），不是「零家涨停」。
+     两者混为一谈会让曲线画成一条贴地的直线，看起来像「今天没人封板」。 */
+  if (!j || !j.data || !Array.isArray(j.data.pool)) throw new Error('pool ' + kind + ' 无数据');
+  return j.data.pool;
+}
+
+/** 历史同刻基准（中位 / 25 分位 / 75 分位），排除 day 本身。 */
+function curveBase(at, day) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.at) || !Array.isArray(B.days)) return null;
+  const hist = [];
+  const k0 = flatDay(day);
+  for (let i = 0; i < B.days.length; i++) {
+    if (flatDay(B.days[i]) === k0) continue;   // 不能让今天给自己当基准
+    if (Array.isArray(B.touch[i])) hist.push(B.touch[i]);
+  }
+  if (hist.length < 5) return null;
+  const pick = (t) => { let j = -1; for (let k = 0; k < B.at.length; k++) if (B.at[k] <= t) j = k; return j; };
+  const med = [], lo = [], hi = [];
+  for (const t of at) {
+    const j = pick(t);
+    if (j < 0) { med.push(null); lo.push(null); hi.push(null); continue; }
+    const v = hist.map((r) => r[j]).sort((a, b) => a - b);
+    const n = v.length;
+    med.push(v[(n - 1) >> 1]);
+    lo.push(v[Math.floor((n - 1) * 0.25)]);
+    hi.push(v[Math.ceil((n - 1) * 0.75)]);
+  }
+  return { med, lo, hi, n: hist.length };
+}
+
+const hhmmssOf = (mins) => Math.floor(mins / 60) * 10000 + (mins % 60) * 100;
+
+/** 盘中实时曲线。失败一律返回 null，卡片不受影响。 */
+async function sentiCurve(day, touchNow, mins, isLive) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.at) || !B.at.length) return null;
+  const [zt, zb] = await Promise.all([sentiPool('ZT', day), sentiPool('ZB', day)]);
+  /* 合并去重：一只票不可能同时在两个池里，但上游偶发重复投递（11-04 实测
+     两池各重 4 个），不去重会把收盘值抬高。缺任何一池都不算：只有涨停池是
+     「收盘仍封住」，会漏掉当天冲高炸板的票，低估 35%（11-13 10:00 实测）。 */
+  const seen = new Set();
+  const seq = [];
+  for (const it of zt.concat(zb)) {
+    const c = it && it.c;
+    if (!c || seen.has(c) || !it.fbt) continue;
+    seen.add(c);
+    seq.push(+it.fbt);
+  }
+  seq.sort((a, b) => a - b);
+  if (seq.length < 3) return null;   // 开盘头几分钟确实可能只有一两家，那时候不画
+
+  const cumAt = (t) => {
+    let lo = 0, hi = seq.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (seq[m] <= t) lo = m + 1; else hi = m; }
+    return lo;
+  };
+
+  const nowT = isLive ? hhmmssOf(mins) : 150000;
+  /* 收盘态用 <=：15:00 那一档本身就是终点，用 < 会把它自己排掉，曲线少了尾巴。
+     盘中用 < 则是为了不出现「此刻之后还有一个值」——那个值必然是 0 增长。 */
+  const at = [];
+  for (const t of B.at) if (isLive ? t < nowT : t <= nowT) at.push(t);
+  if (isLive && (!at.length || at[at.length - 1] < nowT)) at.push(nowT);
+  if (at.length < 3) return null;
+
+  const today = at.map((t) => cumAt(t));
+  /* 末点用现算的曾触板覆盖：行情快照是秒级的，池子接口有几十秒的刷新延迟。
+     两者差得多说明池子慢或判定口径不同（比如北交所），差多少照实带出去。 */
+  const gap = touchNow != null ? touchNow - today[today.length - 1] : 0;
+  if (touchNow != null) today[today.length - 1] = touchNow;
+
+  const base = curveBase(at, day);
+  if (!base) return null;
+
+  /* 近 15 分钟新增：历史同一档的前后差，与今日同一个窗口对比。
+     「此刻 31 家」说不出是刚加速完还是已经停下，加速度要说这件事。 */
+  const t15 = Math.max(93000, hhmmssOf(Math.max(570, mins - 15)));
+  const v15 = cumAt(nowT) - cumAt(t15);
+  let v15med = null;
+  {
+    const pk = (t) => { let j = -1; for (let k = 0; k < B.at.length; k++) if (B.at[k] <= t) j = k; return j; };
+    const j = pk(nowT);
+    if (j > 0) {
+      const ds = [];
+      const k1 = flatDay(day);
+      for (let i = 0; i < B.days.length; i++) {
+        if (flatDay(B.days[i]) === k1 || !Array.isArray(B.touch[i])) continue;
+        ds.push(B.touch[i][j] - B.touch[i][j - 1]);
+      }
+      ds.sort((a, b) => a - b);
+      if (ds.length >= 5) v15med = ds[(ds.length - 1) >> 1];
+    }
+  }
+
+  return {
+    at, today, med: base.med, lo: base.lo, hi: base.hi, n: base.n,
+    now: today[today.length - 1], v15, v15med, gap, src: 'pool',
+  };
+}
+
+/** 收盘/降级态：同一条曲线，直接取基准表里那一天的行。 */
+function sentiCurveStatic(day) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.days)) return null;
+  const k = flatDay(day);
+  const i = B.days.findIndex((x) => flatDay(x) === k);
+  if (i < 0 || !Array.isArray(B.touch[i])) return null;
+  const at = B.at.slice();
+  const base = curveBase(at, day);
+  if (!base) return null;
+  return {
+    at, today: B.touch[i].slice(), med: base.med, lo: base.lo, hi: base.hi, n: base.n,
+    now: B.touch[i][B.touch[i].length - 1], v15: null, v15med: null, gap: 0, src: 'hist',
+  };
+}
+
 /** 规则式状态判定。不用 0-100 加权分：各项的时间偏方向不一致（封板率 3 天
  *  偏高 1 天偏低），一组固定权重不可能同时标定盘中与收盘。
  *  按顺序匹配，第一条命中即生效，并把触发依据原样带出去——状态灯点开就能看到
@@ -3008,6 +3161,9 @@ function sentiPackClose(H, note) {
       n: pn, red: H.red[i] / 1000, big: H.big[i] / 1000, promo: H.promo[i],
     }) : null,
     trail: sentiTrail(H, null),
+    /* 降级路径也尽量给曲线：基准表里就有那一天整条曾触板序列，不查上游。
+       缺了它卡片会少一半信息，而这份数据是静态的、不会失败。 */
+    curve: sentiCurveStatic(H.d[i]),
     ref: null, src: 'hist',
   };
   // 收盘态没有同刻可对标的东西（它自己就是收盘），ref 一律 null
@@ -3103,6 +3259,14 @@ async function serveSenti(env, ctx, url) {
   const isLive = agg.day === clock.day;
   // 同刻基准只对「盘中此刻」有意义；收盘态它自己就是终点，没有可比的那一刻
   const ref = isLive ? sentiRef(clock.mins) : null;
+  /* 曲线放在主数字之后算：它多打两个上游池，失败只让这一块消失。
+     今日的池子在收盘态同样能拉（date 用最后交易日），所以收盘后也画得出来。 */
+  let curve = null;
+  try {
+    curve = await sentiCurve(agg.day, agg.touch, isLive ? clock.mins : 900, isLive);
+  } catch (e) {
+    curve = isLive ? null : sentiCurveStatic(agg.day);
+  }
   const out = {
     ok: true, mode: isLive ? 'live' : 'close', d: agg.day,
     snapAt: isLive ? clock.hhmm : '', histDay: H.lastDay,
@@ -3137,6 +3301,7 @@ async function serveSenti(env, ctx, url) {
        所以前端只把它当参照，不当档位判据——档位仍由 sentiState 的绝对阈值定。 */
     pct: histPcts(H, agg.prem),
     trail: sentiTrail(H, agg),
+    curve,
   };
   if (err) out.note = err;
 
@@ -3395,6 +3560,38 @@ async function serveMktProbe(url, env) {
     } catch (e) {
       return json({ ok: false, t, clock, error: String((e && e.message) || e),
         tried: e.tried || null, ms: Date.now() - t1 });
+    }
+  }
+
+  /* 东财两个池从 CF 出口是否可达、盘中是否实时，只有真打一次才知道：
+     push2ex 与 push2 是两个域名，前者在 worker 里一直没被调用过。 */
+  if (t === 'pool') {
+    const day = url.searchParams.get('day') || '';
+    const H = await sentiHist(env);
+    const d = day || (H && H.lastDay) || '';
+    const t0 = Date.now();
+    try {
+      const [zt, zb] = await Promise.all([sentiPool('ZT', d), sentiPool('ZB', d)]);
+      const t1 = Date.now();
+      const fbts = zt.concat(zb).map((x) => +x.fbt).filter((x) => x > 0).sort((a, b) => a - b);
+      const cum = (x) => { let c = 0; while (c < fbts.length && fbts[c] <= x) c++; return c; };
+      /* mins= 用来在非交易时段演练盘中分支：at 会被截断到那个时刻并追加
+         「此刻」点，这是收盘状态下唯一能验到 live 路径的办法。 */
+      const mq = +url.searchParams.get('mins') || 0;
+      const isLive = mq > 0 || (clock.phase === 'live' && d === clock.day);
+      let cv = null;
+      try { cv = await sentiCurve(d, null, mq || clock.mins, isLive); } catch (e) {
+        cv = { error: String((e && e.message) || e) };
+      }
+      return json({ ok: true, t, clock, day: d, fetchMs: t1 - t0,
+        ztN: zt.length, zbN: zb.length, sample: zt[0] || null, sampleZb: zb[0] || null,
+        cum: { a935: cum(93500), b1000: cum(100000), c1130: cum(113000), d1500: cum(150000) },
+        curve: cv && (cv.error ? cv : { at: cv.at, today: cv.today, med: cv.med,
+          n: cv.n, now: cv.now, v15: cv.v15, v15med: cv.v15med, src: cv.src }),
+      });
+    } catch (e) {
+      return json({ ok: false, t, day: d, error: String((e && e.message) || e),
+        ms: Date.now() - t0 });
     }
   }
 
@@ -7461,6 +7658,12 @@ border:1px solid var(--line);font-size:10.5px;color:var(--txt3);line-height:1.7}
 .sntbar .sb.hi>i{opacity:1}
 .sntbar .sb>em{font-style:normal;font-size:9.5px;color:var(--txt3);white-space:nowrap;line-height:1}
 .sntrl{font-size:10.5px;color:var(--txt3);white-space:nowrap}
+/* 曲线图：宽度跟着卡片走，viewBox 直接按屏宽选好（窄屏换一套坐标），
+   所以这里只做「不超过容器」，不靠缩放——缩放会把刻度压到读不出。 */
+.sntcv{display:block;width:100%;height:auto;max-width:100%;margin:7px 0 1px;overflow:visible}
+.sntcv text{font-size:10px;fill:var(--txt3);font-family:inherit;letter-spacing:0}
+.nw{white-space:nowrap}
+.sntcv .cvg{stroke:var(--line);stroke-width:1}
 .lbseg{display:inline}
 .lbsplit{color:#cdd2da;margin:0 2px}
 .sntsp{display:block;flex:none;overflow:visible}
@@ -8831,6 +9034,9 @@ function loadSenti(force){
     SENTI_REQ = false;
     // ok:false 也照常渲染：卡片会写「暂时取不到」，比留个空壳诚实
     SENTI = j || null;
+    /* 采样必须在 repaintSenti 之前：曲线图要拿这批点画散点，
+       画完再记就等于永远差一个点，而且第一次打开时一个点都没有。 */
+    sntRecord(SENTI);
     repaintSenti();
     return SENTI;
   }).catch(function(){
@@ -8841,6 +9047,15 @@ function loadSenti(force){
     return null;
   });
 }
+
+/* 横竖屏切换时重画曲线：viewBox 是按屏宽选的，不重画就会用桌面的坐标去挤
+   手机的宽度，刻度先糊成一团。防抖 300ms，转屏过程里只画一次。 */
+var _sntRz = 0;
+window.addEventListener('resize', function(){
+  if (!SENTI || !SENTI.curve) return;
+  clearTimeout(_sntRz);
+  _sntRz = setTimeout(function(){ repaintSenti(); }, 300);
+});
 
 /* 情绪卡。四行，读法从「已定局」到「还在动」：
    ① 昨日涨停池今日表现（样本固定，09:35 就定调）
@@ -8943,6 +9158,29 @@ function sentiCard(){
       + (S.yMx ? '（昨日 ' + S.yMx + ' 板）' : '') + '</span></div>';
   }
 
+  /* 当日曲线：唯一的「形态」信息。别的格子都是此刻的一个数，只有这条线
+     能看出今天是在加速堆板还是一路熄火——同样 31 家曾触板，从 8 家冲上来和
+     从 50 家掉下来，第二天的做法完全相反。 */
+  var CV = S.curve;
+  if (CV && CV.today && CV.today.length >= 3){
+    var vd = curveVerdict(CV);
+    var cvLast = CV.today[CV.today.length - 1], cvMed = null, q;
+    for (q = CV.med.length - 1; q >= 0; q--){ if (CV.med[q] != null){ cvMed = CV.med[q]; break; } }
+    h += curveChart(CV, S);
+    /* 每段包一个 nowrap：中文会在任意字之间折行，手机上一个「全程弱于历史」
+       被拆成「全程弱于历」+「史」比换行本身更难看。 */
+    var cvs = [];
+    cvs.push('<span class="nw">' + (mode === 'live' ? '此刻' : '收盘') + ' <b>' + cvLast + '</b> 家</span>');
+    cvs.push('<span class="nw">历史中位 <b>' + (cvMed == null ? '—' : cvMed) + '</b> 家（' + CV.n + ' 天）</span>');
+    if (vd) cvs.push('<span class="nw"><b style="color:var(--' + vd.c + ')">' + vd.k + '</b></span>');
+    if (CV.v15 != null){
+      cvs.push('<span class="nw">末档 <b>' + (CV.v15 >= 0 ? '+' : '') + CV.v15 + '</b>'
+        + (CV.v15med == null ? '' : ' 对历史 ' + (CV.v15med > 0 ? '+' : '') + CV.v15med) + '</span>');
+    }
+    cvs.push('<span class="nw">下方为每 15 分钟新增</span>');
+    h += '<p class="sntref" style="margin-top:1px">当日曾触板　' + cvs.join(' · ') + '</p>';
+  }
+
   /* 近 20 日轨迹：单个数字只回答「今天多冷」，回答不了「冷到哪一步」。
      连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。 */
   if (S.trail && S.trail.red && S.trail.red.length >= 5){
@@ -8988,6 +9226,244 @@ function sentiCard(){
   }
   if (S.note) h += '<p class="sntref" style="color:var(--down)">' + esc(S.note) + '</p>';
   return h + '</div>';
+}
+
+/* ---- 当日情绪曲线 ----
+ *
+ * 面板上每一格都是「现在多冷」，没有一格回答「还在往下掉还是已经横住」。
+ * 后者是短线唯一真正要判的事：同样 31 家曾触板，从 8 家一路冲上来和从 50 家
+ * 掉下来，第二天的做法完全相反。
+ *
+ * 画两条线：今日曾触板累积（实线）与历史同刻中位（灰虚线），中间那片是
+ * 近 14 天同时刻的 25–75 分位。今日线的数据来自服务端按当日两个池的首次封板
+ * 时间回算——它包含页面没打开的那些时段，所以一打开就是完整的一天。
+ *
+ * 为什么只有「曾触板」能这么画：涨停池和炸板池的 fbt 都是首次封板时间，
+ * 累积是精确的；而「t 时刻是否封住」重建不出来（炸板池只有炸板次数没有
+ * 炸板时间）。涨停家数的当日轨迹只能靠本地采样（见下面 sntRecord），
+ * 量纲同样是「家」，所以两种点型叠在同一张图上。
+ */
+var SNT_SMP_KEY = 'ecb.senti.smp.v1';
+var _sntSmp = null;
+
+function sntSamples(){
+  if (_sntSmp) return _sntSmp;
+  var o = null;
+  try { o = JSON.parse(localStorage.getItem(SNT_SMP_KEY) || 'null'); } catch (e) { o = null; }
+  _sntSmp = (o && o.d && o.p && o.p.length) ? o : { d: '', p: [] };
+  return _sntSmp;
+}
+
+/* 记一个采样点。只有盘中（live）才有意义：收盘态的涨停家数就是终点，
+   再记一百个也是同一个数。同一分钟只留第一个——tab 反复重画不该灌满配额。 */
+function sntRecord(S){
+  if (!S || !S.ok || S.mode !== 'live' || !S.d || !S.snapAt) return;
+  var hm = String(S.snapAt).split(':');
+  if (hm.length !== 2) return;
+  var mins = (+hm[0]) * 60 + (+hm[1]);
+  if (!(mins > 0)) return;
+  var o = sntSamples();
+  if (o.d !== S.d){ o.d = S.d; o.p = []; }
+  var last = o.p.length ? o.p[o.p.length - 1] : null;
+  if (last && mins <= last[0]) {
+    last[1] = S.zt; last[2] = S.dt;      // 同一分钟刷新：覆盖，不新增
+  } else {
+    o.p.push([mins, S.zt, S.dt]);
+    if (o.p.length > 480) o.p = o.p.slice(-480);
+  }
+  try { localStorage.setItem(SNT_SMP_KEY, JSON.stringify(o)); } catch (e) { /* 存不下就算了 */ }
+}
+
+/* 把 HHMMSS 时点表换算成「采样点落在第几格」的浮点索引。
+   午休那一段 HHMMSS 之差不是真实分钟数（113000→131500 是 105 分钟），
+   但只在格与格之间插值，误差落在午休两侧，视觉上无害。 */
+function curveIdxOf(C, mins){
+  var t = Math.floor(mins / 60) * 10000 + (mins % 60) * 100, n = C.at.length;
+  if (t <= C.at[0]) return 0;
+  if (t >= C.at[n - 1]) return n - 1;
+  for (var i = 1; i < n; i++){
+    if (C.at[i] >= t){
+      var f = (t - C.at[i - 1]) / (C.at[i] - C.at[i - 1]);
+      return i - 1 + f;
+    }
+  }
+  return n - 1;
+}
+
+/* 前半段与后半段各自相对历史中位的平均偏离。「全程弱」和「午后转弱」是
+   两件事：前者是全天没人愿意打板，后者是资金在午后撤退——盘中的动作完全不同。 */
+function curveVerdict(C){
+  var a = C.today, m = C.med;
+  if (!a || !m || a.length < 4) return null;
+  var n = a.length, k = Math.max(1, Math.floor(n / 3)), i, e = 0, b = 0;
+  for (i = 0; i < k; i++){ if (a[i] == null || m[i] == null) continue; e += a[i]; b += m[i]; }
+  var early = e / k - b / k;
+  e = 0; b = 0;
+  for (i = n - k; i < n; i++){ if (a[i] == null || m[i] == null) continue; e += a[i]; b += m[i]; }
+  var late = e / k - b / k;
+  if (early >= 0 && late >= 0) return { k: '全程强于历史', c: 'up' };
+  if (early < 0 && late >= 0) return { k: '午后追上历史', c: 'up' };
+  if (early >= 0 && late < 0) return { k: '午后转弱', c: 'down' };
+  return { k: '全程弱于历史', c: 'down' };
+}
+
+function curveChart(C, S){
+  if (!C || !C.today || C.today.length < 3) return '';
+  var a = C.today, med = C.med || [], lo = C.lo || [], hi = C.hi || [];
+  var n = a.length, i;
+  /* viewBox 直接按屏宽定，不用「固定 640 再缩放」：那张图在 1320px 的卡片里
+     会被拉到 1260 显示（1.97 倍），10px 的字变成 19.7px、线变成 3.4px；在手机上
+     又反过来把字压到 5px。宽度跟着容器走，字号才是真的 10px。 */
+  var mob = (window.innerWidth || 999) < 700;
+  var W = Math.max(320, Math.min(1240, (window.innerWidth || 1200) - 96));
+  var pL = 26, pR = mob ? 30 : 38, pT = 8;
+  var iw = W - pL - pR;
+  var ih = mob ? 80 : 114;          // 累积线绘图区
+  var HB = mob ? 24 : 30;           // 增量柱区
+  var Hh = pT + ih + 15 + HB + 16;  // 总高
+  var y0 = pT + ih;                 // 累积线 0 基线
+  var ib = y0 + 15 + HB;            // 增量区基线
+
+  /* 纵轴按「今日线」和「历史中位」定标，不按区间带上界：14 天里有一次 132 家
+     的爆发日，拿它定标会把 18–62 的今日线压成一条贴地的线，而这条线要看的
+     恰恰是它的弯曲。区间带超出部分由下面的 clip 裁掉。 */
+  var ytop = 0;
+  for (i = 0; i < n; i++){
+    if (a[i] != null && a[i] > ytop) ytop = a[i];
+    if (med[i] != null && med[i] > ytop) ytop = med[i];
+  }
+  if (!(ytop > 0)) return '';
+  var ymax = Math.ceil(ytop * 1.1 / 20) * 20;
+
+  var nx = function(j){ return pL + j / (n - 1) * iw; };
+  var ny = function(v){ return y0 - v / ymax * ih; };
+  var f1 = function(v){ return v.toFixed(1); };
+  var clip = 'cvc' + (mob ? 'm' : 'd') + n;
+
+  var h = '<svg class="sntcv" viewBox="0 0 ' + W + ' ' + Hh + '" width="' + W + '" height="' + Hh
+    + '" role="img" aria-label="当日曾触板累积与历史同刻中位对比，下方为每 15 分钟新增">'
+    + '<defs><clipPath id="' + clip + '"><rect x="' + pL + '" y="' + pT + '" width="' + iw
+    + '" height="' + ih + '"/></clipPath></defs>';
+
+  h += '<g clip-path="url(#' + clip + ')">';
+  /* 区间带是最底层的一片背景，不是一条线——越过它才算显著偏离。 */
+  var bp = [];
+  for (i = 0; i < n; i++) if (hi[i] != null) bp.push(f1(nx(i)) + ',' + f1(ny(hi[i])));
+  for (i = n - 1; i >= 0; i--) if (lo[i] != null) bp.push(f1(nx(i)) + ',' + f1(ny(lo[i])));
+  if (bp.length > 3) h += '<polygon points="' + bp.join(' ') + '" fill="var(--txt3)" opacity=".12"/>';
+
+  var mp = [];
+  for (i = 0; i < n; i++) if (med[i] != null) mp.push(f1(nx(i)) + ',' + f1(ny(med[i])));
+  if (mp.length > 1) {
+    h += '<polyline points="' + mp.join(' ') + '" fill="none" stroke="var(--txt3)"'
+      + ' stroke-width="1.2" stroke-dasharray="3 3" opacity=".9"/>';
+  }
+
+  var tp = [], lastI = -1;
+  for (i = 0; i < n; i++) if (a[i] != null){ tp.push(f1(nx(i)) + ',' + f1(ny(a[i]))); lastI = i; }
+  if (tp.length > 1) {
+    h += '<polyline points="' + tp.join(' ') + '" fill="none" stroke="var(--up)"'
+      + ' stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>';
+  }
+
+  /* 本地采样的涨停 / 跌停家数散点。同量纲能同轴，而涨停 ⊆ 曾触板，
+     所以散点永远落在实线下方——这是它们自带的校验。 */
+  var smp = sntSamples();
+  if (S && S.mode === 'live' && smp.d === S.d && smp.p.length >= 2){
+    for (i = 0; i < smp.p.length; i++){
+      var g = curveIdxOf(C, smp.p[i][0]);
+      var x1 = pL + g / (n - 1) * iw;
+      if (smp.p[i][1] != null && smp.p[i][1] <= ymax){
+        h += '<circle cx="' + f1(x1) + '" cy="' + f1(ny(smp.p[i][1])) + '" r="1.7" fill="var(--up)" opacity=".5"/>';
+      }
+      if (smp.p[i][2] != null && smp.p[i][2] <= ymax){
+        h += '<circle cx="' + f1(x1) + '" cy="' + f1(ny(smp.p[i][2])) + '" r="1.7" fill="var(--down)" opacity=".5"/>';
+      }
+    }
+  }
+  h += '</g>';
+
+  /* 刻度与基线画在 clip 外面。放里面会被裁掉——pL 边上的「0」正好压在裁剪边界上，
+     整张图会变成「有曲线但没有纵轴」的样子，看起来只是数据缺了，不容易发现。 */
+  h += '<line class="cvg" x1="' + pL + '" y1="' + y0 + '" x2="' + f1(pL + iw) + '" y2="' + y0 + '"/>';
+  h += '<text x="' + (pL - 5) + '" y="' + (y0 + 3) + '" text-anchor="end">0</text>';
+  h += '<text x="' + (pL - 5) + '" y="' + (ny(ymax) + 3) + '" text-anchor="end">' + ymax + '</text>';
+
+  /* 午休竖线：11:30–13:00 一定平，不标一道会被读成「午后开不动」。 */
+  var ix = -1;
+  for (i = 0; i < n; i++) if (C.at[i] === 113000) ix = i;
+  if (ix >= 0 && ix < n - 1){
+    var xm = (nx(ix) + nx(ix + 1)) / 2;
+    h += '<line x1="' + f1(xm) + '" y1="' + pT + '" x2="' + f1(xm) + '" y2="' + f1(ib)
+      + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 4"/>';
+  }
+
+  if (lastI >= 0){
+    h += '<circle cx="' + f1(nx(lastI)) + '" cy="' + f1(ny(a[lastI])) + '" r="2.6" fill="var(--up)"/>';
+    h += '<text x="' + f1(nx(lastI) + 4) + '" y="' + f1(ny(a[lastI]) + 3)
+      + '" text-anchor="start" style="font-weight:600;fill:var(--up)">' + a[lastI] + '</text>';
+  }
+
+  /* 增量柱：累积线只说明「今天走了多远」，说明不了「现在还有没有人封板」。
+     同样 62 家，一路匀速堆上去和开盘半小时堆完再躺平，是两种完全不同的局面。
+     柱子按每档新增画，灰短横是历史同期的中位新增——柱比灰线矮就是熄火。 */
+  /* 增量必须换成「每 15 分钟」的速率再比：盘中最后一档往往只有几分钟
+     （10:07 打开页面，末档 10:00–10:07 只有 7 分钟），直接拿家数画柱子会
+     永远比历史同期矮，看着像熄火，其实只是窗口没走完。
+     跨午休那一档要扣掉 90 分钟，否则 11:30→13:15 会被当成 105 分钟的交易时间。 */
+  var m2 = function(t){ return Math.floor(t / 10000) * 60 + Math.floor(t % 10000 / 100); };
+  var inc = [], incm = [], mxi = 0;
+  for (i = 0; i < n; i++){
+    var span = 15;
+    if (i > 0){
+      span = m2(C.at[i]) - m2(C.at[i - 1]);
+      if (m2(C.at[i - 1]) <= 690 && m2(C.at[i]) > 690) span -= 90;
+      if (!(span > 0)) span = 15;
+    }
+    var v1 = (i === 0) ? a[0] : (a[i] == null || a[i - 1] == null ? null : (a[i] - a[i - 1]) / span * 15);
+    var v2 = (i === 0) ? med[0] : (med[i] == null || med[i - 1] == null ? null : (med[i] - med[i - 1]) / span * 15);
+    inc.push(v1); incm.push(v2);
+    if (v1 != null && v1 > mxi) mxi = v1;
+    if (v2 != null && v2 > mxi) mxi = v2;
+  }
+  if (mxi > 0){
+    /* 垫一层浅底色把副图圈出来：两层的量纲不同（上是累积家数，下是每 15 分钟
+       新增），没有底色时读者会顺着 0 线往下读成负值。 */
+    h += '<rect x="' + pL + '" y="' + (y0 + 5) + '" width="' + f1(iw) + '" height="' + (HB + 10)
+      + '" fill="var(--bg3)" opacity=".7" rx="2"/>';
+    var bw = Math.max(2, iw / (n - 1) * 0.58);
+    /* 平方根缩放：开盘那一档 18 家，后面各档 3~8 家，线性缩放下后半排全被压成
+       2px 的同一高度——而这条副图要看的恰恰是「后半排比前半排矮多少」。 */
+    for (i = 0; i < n; i++){
+      var bx = Math.min(pL + iw - bw, Math.max(pL, nx(i) - bw / 2));
+      if (inc[i] != null && inc[i] > 0){
+        var bh = Math.max(1.5, Math.sqrt(inc[i] / mxi) * (HB - 2));
+        h += '<rect x="' + f1(bx) + '" y="' + f1(ib - bh) + '" width="' + f1(bw) + '" height="' + f1(bh)
+          + '" fill="var(--up)" opacity=".38" rx=".8"/>';
+      }
+      if (incm[i] != null && incm[i] > 0){
+        var yh = ib - Math.sqrt(incm[i] / mxi) * (HB - 2);
+        h += '<line x1="' + f1(bx) + '" y1="' + f1(yh) + '" x2="' + f1(bx + bw) + '" y2="' + f1(yh)
+          + '" stroke="var(--txt3)" stroke-width="1.4" opacity=".75"/>';
+      }
+    }
+    h += '<line x1="' + pL + '" y1="' + ib + '" x2="' + f1(pL + iw) + '" y2="' + ib
+      + '" stroke="var(--line)" stroke-width="1"/>';
+
+  }
+
+  var marks = { 93500: '09:30', 100000: '10:00', 103000: '10:30', 110000: '11:00',
+    113000: '11:30', 133000: '13:30', 140000: '14:00', 143000: '14:30', 150000: '15:00' };
+  var keep = mob ? { 93500: 1, 113000: 1, 150000: 1 } : null;
+  for (i = 0; i < n; i++){
+    var t = C.at[i], s2 = marks[t];
+    if (keep && s2 && !keep[t]) s2 = null;
+    if (!s2) continue;
+    h += '<text x="' + f1(nx(i)) + '" y="' + (Hh - 2) + '"'
+      + (i === 0 ? ' text-anchor="start"' : (i === n - 1 ? ' text-anchor="end"' : ' text-anchor="middle"'))
+      + '>' + s2 + '</text>';
+  }
+  return h + '</svg>';
 }
 
 /* 近 20 日红盘率迷你折线。只有 20 个点，一条 polyline 就够，不必上 canvas

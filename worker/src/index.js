@@ -2862,6 +2862,159 @@ function sentiRef(mins) {
   return { at: B.at[j], n, med: v[(n - 1) >> 1], lo: v[0], hi: v[n - 1] };
 }
 
+/* ---- 当日情绪曲线：从今天两个池的首次封板时间回算 ----
+ *
+ * 面板上所有指标都只回答「现在多冷」，没有一个回答「还在往下掉还是已经横住」。
+ * 而这个维度恰好能精确重建：东财涨停池与炸板池的 fbt 都是首次封板时间，所以
+ * 「到 t 时刻曾触板几家」对**今天**同样成立——一次请求就能把 09:30 到现在整条
+ * 曲线画出来，包括页面根本没打开的那些时段。这比前端采样强的地方就在这儿：
+ * 采样只能记录「我打开着的时候」，曲线从这里开始才是完整的一天。
+ *
+ * 只画曾触板，不画涨停家数：炸板池没有炸板时间（只有炸板次数 zbc），
+ * 「t 时刻是否封住」重建不出来。涨停家数的当日轨迹交给前端采样（page.js 的
+ * SENTI_SAMPLES），两者量纲都是「家」，所以能同轴叠在一张图上。
+ *
+ * 两条线必须共用一组横坐标。今日曲线用基准那份 AT（17 档 15 分钟）+ 末尾一个
+ * 「此刻」，历史那条只在这些档上有值——插值出来的「今天在历史之上」是画出来的
+ * 错觉，不是数据。
+ */
+
+const SENTI_POOL_QS = 'ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt'
+  + '&Pageindex=0&pagesize=600';
+const SENTI_POOL_HEAD = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  Referer: 'https://data.eastmoney.com/',
+};
+
+/* 日期在这条链上有两种写法：senti_hist.d 是 2026-11-13（带横线，跟 clock.day
+   一致），senti_base.days 是 20261113（东财池接口要的格式）。差一个横线，
+   indexOf 就永远找不到，曲线会静默变成 null。统一在入口压平。 */
+const flatDay = (d) => String(d || '').replace(/-/g, '');
+
+async function sentiPool(kind, day) {
+  const u = 'https://push2ex.eastmoney.com/getTopic' + kind + 'Pool?' + SENTI_POOL_QS
+    + '&sort=fbt:asc&date=' + flatDay(day);
+  const r = await fetch(u, { headers: SENTI_POOL_HEAD, signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error('pool ' + kind + ' HTTP ' + r.status);
+  const j = await r.json();
+  /* data 为 null 表示这天超出上游回溯窗口（约 14 个交易日），不是「零家涨停」。
+     两者混为一谈会让曲线画成一条贴地的直线，看起来像「今天没人封板」。 */
+  if (!j || !j.data || !Array.isArray(j.data.pool)) throw new Error('pool ' + kind + ' 无数据');
+  return j.data.pool;
+}
+
+/** 历史同刻基准（中位 / 25 分位 / 75 分位），排除 day 本身。 */
+function curveBase(at, day) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.at) || !Array.isArray(B.days)) return null;
+  const hist = [];
+  const k0 = flatDay(day);
+  for (let i = 0; i < B.days.length; i++) {
+    if (flatDay(B.days[i]) === k0) continue;   // 不能让今天给自己当基准
+    if (Array.isArray(B.touch[i])) hist.push(B.touch[i]);
+  }
+  if (hist.length < 5) return null;
+  const pick = (t) => { let j = -1; for (let k = 0; k < B.at.length; k++) if (B.at[k] <= t) j = k; return j; };
+  const med = [], lo = [], hi = [];
+  for (const t of at) {
+    const j = pick(t);
+    if (j < 0) { med.push(null); lo.push(null); hi.push(null); continue; }
+    const v = hist.map((r) => r[j]).sort((a, b) => a - b);
+    const n = v.length;
+    med.push(v[(n - 1) >> 1]);
+    lo.push(v[Math.floor((n - 1) * 0.25)]);
+    hi.push(v[Math.ceil((n - 1) * 0.75)]);
+  }
+  return { med, lo, hi, n: hist.length };
+}
+
+const hhmmssOf = (mins) => Math.floor(mins / 60) * 10000 + (mins % 60) * 100;
+
+/** 盘中实时曲线。失败一律返回 null，卡片不受影响。 */
+async function sentiCurve(day, touchNow, mins, isLive) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.at) || !B.at.length) return null;
+  const [zt, zb] = await Promise.all([sentiPool('ZT', day), sentiPool('ZB', day)]);
+  /* 合并去重：一只票不可能同时在两个池里，但上游偶发重复投递（11-04 实测
+     两池各重 4 个），不去重会把收盘值抬高。缺任何一池都不算：只有涨停池是
+     「收盘仍封住」，会漏掉当天冲高炸板的票，低估 35%（11-13 10:00 实测）。 */
+  const seen = new Set();
+  const seq = [];
+  for (const it of zt.concat(zb)) {
+    const c = it && it.c;
+    if (!c || seen.has(c) || !it.fbt) continue;
+    seen.add(c);
+    seq.push(+it.fbt);
+  }
+  seq.sort((a, b) => a - b);
+  if (seq.length < 3) return null;   // 开盘头几分钟确实可能只有一两家，那时候不画
+
+  const cumAt = (t) => {
+    let lo = 0, hi = seq.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (seq[m] <= t) lo = m + 1; else hi = m; }
+    return lo;
+  };
+
+  const nowT = isLive ? hhmmssOf(mins) : 150000;
+  /* 收盘态用 <=：15:00 那一档本身就是终点，用 < 会把它自己排掉，曲线少了尾巴。
+     盘中用 < 则是为了不出现「此刻之后还有一个值」——那个值必然是 0 增长。 */
+  const at = [];
+  for (const t of B.at) if (isLive ? t < nowT : t <= nowT) at.push(t);
+  if (isLive && (!at.length || at[at.length - 1] < nowT)) at.push(nowT);
+  if (at.length < 3) return null;
+
+  const today = at.map((t) => cumAt(t));
+  /* 末点用现算的曾触板覆盖：行情快照是秒级的，池子接口有几十秒的刷新延迟。
+     两者差得多说明池子慢或判定口径不同（比如北交所），差多少照实带出去。 */
+  const gap = touchNow != null ? touchNow - today[today.length - 1] : 0;
+  if (touchNow != null) today[today.length - 1] = touchNow;
+
+  const base = curveBase(at, day);
+  if (!base) return null;
+
+  /* 近 15 分钟新增：历史同一档的前后差，与今日同一个窗口对比。
+     「此刻 31 家」说不出是刚加速完还是已经停下，加速度要说这件事。 */
+  const t15 = Math.max(93000, hhmmssOf(Math.max(570, mins - 15)));
+  const v15 = cumAt(nowT) - cumAt(t15);
+  let v15med = null;
+  {
+    const pk = (t) => { let j = -1; for (let k = 0; k < B.at.length; k++) if (B.at[k] <= t) j = k; return j; };
+    const j = pk(nowT);
+    if (j > 0) {
+      const ds = [];
+      const k1 = flatDay(day);
+      for (let i = 0; i < B.days.length; i++) {
+        if (flatDay(B.days[i]) === k1 || !Array.isArray(B.touch[i])) continue;
+        ds.push(B.touch[i][j] - B.touch[i][j - 1]);
+      }
+      ds.sort((a, b) => a - b);
+      if (ds.length >= 5) v15med = ds[(ds.length - 1) >> 1];
+    }
+  }
+
+  return {
+    at, today, med: base.med, lo: base.lo, hi: base.hi, n: base.n,
+    now: today[today.length - 1], v15, v15med, gap, src: 'pool',
+  };
+}
+
+/** 收盘/降级态：同一条曲线，直接取基准表里那一天的行。 */
+function sentiCurveStatic(day) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.days)) return null;
+  const k = flatDay(day);
+  const i = B.days.findIndex((x) => flatDay(x) === k);
+  if (i < 0 || !Array.isArray(B.touch[i])) return null;
+  const at = B.at.slice();
+  const base = curveBase(at, day);
+  if (!base) return null;
+  return {
+    at, today: B.touch[i].slice(), med: base.med, lo: base.lo, hi: base.hi, n: base.n,
+    now: B.touch[i][B.touch[i].length - 1], v15: null, v15med: null, gap: 0, src: 'hist',
+  };
+}
+
 /** 规则式状态判定。不用 0-100 加权分：各项的时间偏方向不一致（封板率 3 天
  *  偏高 1 天偏低），一组固定权重不可能同时标定盘中与收盘。
  *  按顺序匹配，第一条命中即生效，并把触发依据原样带出去——状态灯点开就能看到
@@ -3009,6 +3162,9 @@ function sentiPackClose(H, note) {
       n: pn, red: H.red[i] / 1000, big: H.big[i] / 1000, promo: H.promo[i],
     }) : null,
     trail: sentiTrail(H, null),
+    /* 降级路径也尽量给曲线：基准表里就有那一天整条曾触板序列，不查上游。
+       缺了它卡片会少一半信息，而这份数据是静态的、不会失败。 */
+    curve: sentiCurveStatic(H.d[i]),
     ref: null, src: 'hist',
   };
   // 收盘态没有同刻可对标的东西（它自己就是收盘），ref 一律 null
@@ -3104,6 +3260,14 @@ async function serveSenti(env, ctx, url) {
   const isLive = agg.day === clock.day;
   // 同刻基准只对「盘中此刻」有意义；收盘态它自己就是终点，没有可比的那一刻
   const ref = isLive ? sentiRef(clock.mins) : null;
+  /* 曲线放在主数字之后算：它多打两个上游池，失败只让这一块消失。
+     今日的池子在收盘态同样能拉（date 用最后交易日），所以收盘后也画得出来。 */
+  let curve = null;
+  try {
+    curve = await sentiCurve(agg.day, agg.touch, isLive ? clock.mins : 900, isLive);
+  } catch (e) {
+    curve = isLive ? null : sentiCurveStatic(agg.day);
+  }
   const out = {
     ok: true, mode: isLive ? 'live' : 'close', d: agg.day,
     snapAt: isLive ? clock.hhmm : '', histDay: H.lastDay,
@@ -3138,6 +3302,7 @@ async function serveSenti(env, ctx, url) {
        所以前端只把它当参照，不当档位判据——档位仍由 sentiState 的绝对阈值定。 */
     pct: histPcts(H, agg.prem),
     trail: sentiTrail(H, agg),
+    curve,
   };
   if (err) out.note = err;
 
@@ -3396,6 +3561,38 @@ async function serveMktProbe(url, env) {
     } catch (e) {
       return json({ ok: false, t, clock, error: String((e && e.message) || e),
         tried: e.tried || null, ms: Date.now() - t1 });
+    }
+  }
+
+  /* 东财两个池从 CF 出口是否可达、盘中是否实时，只有真打一次才知道：
+     push2ex 与 push2 是两个域名，前者在 worker 里一直没被调用过。 */
+  if (t === 'pool') {
+    const day = url.searchParams.get('day') || '';
+    const H = await sentiHist(env);
+    const d = day || (H && H.lastDay) || '';
+    const t0 = Date.now();
+    try {
+      const [zt, zb] = await Promise.all([sentiPool('ZT', d), sentiPool('ZB', d)]);
+      const t1 = Date.now();
+      const fbts = zt.concat(zb).map((x) => +x.fbt).filter((x) => x > 0).sort((a, b) => a - b);
+      const cum = (x) => { let c = 0; while (c < fbts.length && fbts[c] <= x) c++; return c; };
+      /* mins= 用来在非交易时段演练盘中分支：at 会被截断到那个时刻并追加
+         「此刻」点，这是收盘状态下唯一能验到 live 路径的办法。 */
+      const mq = +url.searchParams.get('mins') || 0;
+      const isLive = mq > 0 || (clock.phase === 'live' && d === clock.day);
+      let cv = null;
+      try { cv = await sentiCurve(d, null, mq || clock.mins, isLive); } catch (e) {
+        cv = { error: String((e && e.message) || e) };
+      }
+      return json({ ok: true, t, clock, day: d, fetchMs: t1 - t0,
+        ztN: zt.length, zbN: zb.length, sample: zt[0] || null, sampleZb: zb[0] || null,
+        cum: { a935: cum(93500), b1000: cum(100000), c1130: cum(113000), d1500: cum(150000) },
+        curve: cv && (cv.error ? cv : { at: cv.at, today: cv.today, med: cv.med,
+          n: cv.n, now: cv.now, v15: cv.v15, v15med: cv.v15med, src: cv.src }),
+      });
+    } catch (e) {
+      return json({ ok: false, t, day: d, error: String((e && e.message) || e),
+        ms: Date.now() - t0 });
     }
   }
 
