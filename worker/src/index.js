@@ -2895,7 +2895,9 @@ const flatDay = (d) => String(d || '').replace(/-/g, '');
 async function sentiPool(kind, day) {
   const u = 'https://push2ex.eastmoney.com/getTopic' + kind + 'Pool?' + SENTI_POOL_QS
     + '&sort=fbt:asc&date=' + flatDay(day);
-  const r = await fetch(u, { headers: SENTI_POOL_HEAD, signal: AbortSignal.timeout(5000) });
+  /* 超时给 8 秒：本地沙箱 0.1 秒，但 CF 出口到 push2ex 实测 3.5 秒（探针 §pool），
+     5 秒余量会随机截断，表现为「曲线时有时无」。 */
+  const r = await fetch(u, { headers: SENTI_POOL_HEAD, signal: AbortSignal.timeout(8000) });
   if (!r.ok) throw new Error('pool ' + kind + ' HTTP ' + r.status);
   const j = await r.json();
   /* data 为 null 表示这天超出上游回溯窗口（约 14 个交易日），不是「零家涨停」。
@@ -2999,19 +3001,43 @@ async function sentiCurve(day, touchNow, mins, isLive) {
   };
 }
 
-/** 收盘/降级态：同一条曲线，直接取基准表里那一天的行。 */
-function sentiCurveStatic(day) {
+/** 收盘/降级态：同一条曲线，直接取基准表里那一天的行，不碰上游。
+ *
+ *  touchNow 是主接口用快照算出来的曾触板家数。不传它就会出现「卡片写 62、
+ *  图上写 58」——两个口径都是对的（池子收的是东财认定的涨停，快照是我们自己
+ *  按整数分判的，11-13 差 4 家），但并排出现在同一张卡上就是 bug。
+ *  末点一律对齐快照，其余照池子，并在 gap 里记下差多少。 */
+function sentiCurveStatic(day, touchNow) {
   const B = SENTI_BASE;
   if (!B || !Array.isArray(B.days)) return null;
   const k = flatDay(day);
   const i = B.days.findIndex((x) => flatDay(x) === k);
   if (i < 0 || !Array.isArray(B.touch[i])) return null;
+  const row = B.touch[i];
   const at = B.at.slice();
   const base = curveBase(at, day);
   if (!base) return null;
+  const today = row.slice();
+  const now = touchNow != null ? touchNow : today[today.length - 1];
+  const gap = now - today[today.length - 1];
+  today[today.length - 1] = now;
+  /* v15 用池值算，不用对齐后的末点：那 4 家是口径差，不是尾盘真的又封了 4 家，
+     拿它算增量会造出一个不存在的「尾盘偷袭」。 */
+  const n = row.length;
+  const v15 = n >= 2 ? row[n - 1] - row[n - 2] : null;
+  let v15med = null;
+  {
+    const ds = [];
+    for (let j = 0; j < B.days.length; j++) {
+      if (flatDay(B.days[j]) === k || !Array.isArray(B.touch[j])) continue;
+      ds.push(B.touch[j][n - 1] - B.touch[j][n - 2]);
+    }
+    ds.sort((a2, b2) => a2 - b2);
+    if (ds.length >= 5) v15med = ds[(ds.length - 1) >> 1];
+  }
   return {
-    at, today: B.touch[i].slice(), med: base.med, lo: base.lo, hi: base.hi, n: base.n,
-    now: B.touch[i][B.touch[i].length - 1], v15: null, v15med: null, gap: 0, src: 'hist',
+    at, today, med: base.med, lo: base.lo, hi: base.hi, n: base.n,
+    now, v15, v15med, gap, src: 'hist',
   };
 }
 
@@ -3164,7 +3190,7 @@ function sentiPackClose(H, note) {
     trail: sentiTrail(H, null),
     /* 降级路径也尽量给曲线：基准表里就有那一天整条曾触板序列，不查上游。
        缺了它卡片会少一半信息，而这份数据是静态的、不会失败。 */
-    curve: sentiCurveStatic(H.d[i]),
+    curve: sentiCurveStatic(H.d[i], touch),
     ref: null, src: 'hist',
   };
   // 收盘态没有同刻可对标的东西（它自己就是收盘），ref 一律 null
@@ -3260,14 +3286,10 @@ async function serveSenti(env, ctx, url) {
   const isLive = agg.day === clock.day;
   // 同刻基准只对「盘中此刻」有意义；收盘态它自己就是终点，没有可比的那一刻
   const ref = isLive ? sentiRef(clock.mins) : null;
-  /* 曲线放在主数字之后算：它多打两个上游池，失败只让这一块消失。
-     今日的池子在收盘态同样能拉（date 用最后交易日），所以收盘后也画得出来。 */
-  let curve = null;
-  try {
-    curve = await sentiCurve(agg.day, agg.touch, isLive ? clock.mins : 900, isLive);
-  } catch (e) {
-    curve = isLive ? null : sentiCurveStatic(agg.day);
-  }
+  /* 曲线不在这里拉池。收盘态从基准表直接读（那一天的整条序列，零上游）；
+     盘中留给 /api/senti/curve 单独取——CF 出口到 push2ex 实测 3.5 秒，
+     内联会把卡片本身也拖慢 3.5 秒，而卡片先出、曲线后补是更好的顺序。 */
+  const curve = isLive ? null : sentiCurveStatic(agg.day, agg.touch);
   const out = {
     ok: true, mode: isLive ? 'live' : 'close', d: agg.day,
     snapAt: isLive ? clock.hhmm : '', histDay: H.lastDay,
@@ -3323,6 +3345,47 @@ async function serveSenti(env, ctx, url) {
 
   const res = json(out, clock.phase === 'live' ? 30 : 120);
   if (cache && !fresh && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
+}
+
+/** 当日曲线单独一条链。跟 /api/senti 分开的理由只有一个：它要打两次 push2ex，
+ *  而 CF 出口到那里的实测延迟是 3.5 秒。内联进主接口就等于让卡片本身也等 3.5 秒，
+ *  而卡片上那些数字（涨停家数、封板率、承接）根本不需要池子。
+ *
+ *  缓存按 2 分钟分档：曲线每 15 分钟才多一档（AT 是 15 分钟粒度），唯一会变的是
+ *  末尾那个「此刻」点和 v15。2 分钟足够新鲜，又能挡住同一个人反复点重算。
+ *  touch= 由主接口带过来：池子回算的收盘值与快照判定的曾触板可能差几家
+ *  （11-13 实测 58 vs 62，北交所和 ST 的口径差），末点必须与卡片对齐，
+ *  否则图上一个 58、上面写 62，看起来像两个数据源打架。 */
+async function serveSentiCurve(env, ctx, url) {
+  const clock = mktClock();
+  const H = await sentiHist(env);
+  if (!H) return json({ ok: false, code: 'NO_SENTI', error: '情绪历史还没有生成' }, 60);
+
+  const dataIsHist = clock.phase === 'closed' || H.lastDay === clock.day;
+  const day = dataIsHist ? H.lastDay : clock.day;
+  const touchQ = +url.searchParams.get('touch');
+  const touch = touchQ > 0 ? touchQ : null;
+
+  const cache = await getCache();
+  const slot = Math.floor(clock.mins / 2) * 2;
+  const key = new Request('https://etf-board.internal/senti/curve/v2/'
+    + flatDay(day) + '/' + slot + '/' + (touch || 0), { method: 'GET' });
+  if (cache) { try { const hit = await cache.match(key); if (hit) return hit; } catch (e) { /* 忽略 */ } }
+
+  let curve = null, err = '';
+  try {
+    curve = await sentiCurve(day, touch, clock.mins, !dataIsHist);
+  } catch (e) {
+    err = String((e && e.message) || e);
+    curve = sentiCurveStatic(day, touch);
+  }
+  if (!curve) return json({ ok: false, d: day, error: err || '曲线拿不到' }, 30);
+
+  const res = json({ ok: true, d: day, curve }, clock.phase === 'live' ? 120 : 600);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
   }
   return res;
@@ -6729,6 +6792,11 @@ export default {
     if (p === '/api/senti') {
       // 短线情绪：A 类直接看、B 类看绝对值、C 类强制与历史同刻对标
       return serveSenti(env, ctx, url);
+    }
+
+    if (p === '/api/senti/curve') {
+      // 当日曾触板曲线：慢（两次 push2ex），所以独立于 /api/senti
+      return serveSentiCurve(env, ctx, url);
     }
 
     if (p === '/api/ind') {

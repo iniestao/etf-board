@@ -2190,6 +2190,7 @@ var MKT_REQ = false, MKT_RETRY = null;
 /* 情绪卡：与四象限同频（30 秒），但两者互不依赖——/api/senti 挂了不该让
    集中度卡片跟着停，所以是各自加载、各自 replaceChild。 */
 var SENTI = null, SENTI_REQ = false, SENTI_RETRY = null, SENTI_OPEN = null;
+var SENTI_CV_REQ = false;   // 曲线独立请求在飞，避免重算连点时叠起来
 
 function repaintSenti(){
   var body = document.getElementById('sentiBody');
@@ -2212,7 +2213,7 @@ function repaintSenti(){
 
 function loadSenti(force){
   if (SENTI_REQ) return;
-  if (force){ SENTI = null; SENTI_REQ = false; repaintSenti(); }
+  if (force){ SENTI = null; SENTI_REQ = false; SENTI_CV_REQ = false; repaintSenti(); }
   SENTI_REQ = true;
   // 不走浏览器缓存：盘中是 30 秒一变，被缓存 120 秒就等于不刷新了。
   // 服务端的 Cache-Control 仍然生效（那是给边缘节点的），这里只挡浏览器。
@@ -2224,6 +2225,8 @@ function loadSenti(force){
        画完再记就等于永远差一个点，而且第一次打开时一个点都没有。 */
     sntRecord(SENTI);
     repaintSenti();
+    // 曲线晚一步到：主数据先落屏，这张图自己再等 3 秒，不挡着看家数
+    loadSentiCurve();
     return SENTI;
   }).catch(function(){
     SENTI_REQ = false;
@@ -2242,6 +2245,23 @@ window.addEventListener('resize', function(){
   clearTimeout(_sntRz);
   _sntRz = setTimeout(function(){ repaintSenti(); }, 300);
 });
+
+/* 当日曲线单独取。慢（服务端要打两次 push2ex，CF 出口实测 3.5 秒），
+   所以不并进 /api/senti：卡片上那些数字不需要等池子，等它就意味着首屏空 3.5 秒。
+   收盘态不用发这个请求——后端已经把基准表里那一天的整条序列带回来了。 */
+function loadSentiCurve(){
+  if (SENTI_CV_REQ || !SENTI || !SENTI.ok || SENTI.curve) return;
+  SENTI_CV_REQ = true;
+  var q = (SENTI.touch > 0 ? '?touch=' + SENTI.touch : '');
+  fetch('/api/senti/curve' + q, { cache: 'no-store' })
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      SENTI_CV_REQ = false;
+      // 失败就不画：空着比画一条错的强，反正下面的文字指标都还在
+      if (j && j.ok && j.curve){ SENTI.curve = j.curve; repaintSenti(); }
+    })
+    .catch(function(){ SENTI_CV_REQ = false; });
+}
 
 /* 情绪卡。四行，读法从「已定局」到「还在动」：
    ① 昨日涨停池今日表现（样本固定，09:35 就定调）
@@ -2348,6 +2368,7 @@ function sentiCard(){
      能看出今天是在加速堆板还是一路熄火——同样 31 家曾触板，从 8 家冲上来和
      从 50 家掉下来，第二天的做法完全相反。 */
   var CV = S.curve;
+  /* 曲线没到就整块留白：3 秒后自己会冒出来，占位写「读取中」反而闪两下。 */
   if (CV && CV.today && CV.today.length >= 3){
     var vd = curveVerdict(CV);
     var cvLast = CV.today[CV.today.length - 1], cvMed = null, q;
@@ -9297,11 +9318,16 @@ Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
 (function(){
   var b = document.getElementById('btnSenti');
   if (b) b.onclick = function(){
-    SENTI = null; SENTI_REQ = false;
+    SENTI = null; SENTI_REQ = false; SENTI_CV_REQ = false;
     repaintSenti();
     fetch('/api/senti?fresh=1', { cache: 'no-store' })
       .then(function(r){ return r.json(); })
-      .then(function(j){ SENTI = j || null; repaintSenti(); toast('已按最新行情重算情绪'); })
+      .then(function(j){
+        SENTI = j || null;
+        repaintSenti();
+        loadSentiCurve();          // 曲线跟着一起换，否则重算后曲线还是旧的
+        toast('已按最新行情重算情绪');
+      })
       .catch(function(){ repaintSenti(); toast('重算失败，保留原数据'); });
   };
 })();

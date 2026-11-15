@@ -962,6 +962,29 @@ async function runContracts(base, pass) {
     } else {
       bad('/api/senti 没返回当日曲线（senti_base 里没有这一天，或池子拿不到）');
     }
+
+    /* 曲线那条链是单独的一个端点，慢（两次 push2ex，CF 出口实测 3.5 秒），
+       所以必须验它自己站得住——主接口把 curve 置 null 之后，这是唯一来源。 */
+    {
+      const q = sn.touch > 0 ? '?touch=' + sn.touch : '';
+      const cr = await rawRequest(base, '/api/senti/curve' + q, { cookie, timeout: 25000 });
+      const cj = cr.json();
+      if (cj && cj.ok && cj.curve) {
+        const cv = cj.curve;
+        if (cj.d !== sn.d) bad('/api/senti/curve 的日期 ' + cj.d + ' ≠ 主接口 ' + sn.d);
+        if (cv.today[cv.today.length - 1] !== sn.touch) {
+          bad('/api/senti/curve 末点 ' + cv.today[cv.today.length - 1]
+            + ' ≠ 曾触板 ' + sn.touch + '（卡片和图会各说一个数）');
+        }
+        for (let i = 1; i < cv.today.length; i++) {
+          if (cv.today[i] < cv.today[i - 1]) { bad('/api/senti/curve 累积量回退'); break; }
+        }
+        ok('/api/senti/curve 独立可取：' + cv.at.length + ' 档 · 末点 ' + cv.now
+          + ' · 基准 ' + cv.n + ' 天 · 来源 ' + cv.src);
+      } else {
+        bad('/api/senti/curve 取不到：' + ((cj && cj.error) || '空响应'));
+      }
+    }
   } else bad('/api/senti 失败：' + r.text.slice(0, 160));
 
   // 三份名单：条数必须和卡片上的家数对得起来，否则「点开数不上」
