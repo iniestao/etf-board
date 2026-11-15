@@ -40,9 +40,39 @@ export const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETF 全市场盯盘</title>
 <style>
-:root{--bg:#f5f6f8;--bg2:#ffffff;--bg3:#f0f2f5;--line:#e3e6eb;--txt:#15181d;
---txt2:#5b6472;--txt3:#939aa7;--up:#d93a3a;--down:#0e9a61;--accent:#2563eb;
---mono:"SF Mono",Consolas,"Roboto Mono",Menlo,monospace}
+:root{
+/* 表面分三层：页面底、卡片白、卡内凹槽。凹槽用底色区分，不再套第二层边框
+   ——原来衍生品区是 .sec > .futgrid > .mkbox(边框) > .tbl(边框) > table，
+   三层白底三层灰线，眼睛分不出哪层是哪个。 */
+--bg:#eef0f4;--bg2:#ffffff;--surface:#ffffff;
+--bg1:#f1f3f6;--bg3:#f1f3f6;--sunken:#f1f3f6;
+/* 线分三档：卡片边、区块分界、图表网格。原来的 #e3e6eb 对白底只有 1.25:1，
+   等于没画——111 处分隔线在多数屏上是消失的，这也是"看着平"的原因之一。 */
+--line:#d8dde6;--line2:#c6cddb;--grid:#e6e9ef;
+/* 文本按 WCAG AA 反推，不是凭手感调灰。--txt3 原来 #939aa7 只有 2.77:1
+   （bg3 上 2.47:1），却承担了 164 处小标题、注释、表头、坐标轴——
+   10.5px 的字配 2.47:1 的灰，是整页"看着累"的第一成因。 */
+--txt:#15181d;--txt1:#15181d;--txt2:#4b5565;--txt3:#667080;--axis:#667080;
+/* 语义色一个语义只留一组：主色（数字）、ink（字）、bg（底）、line（边）。
+   原来红有 #d93a3a/#c62f34/#b02a2a/#cf2f2f 四套，红底有五种，徽章体系四套并行。 */
+--up:#c62f34;--up-ink:#b02a2a;--up-bg:#fdf2f2;--up-line:#f0d2d4;
+--down:#0b7d55;--down-ink:#0a6b49;--down-bg:#eff8f3;--down-line:#c9e6d8;
+--warn:#96600f;--warn-bg:#fdf6e8;--warn-line:#ecd9b3;
+--accent:#2563eb;--accent-ink:#1d4ed8;--accent-bg:#eef3fe;--accent-line:#c7d7f7;
+/* 字号只留五档。原先 19 档、257 处声明，其中 10.5px 88 处、11.5px 81 处
+   ——主次只差 1px，等于没有层级。 */
+--fs-2xs:11px;--fs-xs:12px;--fs-sm:13px;--fs-md:15px;--fs-lg:20px;
+--lh-tight:1.2;--lh-ui:1.4;--lh-body:1.55;--lh-read:1.7;
+--r-xs:4px;--r-sm:6px;--r-md:10px;--r-lg:14px;--r-pill:999px;
+--s1:4px;--s2:6px;--s3:8px;--s4:12px;--s5:16px;--s6:24px;
+--pad-card:10px 12px;--pad-dense:6px 8px;
+/* 阴影只做「贴纸感」，悬浮才抬起。原来 20 多个卡片容器一个阴影都没有，
+   彼此之间全靠 1px 灰线，所以看着像一张平铺的白纸。 */
+--sh-1:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.04);
+--sh-2:0 2px 6px -1px rgba(16,24,40,.06),0 8px 24px -12px rgba(16,24,40,.16);
+--sh-3:0 24px 64px -16px rgba(16,24,40,.28);
+--mono:"SF Mono",Consolas,"Roboto Mono",Menlo,monospace;
+--sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
 font-variant-numeric:tabular-nums;padding:14px 18px 40px}
@@ -93,7 +123,7 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
    top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
    --navH 由 JS 量出来，区块 scroll-margin-top 和表头 sticky 都引用它。 */
 .secnav{position:sticky;top:0;z-index:6;display:flex;gap:2px;align-items:center;
-  margin:-2px 0 10px;padding:4px 0;background:rgba(245,246,248,.9);
+  margin:-2px 0 10px;padding:4px 0;background:rgba(238,240,244,.92);
   -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
   /* 六项在 375px 上必然溢出，横滑比换行好：换行会把吸顶导航顶成两行，吃掉半屏 */
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
@@ -311,7 +341,7 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .evt{display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed var(--line)}
 .evt:last-child{border-bottom:none;padding-bottom:1px}
 .evt i{width:6px;height:6px;border-radius:50%;margin-top:6px;flex:0 0 auto;background:#c3c9d4}
-.evt.lv3 i{background:#d93a3a}
+.evt.lv3 i{background:var(--up)}
 .evt.lv2 i{background:#e0a12a}
 .evt.lv1 i{background:#9aa3b2}
 .eb{min-width:0}
@@ -382,10 +412,20 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
 .tag:hover{color:var(--txt)}
 .tag.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
 .tag b{font-weight:400;opacity:.6;font-size:10.5px;margin-left:3px}
-.sec{margin-bottom:16px}
-.sechd{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;color:var(--txt2)}
-.sechd b{color:var(--txt);font-size:13.5px;font-weight:600;white-space:nowrap;flex:0 0 auto}
-.sechd .n{color:var(--txt3);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* 区块之间要能"断开"。原来 16px 间距 + 12.5px 标题 + 一排 10.5px 灰字，
+   十二个区块连着往下排，看起来就是一张连续的白纸，找不到从哪开始读。 */
+.sec{margin-bottom:20px}
+.sechd{display:flex;align-items:center;gap:10px;margin-bottom:9px;font-size:var(--fs-xs);color:var(--txt2)}
+.sechd b{color:var(--txt);font-size:var(--fs-md);font-weight:600;white-space:nowrap;flex:0 0 auto;
+letter-spacing:-.1px}
+.sechd .n{color:var(--txt3);font-size:var(--fs-2xs);min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* 「重算 / 刷新」原来在 CSS 里一条规则都没有，长得跟正文灰字一样，
+   六个区块上都有、没一个看得出能点。补成最低限度的按钮样子。 */
+.sync{cursor:pointer;font-size:var(--fs-2xs);color:var(--txt3);padding:2px 8px;
+border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);
+user-select:none;transition:background .15s,border-color .15s,color .15s}
+.sync:hover{color:var(--accent-ink);border-color:var(--accent-line);background:var(--accent-bg)}
+.sync:active{transform:translateY(.5px)}
 /* 模块时间标记：「数据时点」是数据本身的时刻，「算于」是本地算完的时刻，两者常差几十秒 */
 .sechd .n .tsm{white-space:nowrap;font-variant-numeric:tabular-nums}
 /* overflow 用 clip 不用 hidden：hidden 会把 .tbl 变成滚动容器，theadd 的
@@ -1242,7 +1282,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:11.5px;user-select:none}
 .abtn:hover{border-color:#c3cad8}
 .abtn.on{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
-.abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#d93a3a;
+.abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--up);
   margin-right:4px;vertical-align:1px}
 .aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:11.5px}
 .aset.show{display:inline-flex}
@@ -1278,6 +1318,38 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 #alertLog .li em{font-style:normal;color:var(--txt3);font-variant-numeric:tabular-nums;flex:none}
 #alertLog .li i{font-style:normal;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #alertLog .le{padding:18px 11px;text-align:center;color:var(--txt3);font-size:12.5px;line-height:1.6}
+
+/* ---------- 卡片基线（后写覆盖，不删任何类名） ----------
+   页面里有 14 个"白底 + 1px 边框 + 圆角"的容器，圆角 7/8/9、内边距各不相同，
+   彼此之间又没有底色差和阴影——结果就是二十几个方块糊在一张白纸上，看不出
+   哪一块是一个单元。这里用一条共用规则把它们对齐，各容器只保留 padding 差异。
+
+   为什么不删类名合并成一个：这些类名字符串散在 8800 行渲染函数里
+   （class="mkbox" 8 处、scq 25 处、snt 29 处），删一个就得改半个文件。
+   放在 </style> 之前 = 同权重后写胜出，零 DOM 改动。
+   但注意：padding / font-size / display 不写在这里，末尾规则会反过来
+   覆盖掉媒体查询里的移动端降级。 */
+.card,.oncard,.mkbox,.evtbox,.portbox,.dcard,.strend,.scq,.snt,
+.trigrule,.labchart,.scell,.qcell,.tbl{
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-md);box-shadow:var(--sh-1)}
+/* 表格不参与抬升：它要的是"嵌在卡里的一块"，不是浮起来的一张卡。
+   clip 而不是 hidden——hidden 会让 .tbl 变成滚动容器，表头吸顶就地失效。 */
+.tbl{overflow:clip;box-shadow:none}
+/* 卡里套表不再给第二层框。衍生品区原来是
+   .sec(底) > .futgrid > .mkbox(边框) > .tbl(边框) > table，三层白底三层灰线，
+   眼睛根本分不清哪层是哪个——现在压成一层。 */
+.futgrid .mkbox .tbl{border:0;border-radius:0;background:transparent}
+/* 凹陷层：卡内的小格用底色区分，不再加第二道边框。
+   板块地图有三十多格，全做成白卡就成了三十个小白方块，碎得没法看——
+   它们是一张密度图里的格子，不是三十张卡。持仓四格同理。 */
+.qcell,.labchart,.hind .i,.rsk .i,.dchip,
+.scell{background:var(--sunken);border-color:var(--line)}
+.scell,.qcell{border-radius:var(--r-sm)}
+/* 只有能点的卡才允许抬头。全站都加 hover 会把"可交互"这个信号稀释掉。
+   格子抬头时翻成白底，跟"选中/聚焦"的直觉一致。 */
+.dcard:hover{box-shadow:var(--sh-2);border-color:var(--line2)}
+.scell:hover{background:var(--surface);box-shadow:var(--sh-2);border-color:var(--line2)}
 </style>
 </head>
 <body>
@@ -5741,7 +5813,7 @@ function renderHold(j){
     var bar = '';
     if (wpc > 0){
       bar = r.ctr > 0
-        ? '<u style="left:50%;width:' + wpc.toFixed(1) + '%;background:#d93a3a"></u>'
+        ? '<u style="left:50%;width:' + wpc.toFixed(1) + '%;background:var(--up)"></u>'
         : '<u style="right:50%;width:' + wpc.toFixed(1) + '%;background:#0e9a61"></u>';
     }
     buf.push('<div class="hhrow" data-s="' + esc(r.c) + '" title="' + esc(r.n) + ' ' + r.c
@@ -6849,7 +6921,7 @@ function renderLab(){
   // ---- 净值 ----
   h += '<div class="labchart">'
     + '<div class="lablg">'
-    + '<span><i style="background:#d93a3a"></i>PE 单因子（做多前 20%）</span>'
+    + '<span><i style="background:var(--up)"></i>PE 单因子（做多前 20%）</span>'
     + '<span><i style="background:#5b6472"></i>' + U.n_idx + ' 个指数等权</span>'
     + '<span style="margin-left:auto;color:var(--txt3)">持有 20 日 · 双边各 5bp</span></div>'
     + labSvg(L.pe.nav)
