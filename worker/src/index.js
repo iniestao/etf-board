@@ -2,6 +2,8 @@ import { HTML } from './page.js';
 import { IDX_GROUPS } from './idx_data.js';
 import { MKT_HIST } from './mkt_hist.js';
 import { MKT_IND_NAMES, MKT_IND_OF, MKT_IND_MEM, MKT_STK_NAME } from './mkt_ind.js';
+import { SENTI_HIST } from './senti_hist.js';
+import { SENTI_BASE } from './senti_base.js';
 
 /**
  * ETF 全市场行情 API —— Cloudflare Worker
@@ -2253,6 +2255,16 @@ async function mktSinaBatch(codes) {
       f2: last,     // 现价。全 A 聚合用不上，行业成分股那张表要显示，顺手带着
       f6: +f[9] || 0,
       f124: 0,      // 下面按批统一填，见 dsec
+      /* ---- 涨跌停判定要的四列（只有 /api/senti 用，aggLive 不读）----
+         东财 clist 有对应列的沿用真编号，盘口这两列东财没有，用显式名。
+         注意 f20/f21 在东财是市值，绝不能借来当买一价/卖一价。 */
+      f15: +f[4] || 0,   // 最高（东财 clist f15 = 最高）
+      f18: prev,         // 昨收（东财 clist f18 = 昨收）
+      b1: +f[6] || 0,    // 买一价
+      b1v: +f[10] || 0,  // 买一量（股）
+      a1: +f[7] || 0,    // 卖一价（封死为 0）
+      // GBK 中文解成 utf-8 之后是乱码，但 ST 是 ASCII 字节，能完好保留
+      st: /^\*?ST/.test(f[0]) ? 1 : 0,
     });
   }
   const dsec = day ? Date.parse(day + 'T00:00:00+08:00') / 1000 : 0;
@@ -2367,6 +2379,169 @@ function aggLive(rows) {
     p5: amt > 0 ? tail / amt * 100 : 0,
     top3, top3p, top3a,
   };
+}
+
+/* ---------------------------------------------------------------- 情绪取数
+   5223 行的全 A 快照 /api/mkt 和 /api/senti 都要。不共用就是 16 个子请求，
+   免费版子请求上限 50，一次抖动就可能超。所以这里做 isolate 级单飞 memo：
+   30 秒 TTL、并发时共用同一个 promise、失败不入 memo（否则一次抖动会被
+   钉死 30 秒，而那正好是盘中要看的 30 秒）。
+
+   内存：5223 × 12 属性 ≈ 1 MB/isolate，远低于 128 MB 上限。
+   ?t=raw / ?t=sentiraw 刻意不走 memo——诊断要看到真实的上游耗时。 */
+let _aAllAt = 0, _aAllVal = null, _aAllWait = null;
+async function aAllMemo() {
+  if (_aAllVal && Date.now() - _aAllAt < 30000) return _aAllVal;
+  if (_aAllWait) return _aAllWait;
+  const p = fetchAAll()
+    .then((v) => { _aAllVal = v; _aAllAt = Date.now(); return v; })
+    .catch((e) => { _aAllVal = null; throw e; })
+    .finally(() => { if (_aAllWait === p) _aAllWait = null; });
+  _aAllWait = p;
+  return p;
+}
+
+/* 涨跌幅限制。20cm 是 688/300/301/302 —— 科创、创业板的 ST 仍是 20%；
+   只有「主板 + ST/*ST」才是 5%。
+   与 pipeline/gen_mkt_hist.mjs 里那份必须一致，否则盘中的「今天」和历史
+   「那一刻」不是同一把尺子。（管线那边刻意忽略 isSt，因为历史 ST 状态不可回溯，
+   而这里用的是当天简称，是准的——两边差异只影响几只 ST 票，且方向一致。） */
+function sentiRate(code, isSt) {
+  const s3 = code.slice(0, 3);
+  if (s3 === '688' || s3 === '300' || s3 === '301' || s3 === '302') return 0.20;
+  return isSt ? 0.05 : 0.10;
+}
+
+/** 情绪聚合：单遍扫 5223 行，三类指标一次出。
+ *
+ *  A 类（昨日涨停池今日表现）：样本 N 在盘中固定不变，这是它 09:35 就能定调的
+ *    根本原因——红盘率偏差 ≤10pt、大面率二元性极强（0% vs 16~30%）。
+ *  B 类（封板率）：分子分母同为「到此刻」的累积量，比值抗时间，可直接看绝对值。
+ *  C 类（涨停 / 炸板 / 跌停家数）：单向累积，盘中绝对值没有意义，只能同刻对标。
+ *
+ *  yzt / ydt 是「昨日」的两个池（来自 senti_hist.js）。传空就是样本不足，
+ *  此时 A 类整块为 null —— 绝不填 0，0 会被读成「冰点」，是完全相反的信息。
+ *
+ *  wantList 时才拼三份名单：默认不拼，免费版 CPU 只有 10ms。
+ */
+function aggSenti(rows, yzt, ydt, wantList, useSt) {
+  const ymap = yzt instanceof Map ? yzt : new Map(yzt || []);
+  const yset = ydt instanceof Set ? ydt : new Set(ydt || []);
+  const ps = [];                    // 昨涨停池成员的今日涨跌幅，用于中位数
+  let n = 0, halt = 0, zt = 0, touch = 0, dtN = 0, diag = 0;
+  let pn = 0, pRed = 0, pBig = 0, pPromo = 0, pTouch = 0;
+  let dn = 0, dRed = 0, dStill = 0;
+  let mx = 0;
+  const tiers = [0, 0, 0, 0, 0, 0, 0, 0];   // 1..7 板，index 7 = 8 板及以上
+  const ztL = wantList ? [] : null, zbL = wantList ? [] : null, dtL = wantList ? [] : null;
+  const dayKey = [], dayCnt = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const t = r.f124;
+    if (t > 0) {                    // 众数日，与 aggLive 同一套 8 格线性表
+      const dk = Math.floor((t + 8 * 3600) / 86400);
+      const at = dayKey.indexOf(dk);
+      if (at >= 0) dayCnt[at]++;
+      else if (dayKey.length < 8) { dayKey.push(dk); dayCnt.push(1); }
+    }
+    const amt = +r.f6, last = +r.f2, prev = +r.f18;
+    /* 停牌必须显式排除，且必须在判涨跌停之前。last=0 时 lastC=0 恒 <= 跌停价，
+       不挡的话全部停牌股都会被算成跌停——实测这条会让跌停家数直接翻倍，
+       连带污染封板率和「昨日跌停池仍跌停」。 */
+    if (!(amt > 0) || !(last > 0) || !(prev > 0)) { halt++; continue; }
+    n++;
+
+    const pct = +r.f3;              // 百分比，10.0 = +10%
+    /* useSt 为 false 时不看简称的 ST。收盘后回看历史那天，「今天的简称」和
+       「那天的简称」可能不是一回事（11-13 之后才戴帽的票，简称里已经带了 ST，
+       按 5% 判会把 -6% 的下跌算成跌停）。此时必须和 250 天日线口径一致——
+       那边也是忽略 ST 的，否则名单条数会和卡片上的家数对不上（实测 44 vs 39）。
+       盘中则相反：当天的 ST 就写在当天简称里，必须判 5%。 */
+    const rate = sentiRate(r.f12, useSt ? r.st : 0);
+    const prevC = Math.round(prev * 100), lastC = Math.round(last * 100);
+    const limUp = Math.round(prevC * (1 + rate));
+    const limDn = Math.round(prevC * (1 - rate));
+    // 新股首日 / 复牌跳空没有涨跌幅限制，幅度能到 ±40%，超出 1.6 倍一律不计
+    const band = pct <= rate * 160 && pct >= -rate * 160;
+
+    /* 判定走整数分：round(昨收×1.05, 2) 在 x.xx5 边界会因二进制误差低一分
+       （2.90×1.05=3.045 → 304 而不是 305），浮点容差必然错几只。
+       再加一条强信号：卖一为空 + 买一有量 + 距涨停价 0.6pt 以内，无条件判封死。
+       这条是兜底，用来绕开 rate 判断错（ST 摘帽当天）与 round 的全部风险。 */
+    const isZt = (band && lastC >= limUp)
+      || (band && r.a1 === 0 && r.b1 > 0 && pct >= rate * 100 - 0.6);
+    const isDt = (band && lastC <= limDn)
+      || (band && r.b1 === 0 && r.a1 > 0 && pct <= -rate * 100 + 0.6);
+    // 涨停必然触板，但脏数据里偶有最高价 < 现价，所以两个条件取或
+    const isTouch = isZt || (band && Math.round((+r.f15 || last) * 100) >= limUp);
+    /* 诊断：涨幅与「涨停价换算出的涨幅」差在 0.02pt 以内却没判成涨停。
+       这是 round 到分或 rate 判错的信号，正常必须为 0。只在 ?t=senti 里看。 */
+    if (!isZt && Math.abs(pct - (limUp / prevC - 1) * 100) < 0.02) diag++;
+
+    const lbY = ymap.get(r.f12);    // 昨日连板数，undefined = 昨日没涨停
+    if (isZt) {
+      zt++;
+      const lb = lbY ? lbY + 1 : 1;
+      if (lb > mx) mx = lb;
+      tiers[lb >= 8 ? 7 : lb - 1]++;
+      if (ztL) ztL.push({ c: r.f12, n: MKT_STK_NAME[r.f12] || '', p: +pct.toFixed(2),
+        px: last, a: amt, lb, seal: +(r.b1 * r.b1v).toFixed(0) });
+    } else if (isTouch && zbL) {
+      zbL.push({ c: r.f12, n: MKT_STK_NAME[r.f12] || '', p: +pct.toFixed(2), px: last, a: amt,
+        lb: lbY || 0, seal: +(r.b1 * r.b1v).toFixed(0) });
+    }
+    if (isTouch) touch++;
+    if (isDt) {
+      dtN++;
+      if (dtL) dtL.push({ c: r.f12, n: MKT_STK_NAME[r.f12] || '', p: +pct.toFixed(2), px: last, a: amt });
+    }
+
+    if (lbY) {
+      pn++;
+      ps.push(pct);
+      if (pct > 0) pRed++;
+      if (pct <= -7) pBig++;
+      if (isZt) pPromo++;
+      if (isTouch) pTouch++;
+    }
+    if (yset.has(r.f12)) {
+      dn++;
+      if (pct > 0) dRed++;
+      if (isDt) dStill++;
+    }
+  }
+  if (!n) return null;
+
+  let best = -1, bc = 0;
+  for (let i = 0; i < dayKey.length; i++) if (dayCnt[i] > bc) { bc = dayCnt[i]; best = dayKey[i]; }
+  const day = best < 0 ? '' : new Date(best * 86400e3).toISOString().slice(0, 10);
+
+  ps.sort((a, b) => a - b);
+  const mid = ps.length
+    ? (ps.length % 2 ? ps[(ps.length - 1) >> 1] : (ps[ps.length / 2 - 1] + ps[ps.length / 2]) / 2)
+    : null;
+
+  const out = {
+    day, n, halt,
+    zt, touch, zb: Math.max(0, touch - zt), dt: dtN, diag,
+    seal: touch > 0 ? zt / touch : null,
+    ladder: { t: tiers, mx },
+    prem: pn ? {
+      n: pn,
+      red: pRed / pn,
+      big: pBig / pn,
+      mid: +mid.toFixed(2),
+      promo: pPromo,
+      touchN: pTouch,
+    } : null,
+    /* 昨日跌停池：样本 0 是常态（普涨日全市场 0 家跌停），此时整块 null，
+       前端写「昨日无跌停」而不是 0%——那会被读成「一只都没翻身」。 */
+    yprem: dn ? { n: dn, red: dRed / dn, still: dStill / dn } : null,
+  };
+  if (wantList) out.list = { zt: ztL, zb: zbL, dt: dtL };
+  return out;
 }
 
 /** live 值 + 历史序列。历史里若已经有今天（管线提前跑过），切掉尾巴，
@@ -2509,7 +2684,8 @@ async function serveMkt(env, ctx) {
 
   let live = null, err = '';
   try {
-    const got = await fetchAAll();
+    // 走 isolate 级 memo：/api/senti 与它共用这 5223 行，不共用就是 16 个子请求
+    const got = await aAllMemo();
     const agg = aggLive(got.rows);
     if (!agg) err = '无有效成交';
     else if (agg.day !== clock.day) err = '数据归属 ' + agg.day + '，不是今天（休市？）';
@@ -2557,8 +2733,312 @@ async function serveMkt(env, ctx) {
   return serveMktStatic(env, ctx, err);
 }
 
-/** 盘中这条链唯一的诊断口。上线后先打 ?t=raw：它会顺带跑一遍聚合并计时，
- *  一次就能回答三个问题——CF 出口能不能连 push2delay、pz=6000 是否被接受、
+/* ---------------------------------------------------------------- 情绪端点
+   /api/senti 回答一个问题：**现在这个时刻，情绪是强还是弱。**
+
+   三类指标混在一张卡上，但用法完全不同（详细口径见 aggSenti 的注释）：
+     A 类 昨日涨停池今日表现 —— 样本盘中固定，09:35 就能定调，直接看绝对值
+     B 类 封板率             —— 分子分母同为累积量，抗时间，直接看绝对值
+     C 类 涨停/炸板/跌停家数  —— 单向累积，必须与「历史同一时刻」并列才有意义
+
+   历史基准有两个来源，各管一段：
+     senti_hist.js  250 天日线回算 → A 类分布 + 昨日两池（主力）
+     senti_base.js  东财 15 天同刻曲线 → 只有「曾触板」一条（C 类的对照物）
+
+   为什么跌停没有同刻对照：跌停池只有 lbt（最后封板时间），没有 fbt。
+   lbt<=t 等价于「t 时刻跌停且此后再没开过板」，是严格下界——11-13 收盘 33 家
+   里 26 家开过板，10:00 重建值只有 2。拿下界当基准，会让盘中真实的 5 家显示成
+   「比历史多 150%」，方向恰好是最坏的假恐慌。所以跌停只报绝对值，恶化程度交给
+   「昨日跌停池今日表现」（A 类，样本固定）。 */
+
+let _sentiH = { at: 0, h: null };
+async function sentiHist(env) {
+  if (_sentiH.h && Date.now() - _sentiH.at < 60000) return _sentiH.h;
+  let h = null;
+  try {
+    if (histSource(env)) {
+      const a = await readAsset(env, 'senti_hist.json');
+      if (a) {
+        const j = JSON.parse(await a.text());
+        // 只认自家口径（与 mktBase 同样的理由：换口径当天 data 分支上还是旧的）
+        if (j && Array.isArray(j.d) && j.d.length >= 60 && j.cVer === 'senti-v1') h = j;
+      }
+    }
+  } catch (e) { /* 读不到就用内联那份，卡片不能因此空掉 */ }
+  if (!h && SENTI_HIST && Array.isArray(SENTI_HIST.d) && SENTI_HIST.d.length >= 60) h = SENTI_HIST;
+  if (h) _sentiH = { at: Date.now(), h };
+  return h;
+}
+
+/** 历史表新鲜度：昨日两个池的收盘价 vs 今日行情的「昨收」。
+ *
+ *  为什么不用日历日差：春节/国庆连休 9 天，日历差必然误杀；而「池内票今天的
+ *  昨收等于它们上一交易日的收盘」这一条在任何休市长度下都成立。
+ *  阈值取 75% 而不是 100%：当日除权的票，行情给的昨收是除权后的价，与探针
+ *  存的除权前收盘对不上，这类票在池里通常有个位数。 */
+function sentiProbe(rows, H) {
+  const zpx = (H && H.zpx) || {};
+  const codes = Object.keys(zpx);
+  if (!codes.length) return { ok: false, hit: 0, n: 0 };
+  let hit = 0, n = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const want = zpx[r.f12];
+    if (want === undefined) continue;
+    const prev = +r.f18;
+    if (!(prev > 0)) continue;
+    n++;
+    if (Math.abs(prev - want) < 0.015) hit++;
+  }
+  return { ok: n >= 5 && hit / n >= 0.75, hit, n };
+}
+
+/** 同刻基准：取 at 里 <= 当前时刻的最后一档，横跨所有历史日取中位与极值。
+ *  n=15 天时 min/max 是最不稳的两个次序统计量，但它们真实发生过——用户看到
+ *  「41（27–51）」会自然理解成「波动大」，比一个孤零零的中位数更难被误读。 */
+function sentiRef(mins) {
+  const B = SENTI_BASE;
+  if (!B || !Array.isArray(B.days) || !B.days.length) return null;
+  const hh = Math.floor(mins / 60), mm = mins % 60;
+  const t = hh * 10000 + mm * 100;
+  let j = -1;
+  for (let i = 0; i < B.at.length; i++) if (B.at[i] <= t) j = i;
+  if (j < 0) return null;
+  const v = B.touch.map((row) => row[j]).sort((a, b) => a - b);
+  const n = v.length;
+  return { at: B.at[j], n, med: v[(n - 1) >> 1], lo: v[0], hi: v[n - 1] };
+}
+
+/** 规则式状态判定。不用 0-100 加权分：各项的时间偏方向不一致（封板率 3 天
+ *  偏高 1 天偏低），一组固定权重不可能同时标定盘中与收盘。
+ *  按顺序匹配，第一条命中即生效，并把触发依据原样带出去——状态灯点开就能看到
+ *  「为什么是退潮」，而不是一个说不清来源的分数。
+ *  入参全是 0..1 比例；任何一项缺失就让判定降级，绝不拿 0 冒充。 */
+function sentiState(o) {
+  const why = [];
+  if (!o.prem) return { state: null, why: ['昨日涨停池样本不足，无法判定'] };
+  const red = o.prem.red, big = o.prem.big;
+  /* 昨日跌停池样本小于 10 只时不用它判档：5 只里 1 只继续跌停就是 20%，
+     噪声大到能左右状态灯。样本不足就当没有这个条件。 */
+  const still = (o.yprem && o.yprem.n >= 10) ? o.yprem.still : null;
+  const pc = (x) => Math.round(x * 100) + '%';
+
+  /* 跌停家数**不**作为独立触发条件。它是盘中系统性偏低的量（11-13 到 09:35
+     才 2 家、收盘 39 家），拿它一票否决会让收盘的常态（近 15 天有 4 天 > 20 家）
+     天天变成「冰点」。它只作为 why 里的一条补充证据，状态仍由 A 类定。 */
+  if (red < 0.30 && (big >= 0.30 || (still != null && still >= 0.60))) {
+    if (red < 0.30) why.push('昨涨停今日红盘 ' + pc(red) + ' < 30%');
+    if (big >= 0.30) why.push('大面 ' + pc(big) + ' ≥ 30%');
+    if (still != null && still >= 0.60) why.push('昨跌停仍跌停 ' + pc(still) + ' ≥ 60%');
+    if (o.dt >= 20) why.push('跌停 ' + o.dt + ' 家');
+    return { state: '冰点', why };
+  }
+  const mxBreak = o.yMx > 0 && o.ladder && o.ladder.mx < o.yMx;
+  if (red < 0.45 && (big >= 0.15 || mxBreak)) {
+    why.push('昨涨停今日红盘 ' + pc(red) + ' < 45%');
+    if (big >= 0.15) why.push('大面 ' + pc(big) + ' ≥ 15%');
+    if (mxBreak) why.push('最高板 ' + o.yMx + ' → ' + o.ladder.mx + '，断板');
+    if (o.dt >= 20) why.push('跌停 ' + o.dt + ' 家（偏多）');
+    return { state: '退潮', why };
+  }
+  if (red >= 0.65 && big < 0.05 && o.prem.promo >= o.yPromo) {
+    why.push('昨涨停今日红盘 ' + pc(red) + ' ≥ 65%');
+    why.push('大面 ' + pc(big) + ' < 5%');
+    why.push('晋级 ' + o.prem.promo + ' 家 ≥ 昨日 ' + o.yPromo + ' 家');
+    return { state: '发酵', why };
+  }
+  if (red >= 0.55 && big < 0.10) {
+    why.push('昨涨停今日红盘 ' + pc(red) + ' ≥ 55%');
+    why.push('大面 ' + pc(big) + ' < 10%');
+    return { state: '修复', why };
+  }
+  why.push('红盘 ' + pc(red) + '、大面 ' + pc(big) + '，不满足任何档位的阈值');
+  if (o.dt >= 20) why.push('跌停 ' + o.dt + ' 家（偏多，但涨跌停家数盘中不可比，不单独定档）');
+  return { state: '分歧', why };
+}
+
+/** 收盘态：全部读 250 天回算的最后一天，不碰上游。
+ *  梯队用 zpool 里的连板数重建——senti_hist 没单独存梯队，但它存了逐只 lbc。 */
+function sentiPackClose(H, note) {
+  const i = H.d.length - 1;
+  const zt = H.zt[i], touch = H.touch[i], dt = H.dt[i];
+  const pool = H.zpool[H.d[i]] || [];
+  /* 「昨日」必须取 d[i-1] 的池，不能拿 zpool[lastDay]——收盘态时 lastDay 就是
+     今天，用它当昨日会把今天的最高板拿去和今天的最高板比，断板永远不成立。 */
+  const yPool = H.zpool[H.d[i - 1]] || [];
+  let yMx = 0, yPromo = 0;
+  for (const it of yPool) {
+    const lb = it[1] || 1;
+    if (lb > yMx) yMx = lb;
+    if (lb >= 2) yPromo++;
+  }
+  const tiers = [0, 0, 0, 0, 0, 0, 0, 0];
+  let mx = 0;
+  for (const it of pool) {
+    const lb = it[1] || 1;
+    if (lb > mx) mx = lb;
+    tiers[lb >= 8 ? 7 : lb - 1]++;
+  }
+  const pn = H.pn[i] || 0, ydn = H.ydtN[i] || 0;
+  const out = {
+    ok: true, mode: 'close', d: H.d[i], histDay: H.lastDay, snapAt: '',
+    zt, touch, zb: Math.max(0, touch - zt), dt,
+    seal: touch > 0 ? +(zt / touch).toFixed(3) : null,
+    ladder: { t: tiers, mx },
+    prem: pn ? {
+      n: pn,
+      red: +(H.red[i] / 10).toFixed(1),
+      big: +(H.big[i] / 10).toFixed(1),
+      mid: +(H.mid[i] / 100).toFixed(2),
+      promo: H.promo[i], touchN: H.touchN[i],
+    } : null,
+    yprem: ydn ? {
+      n: ydn,
+      red: +(H.ydtRed[i] / 10).toFixed(1),
+      still: +(H.ydtStill[i] / 10).toFixed(1),
+    } : null,
+    yMx, yPromo,
+    ref: null, src: 'hist',
+  };
+  // 收盘态没有同刻可对标的东西（它自己就是收盘），ref 一律 null
+  const st = sentiState({
+    prem: pn ? { red: H.red[i] / 1000, big: H.big[i] / 1000, promo: H.promo[i] } : null,
+    yprem: ydn ? { still: H.ydtStill[i] / 1000 } : null,
+    dt, ladder: out.ladder, yMx, yPromo,
+  });
+  out.state = st.state; out.why = st.why;
+  if (note) out.note = String(note).slice(0, 200);
+  return out;
+}
+
+async function serveSenti(env, ctx, url) {
+  const clock = mktClock();
+  const H = await sentiHist(env);
+  if (!H) return json({ ok: false, code: 'NO_SENTI', error: '情绪历史还没有生成' }, 60);
+
+  const listKind = (url && url.searchParams.get('list') || '').trim();
+  const histIdx = H.d.length - 1;
+
+  /* 「昨日」是哪一天，得分两种情形取，差一天就全错：
+       live（交易时段）   H.lastDay 就是上一交易日，直接用它
+       收盘 / 休市        今天的数据就是 H.d[histIdx]，昨日要往前挪一天
+     判据用 phase 与 lastDay 两个条件而不是只看 phase：15:05–20:00 这段
+     phase 还是 settle，但历史表可能已经跑到今天了。 */
+  const dataIsHist = clock.phase === 'closed' || H.lastDay === clock.day;
+  const yDay = dataIsHist ? H.d[histIdx - 1] : H.lastDay;
+  const yPool = H.zpool[yDay] || [];
+  let yMx = 0, yPromo = 0;
+  for (const it of yPool) {
+    const lb = it[1] || 1;
+    if (lb > yMx) yMx = lb;
+    if (lb >= 2) yPromo++;
+  }
+  const ydtPool = H.dpool[yDay] || [];
+
+  /* 收盘或「历史最新已经就是今天」→ 静态。后者发生在管线 15:05 之后先跑完、
+     而此刻仍是 live 段（15:05 前后那几分钟）：此时现算与静态是同一个数，
+     再打一遍上游纯属浪费。
+
+     但点名单是例外：senti_hist 里只存了代码和连板，没有当日涨跌幅、封单额，
+     所以收盘态的名单只能现拉一次行情。用户点开才付这 8 个子请求，不点不付。 */
+  if (dataIsHist && !listKind) {
+    return json(sentiPackClose(H), clock.phase === 'live' ? 30 : 120);
+  }
+
+  const cache = await getCache();
+  // 收盘态的名单按「哪一天的名单」缓存，否则周末两天会互相覆盖
+  const cacheDay = dataIsHist ? H.lastDay : clock.day;
+  const key = new Request('https://etf-board.internal/senti/v1/'
+    + cacheDay + (listKind ? '/' + listKind : ''), { method: 'GET' });
+  if (cache) {
+    try { const hit = await cache.match(key); if (hit) return hit; } catch (e) { /* 忽略 */ }
+  }
+
+  let agg = null, err = '';
+  try {
+    const got = await aAllMemo();
+    const pr = sentiProbe(got.rows, H);
+    /* 收盘态不做探针：探针比的是「池内票今天的昨收 vs 历史表最后一天的收盘」，
+       这个等式只在盘中成立。周六打开页面时，行情本身就是 11-13 收盘价、
+       昨收是 11-12，自然 0 命中——那不是历史过期，是问错了问题。
+       收盘态的「昨日池」已经按 d[N-2] 取好了，直接信它。 */
+    if (dataIsHist || pr.ok) {
+      agg = aggSenti(got.rows, new Map(yPool), new Set(ydtPool), !!listKind, !dataIsHist);
+    } else {
+      /* 历史表不是上一交易日 → 承接/梯队/晋级整块降级，但家数和封板率照出。
+         这一条宁可显示「—」也不能猜：拿两周前的池算今日承接，得到的是一个
+         看起来很正常的假数字。 */
+      agg = aggSenti(got.rows, null, null, !!listKind, !dataIsHist);
+      err = '历史表停在 ' + H.lastDay + '（探针命中 ' + pr.hit + '/' + pr.n
+        + '），承接指标已降级';
+    }
+    /* 数据归属允许两种：今天的实时行情，或历史表最后一天（收盘后再点名单）。
+       其余一律作废——否则周六点名单会拿周五的行情冒充今天。 */
+    if (agg && agg.day !== clock.day && agg.day !== H.lastDay) {
+      err = '数据归属 ' + agg.day + '，既不是今天也不是历史表最后一天';
+      agg = null;
+    } else if (agg && agg.n < 1500) {
+      err = '有效成交只有 ' + agg.n + ' 只（集合竞价？）';
+      agg = null;
+    }
+  } catch (e) {
+    err = String((e && e.message) || e);
+  }
+
+  if (!agg) {
+    // 上游不给：退回静态日档，note 说明原因。绝不返回 0。
+    return json(sentiPackClose(H, err), 20);
+  }
+
+  const isLive = agg.day === clock.day;
+  // 同刻基准只对「盘中此刻」有意义；收盘态它自己就是终点，没有可比的那一刻
+  const ref = isLive ? sentiRef(clock.mins) : null;
+  const out = {
+    ok: true, mode: isLive ? 'live' : 'close', d: agg.day,
+    snapAt: isLive ? clock.hhmm : '', histDay: H.lastDay,
+    n: agg.n, halt: agg.halt,
+    zt: agg.zt, touch: agg.touch, zb: agg.zb, dt: agg.dt,
+    seal: agg.seal == null ? null : +agg.seal.toFixed(3),
+    ladder: agg.ladder,
+    prem: agg.prem && {
+      n: agg.prem.n,
+      red: +(agg.prem.red * 100).toFixed(1),
+      big: +(agg.prem.big * 100).toFixed(1),
+      mid: agg.prem.mid,
+      promo: agg.prem.promo, touchN: agg.prem.touchN,
+    },
+    yprem: agg.yprem && {
+      n: agg.yprem.n,
+      red: +(agg.yprem.red * 100).toFixed(1),
+      still: +(agg.yprem.still * 100).toFixed(1),
+    },
+    yMx, yPromo, ref, src: 'sina',
+  };
+  if (err) out.note = err;
+
+  const st = sentiState({
+    prem: agg.prem,
+    yprem: agg.yprem,
+    dt: agg.dt, ladder: agg.ladder, yMx, yPromo,
+  });
+  out.state = st.state; out.why = st.why;
+
+  if (listKind && agg.list) {
+    const arr = (agg.list[listKind] || []).slice();
+    // 涨停按封单额降序：真封和虚封一眼分（2 亿封单和 20 万封单不是一件事）
+    if (listKind === 'zt') arr.sort((p, q) => q.seal - p.seal);
+    else arr.sort((p, q) => q.a - p.a);
+    out.list = { kind: listKind, items: arr.slice(0, 200) };
+  }
+
+  const res = json(out, clock.phase === 'live' ? 30 : 120);
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, res.clone()).catch(() => {}));
+  }
+  return res;
+}
+
+/** 盘中这条链唯一的诊断口。上线后先打 ?t=raw：它会顺带跑一遍聚合并计时， *  一次就能回答三个问题——CF 出口能不能连 push2delay、pz=6000 是否被接受、
  *  5200 只的聚合吃多少 CPU。 */
 async function serveMktProbe(url, env) {
   const t = url.searchParams.get('t') || 'raw';
@@ -2733,6 +3213,65 @@ async function serveMktProbe(url, env) {
     ];
     const agg = aggLive(fixture);
     return json({ ok: true, t, clock, fixture: fixture.length, agg });
+  }
+
+  /* 情绪判定的离线单测：7 只固定样本，把「哪种情形该判涨停」钉死。
+     这几条是最容易错的地方——主板 ST 是 5% 而创业板 ST 仍是 20%、5% 涨幅的
+     普通票不是涨停、停牌股不能算跌停、炸板不算涨停但要算曾触板。
+     改 sentiRate 或判定顺序时先看这里有没有变红。 */
+  if (t === 'senti') {
+    const now = Math.floor(Date.now() / 1000);
+    const mk = (code, prev, last, high, pct, st, extra) => ({
+      f12: code, f2: last, f18: prev, f15: high, f3: pct, f6: 1e8,
+      f124: now, b1: last, b1v: 1e6, a1: 0, st: st ? 1 : 0, ...extra,
+    });
+    const fixture = [
+      mk('600000', 10.00, 11.00, 11.00, 10.0, 0),                       // 10cm 涨停
+      mk('300001', 10.00, 12.00, 12.00, 20.0, 0),                       // 20cm 涨停
+      mk('600001', 10.00, 10.50, 10.50, 5.0, 1),                        // 主板 ST 5% 涨停
+      mk('600002', 10.00, 10.50, 10.60, 5.0, 0, { a1: 10.51, b1: 10.49 }), // 5% 坑股：不该判涨停
+      mk('600003', 10.00, 10.30, 11.00, 3.0, 0, { a1: 10.29, b1: 10.28 }), // 炸板：触板未封
+      mk('600004', 10.00, 0, 0, 0, 0, { f6: 0, f2: 0, a1: 0, b1: 0 }),   // 停牌：不能算跌停
+      mk('300002', 10.00, 10.50, 10.60, 5.0, 1, { a1: 10.51, b1: 10.49 }), // 创业 ST 仍 20%，+5% 不涨停
+    ];
+    const yzt = new Map([['600000', 1], ['600002', 2]]);
+    const agg = aggSenti(fixture, yzt, new Set(), true, true);
+    const want = { zt: 3, zb: 1, dt: 0, n: 6, halt: 1, diag: 0 };
+    const bad = Object.keys(want).filter((k) => agg[k] !== want[k])
+      .map((k) => k + ': ' + agg[k] + ' ≠ ' + want[k]);
+    if (agg.prem && agg.prem.n !== 2) bad.push('prem.n: ' + agg.prem.n + ' ≠ 2');
+    return json({ ok: !bad.length, t, clock, want, got: {
+      zt: agg.zt, zb: agg.zb, dt: agg.dt, n: agg.n, halt: agg.halt, diag: agg.diag,
+      seal: agg.seal, ladder: agg.ladder, prem: agg.prem,
+    }, bad });
+  }
+
+  /* 真实数据的情绪聚合：与 /api/senti 同一路径，但不吃缓存、不走 memo，
+     用来量 aggSenti 到底吃多少 CPU（免费版 10ms，超过 3ms 就要拆请求）。 */
+  if (t === 'sentiraw') {
+    const H = await sentiHist(env);
+    if (!H) return json({ ok: false, t, error: '情绪历史还没有生成' });
+    const yPool = H.zpool[H.lastDay] || [];
+    const ydtPool = H.dpool[H.lastDay] || [];
+    const t1 = Date.now();
+    try {
+      const got = await aAllMemo();
+      const t2 = Date.now();
+      const pr = sentiProbe(got.rows, H);
+      const agg = aggSenti(got.rows, pr.ok ? new Map(yPool) : null,
+        pr.ok ? new Set(ydtPool) : null, true,
+        !(clock.phase === 'closed' || clock.day === H.lastDay));
+      return json({ ok: true, t, clock, histDay: H.lastDay,
+        probe: pr, rows: got.rows.length, fetchMs: t2 - t1,
+        aggMs: Date.now() - t2, ref: sentiRef(clock.mins),
+        agg: agg && { day: agg.day, n: agg.n, halt: agg.halt, zt: agg.zt,
+          touch: agg.touch, zb: agg.zb, dt: agg.dt, diag: agg.diag,
+          seal: agg.seal, ladder: agg.ladder, prem: agg.prem, yprem: agg.yprem },
+      });
+    } catch (e) {
+      return json({ ok: false, t, clock, error: String((e && e.message) || e),
+        tried: e.tried || null, ms: Date.now() - t1 });
+    }
   }
 
   const t0 = Date.now();
@@ -5863,6 +6402,11 @@ export default {
     if (p === '/api/mkt') {
       // 全 A 个股口径的集中度 / 宽度：盘中现算，收盘后读回算好的日档
       return serveMkt(env, ctx);
+    }
+
+    if (p === '/api/senti') {
+      // 短线情绪：A 类直接看、B 类看绝对值、C 类强制与历史同刻对标
+      return serveSenti(env, ctx, url);
     }
 
     if (p === '/api/ind') {

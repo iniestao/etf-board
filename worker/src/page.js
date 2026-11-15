@@ -795,6 +795,48 @@ border-bottom:1px dotted var(--txt3);transition:border-color .12s}
 }
 @media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:10.5px}}
 
+/* ---- 短线情绪 ----
+   三类指标混排，但读法完全不同，所以分两层而不是摊平成一排数字：
+     上半层（昨涨停 / 昨跌停池）盘中样本固定，直接看绝对值；
+     下半层是今日的过程量，涨停/跌停只报绝对数，曾触板带「此刻中位」对照。
+   故意没有 0-100 的温度分：各项的时间偏方向不一致（封板率有时早盘偏高、
+   有时偏低），一组固定权重不可能同时标定盘中与收盘，分数只会显得很确定。 */
+.snt{margin:0 0 8px;padding:8px 11px 7px;background:var(--bg2);
+border:1px solid var(--line);border-radius:8px;position:relative}
+.snthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:10.5px;color:var(--txt3)}
+.snthd>span:first-child{color:var(--txt2);font-weight:600}
+.sntb{font-style:normal;font-weight:700;font-size:11.5px;padding:1px 7px;border-radius:4px;
+background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:none}
+.snttag{margin-left:auto;font-size:10.5px;color:var(--txt3);letter-spacing:.2px}
+.sntgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px 14px;margin-top:8px}
+.sntk{min-width:0}
+.sntk>span{display:block;font-size:10.5px;color:var(--txt3);white-space:nowrap;
+overflow:hidden;text-overflow:ellipsis}
+.sntk>b{font-size:16px;font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.sntk>em{font-style:normal;font-size:10px;color:var(--txt3);margin-left:3px}
+.sntk>b.up{color:var(--up)}.sntk>b.down{color:var(--down)}
+.sntk>b i{font-style:normal;font-size:10px;color:var(--txt3);font-weight:400;
+margin-left:3px;letter-spacing:0}
+/* 同刻对照单独一行、缩进两格：它修饰的是上面那个涨停数，不是另一个指标。
+   并排成两列会被读成「今天 38 家 / 历史 41 家」两个平行的事实。 */
+.sntref{margin:6px 0 0;font-size:10.5px;color:var(--txt3);line-height:1.6}
+.sntref b{color:var(--txt2);font-variant-numeric:tabular-nums;font-weight:600}
+.sntline{display:flex;gap:12px;flex-wrap:wrap;align-items:baseline;
+margin-top:9px;padding-top:7px;border-top:1px solid var(--line);
+font-size:10.5px;color:var(--txt3);line-height:1.6}
+.sntline>b{color:var(--txt2);font-variant-numeric:tabular-nums}
+.sntlk{cursor:pointer;color:var(--txt2);border-bottom:1px dotted var(--txt3);white-space:nowrap}
+.sntlk:hover{border-bottom-color:var(--txt2)}
+.sntwhy{display:none;margin:7px 0 0;padding:6px 9px;border-radius:6px;background:var(--bg);
+border:1px solid var(--line);font-size:10.5px;color:var(--txt3);line-height:1.7}
+.snt.open .sntwhy{display:block}
+.sntwhy i{font-style:normal;color:var(--txt2)}
+@media(max-width:820px){
+  .sntgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 12px}
+  .sntk>b{font-size:15px}
+}
+@media(max-width:560px){.snt{padding:7px 9px 6px}.snttag{letter-spacing:0}}
+
 /* ---- 自选导入导出 ---- */
 #ioMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
@@ -2087,6 +2129,147 @@ function loadSecBase(){
    卡片上的日期标签会如实写成「11-12 收盘」。 */
 var MKT_REQ = false, MKT_RETRY = null;
 
+/* 情绪卡：与四象限同频（30 秒），但两者互不依赖——/api/senti 挂了不该让
+   集中度卡片跟着停，所以是各自加载、各自 replaceChild。 */
+var SENTI = null, SENTI_REQ = false, SENTI_RETRY = null, SENTI_OPEN = null;
+
+function repaintSenti(){
+  var el = document.getElementById('sentiCard');
+  if (!el) return;
+  var wrap = document.createElement('div');
+  wrap.innerHTML = sentiCard();
+  var nw = wrap.firstChild;
+  if (nw && nw.className && nw.className.indexOf('snt') >= 0) el.parentNode.replaceChild(nw, el);
+}
+
+function loadSenti(){
+  if (SENTI_REQ) return;
+  SENTI_REQ = true;
+  // 不走浏览器缓存：盘中是 30 秒一变，被缓存 120 秒就等于不刷新了。
+  // 服务端的 Cache-Control 仍然生效（那是给边缘节点的），这里只挡浏览器。
+  return fetch('/api/senti', { cache: 'no-store' }).then(function(r){ return r.json(); }).then(function(j){
+    SENTI_REQ = false;
+    // ok:false 也照常渲染：卡片会写「暂时取不到」，比留个空壳诚实
+    SENTI = j || null;
+    repaintSenti();
+    return SENTI;
+  }).catch(function(){
+    SENTI_REQ = false;
+    if (!SENTI_RETRY){
+      SENTI_RETRY = setTimeout(function(){ SENTI_RETRY = null; loadSenti(); }, 20000);
+    }
+    return null;
+  });
+}
+
+/* 情绪卡。四行，读法从「已定局」到「还在动」：
+   ① 昨日涨停池今日表现（样本固定，09:35 就定调）
+   ② 昨日跌停池今日表现（样本固定，跌停侧唯一的干净指标）
+   ③ 今日涨停 / 曾触 / 炸板 / 跌停（过程量，只报绝对数）+ 曾触板的同刻中位
+   ④ 连板梯队 + 三份名单入口
+   没有「当前涨停 N 家」与「历史此刻 N 家」并排：两者口径不同（前者是收盘仍
+   封住的，后者是到此刻曾触板的），并排一定会被读成两个平行的事实。同刻对照
+   只挂在曾触板上——那才是能精确重建的那个量。 */
+function sentiCard(){
+  var S = SENTI;
+  if (!S || !S.ok){
+    return '<div class="snt" id="sentiCard"><div class="snthd"><span>短线情绪</span>'
+      + '<em class="sntb" style="color:var(--txt3)">' + (S ? '不可用' : '读取中') + '</em>'
+      + (S && S.error ? '<span class="snttag">' + esc(S.error) + '</span>' : '')
+      + '</div></div>';
+  }
+
+  var mode = S.mode || 'close';
+  var bjDay = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  var dayStr = S.d || '';
+  var dayTag = mode === 'live' ? '盘中 ' + (S.snapAt || '')
+    : mode === 'snap' ? '快照 ' + (S.snapAt || '')
+      : dayStr === bjDay ? '今天收盘' : dayStr.slice(5) + ' 收盘';
+
+  var STC = { '冰点': 'var(--down)', '退潮': 'var(--down)',
+    '修复': 'var(--up)', '发酵': 'var(--up)' };
+  var stCol = STC[S.state] || 'var(--txt3)';
+
+  function cell(k, v, sub, cls){
+    return '<div class="sntk"><span>' + k + '</span><b' + (cls ? ' class="' + cls + '"' : '')
+      + '>' + v + (sub ? '<i>' + sub + '</i>' : '') + '</b></div>';
+  }
+
+  var h = '<div class="snt" id="sentiCard">'
+    + '<div class="snthd"><span>短线情绪</span>'
+    + '<em class="sntb" style="color:' + stCol + '" data-snt="why"'
+    + ' title="点一下看判定依据">' + (S.state || '样本不足') + '</em>'
+    + '<span class="snttag">' + dayTag + '</span></div>';
+
+  /* 三行共用一套 6 列：昨日涨停池 / 昨日跌停池 / 今日过程量。
+     行数少但列宽窄，眼睛不用横跨半屏去对比「红盘」和「大面」。 */
+  var P = S.prem;
+  if (P){
+    h += '<div class="sntgrid">'
+      + cell('昨涨停', P.n, '只')
+      + cell('今日红盘', Math.round(P.red) + '%', null, P.red >= 50 ? 'up' : 'down')
+      + cell('大面', Math.round(P.big) + '%', '≤-7%', P.big >= 15 ? 'down' : '')
+      + cell('中位', fpc(P.mid), null, P.mid >= 0 ? 'up' : 'down')
+      + '</div>';
+  } else {
+    h += '<p class="sntref">昨日涨停池样本不足，承接指标暂不可用</p>';
+  }
+
+  var Y = S.yprem;
+  if (Y){
+    h += '<div class="sntgrid" style="margin-top:6px">'
+      + cell('昨跌停', Y.n, '只')
+      + cell('今日红盘', Math.round(Y.red) + '%', null, Y.red >= 50 ? 'up' : 'down')
+      + cell('仍跌停', Math.round(Y.still) + '%', null, Y.still >= 30 ? 'down' : '')
+      + '</div>';
+  } else {
+    h += '<p class="sntref">昨日无跌停（全市场 0 家）—— 跌停侧没有可比样本</p>';
+  }
+
+  h += '<div class="sntgrid" style="margin-top:9px;padding-top:8px;border-top:1px solid var(--line)">'
+    + cell('今日涨停', S.zt, '家')
+    + cell('曾触板', S.touch, '家')
+    + cell('炸板', S.zb, '家')
+    + cell('跌停', S.dt, '家')
+    + cell('封板率', S.seal == null ? '—' : Math.round(S.seal * 100) + '%', '封住/触板')
+    + '</div>';
+
+  var bits = [];
+  if (S.ref && S.ref.med != null){
+    var a6 = ('00000' + S.ref.at).slice(-6);
+    var hhmm = a6.slice(0, 2) + ':' + a6.slice(2, 4);
+    bits.push('曾触板此刻历史中位 <b>' + S.ref.med + '</b>（' + S.ref.lo + '–' + S.ref.hi
+      + '，近 ' + S.ref.n + ' 日 ' + hhmm + '）');
+  } else if (mode === 'live') {
+    // 收盘态没有「此刻」可言，别把「没数据」写在正确的地方上
+    bits.push('曾触板同刻基准暂缺');
+  }
+  if (bits.length) h += '<p class="sntref">' + bits.join(' · ') + '</p>';
+
+  var L = S.ladder;
+  if (L && L.t){
+    var segs = [], nm = ['首板', '2板', '3板', '4板', '5板', '6板', '7板', '8板+'];
+    for (var i = 0; i < L.t.length; i++) if (L.t[i] > 0) segs.push(nm[i] + ' ' + L.t[i]);
+    if (segs.length){
+      h += '<p class="sntref">梯队 ' + segs.join(' · ') + '　最高 <b>' + L.mx + '</b> 板'
+        + (S.yMx ? '（昨日 ' + S.yMx + ' 板）' : '') + '</p>';
+    }
+  }
+
+  h += '<div class="sntline">'
+    + '<span class="sntlk" data-snt="zt">涨停 ' + S.zt + ' 只 →</span>'
+    + '<span class="sntlk" data-snt="zb">炸板 ' + S.zb + ' 只 →</span>'
+    + '<span class="sntlk" data-snt="dt">跌停 ' + S.dt + ' 只 →</span>'
+    + '</div>';
+
+  if (S.why && S.why.length){
+    h += '<div class="sntwhy">判定依据：' + S.why.map(function(x){ return esc(x); }).join(' · ')
+      + '</div>';
+  }
+  if (S.note) h += '<p class="sntref" style="color:var(--down)">' + esc(S.note) + '</p>';
+  return h + '</div>';
+}
+
 /* 只换四象限那张卡，不重建整个板块地图。
    整块重画会把 hover 态、展开的明细、滚动位置一起清掉，而每 60 秒来一次
    就够烦了——盘中这张卡片要跟着 30 秒的接口节奏动，更不能整块刷。 */
@@ -2970,7 +3153,7 @@ function renderSectors(){
       + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
       + '<span class="sgm t3">' + nUp + ' 涨 ' + (core.length - nUp) + ' 跌</span>'
       + '</div>'
-      + (G2.code === 'a' ? secQuadCard() : '')
+      + (G2.code === 'a' ? secQuadCard() + sentiCard() : '')
       + '<div class="smgrid">'
       + cellHtml(G2, core, mxAmt, sdel)
       + (ths.length
@@ -6789,6 +6972,7 @@ function loadFull(){
       loadSecBase().then(function(){ if (SECS.length) renderSectors(); });
     }
     loadMktSnap();
+    loadSenti();                     // 情绪卡独立加载：/api/senti 挂了不该拖住四象限
     hRefresh();                      // 弹窗开着就跟着这次快照重算最后一根
     // 涨速榜的池子是从这份快照里挑的，第一次拿到数据才有得挑
     if (!SPD.rows.length && !SPD.loading) spdFetch();
@@ -7699,6 +7883,10 @@ function ovClose(){ document.getElementById('ovMask').classList.remove('on'); }
    全 A 快照里切——后者要等「有人刚刷过全 A」，点哪个行业还得看时序。
    30 秒桶缓存，和卡片上的集中度同频。 */
 var IND = null;          // 当前打开的那个行业（服务端原样返回）
+/* 情绪名单复用同一个弹层：SENTI_OPEN 是 'zt'/'zb'/'dt'，SENTI_LIST 是那一份
+   items。两者不会同时非空——indClose 会一起清掉，否则关掉行业再点涨停名单，
+   委托会按 IND 去找票，找到一个不存在的代码，表现为「点了没反应」。 */
+var SENTI_LIST = null, SENTI_OPEN = null;
 
 function indOpen(name){
   var m = document.getElementById('indMask');
@@ -7726,6 +7914,8 @@ function indClose(){
   var m = document.getElementById('indMask');
   if (m) m.classList.remove('on');
   IND = null;
+  SENTI_OPEN = null;
+  SENTI_LIST = null;
 }
 
 function indRender(){
@@ -7764,28 +7954,29 @@ function indRender(){
 }
 
 /* 个股卡：同一层里换内容，不叠第二个弹窗。返回按钮回到列表——
-   看行业时经常要连着点两三只，来回都关弹窗再重进太笨。 */
-function stkOpen(code){
-  if (!IND) return;
-  var x = null;
-  for (var i = 0; i < IND.mem.length; i++) if (IND.mem[i].c === code){ x = IND.mem[i]; break; }
-  if (!x) return;
+   看行业时经常要连着点两三只，来回都关弹窗再重进太笨。
+
+   行业名单和情绪名单共用这一段：两张表都只给「代码 + 涨跌 + 成交额」，
+   点进去要看的东西完全一样（分时 + 现价）。所以抽出来，只把「返回什么」
+   和第四格（行业名单是「占行业」，情绪名单是「连板」）参数化。
+   第四格不能写死占行业：情绪名单里没有 IND，除出来是 NaN%。 */
+function stkCardOpen(x, sub, back, extra){
   var body = document.getElementById('indBody');
-  document.getElementById('indTitle').textContent = x.n || code;
-  document.getElementById('indSub').textContent = code + ' · ' + IND.ind;
-  body.innerHTML = '<button class="ovretry" id="indBack">← 返回 ' + esc(IND.ind) + '</button>'
+  document.getElementById('indTitle').textContent = x.n || x.c;
+  document.getElementById('indSub').textContent = x.c + ' · ' + sub;
+  body.innerHTML = '<button class="ovretry" id="indBack">← 返回 ' + esc(sub) + '</button>'
     + '<div class="stkk">'
     + '<span>现价<b>' + (x.px > 0 ? x.px.toFixed(2) : '—') + '</b></span>'
     + '<span>涨跌<b class="' + (x.p == null ? '' : cc(x.p)) + '">'
     + (x.p == null ? '—' : fpc(x.p)) + '</b></span>'
-    + '<span>成交<b>' + (x.a > 0 ? x.a.toFixed(2) + ' 亿' : '—') + '</b></span>'
-    + '<span>占行业<b>' + (x.a > 0 ? (x.a / (IND.amt || 1) * 100).toFixed(1) + '%' : '—')
-    + '</b></span></div>'
+    + '<span>成交<b>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) + ' 亿' : '—') + '</b></span>'
+    + (extra || '')
+    + '</div>'
     + '<div id="indMin"><div class="iotip">读取中…</div></div>';
   body.scrollTop = 0;
-  document.getElementById('indBack').onclick = indRender;
+  document.getElementById('indBack').onclick = back;
 
-  fetch('/api/min?code=' + code).then(function(r){ return r.json(); })
+  fetch('/api/min?code=' + x.c).then(function(r){ return r.json(); })
     .then(function(j){
       var box = document.getElementById('indMin');
       if (!box) return;
@@ -7802,6 +7993,101 @@ function stkOpen(code){
     });
 }
 
+function stkOpen(code){
+  if (!IND) return;
+  var x = null;
+  for (var i = 0; i < IND.mem.length; i++) if (IND.mem[i].c === code){ x = IND.mem[i]; break; }
+  if (!x) return;
+  /* IND.mem 的 a 是「亿元」，情绪名单的 a 是「元」——stkCardOpen 统一按元处理，
+     所以这里乘回去。不换算的话行业名单里每只票的成交额都会显示成 0.00 亿。 */
+  stkCardOpen({ c: x.c, n: x.n, p: x.p, px: x.px, a: (x.a || 0) * 1e8 },
+    IND.ind, indRender,
+    '<span>占行业<b>' + (x.a > 0 ? x.a / (IND.amt || 1) * 100 : 0).toFixed(1) + '%</b></span>');
+}
+
+/* ---- 情绪名单（涨停 / 炸板 / 跌停）----
+   涨停按封单额降序：真封和虚封的差别全在这个数上（2 亿 vs 20 万不是一回事），
+   按成交额排会把「谁在硬撑」和「谁在放量出货」混在一起。
+   跌停只有一个数字有意义（跌了多少），所以那张表只有三列。 */
+var SENTI_TITLE = { zt: '今日涨停', zb: '今日炸板', dt: '今日跌停' };
+
+function sentiOpen(kind){
+  var m = document.getElementById('indMask');
+  if (!m) return;
+  IND = null;                       // 情绪名单进来时先把行业丢掉，否则委托会走错分支
+  SENTI_OPEN = kind;
+  SENTI_LIST = null;
+  document.getElementById('indTitle').textContent = SENTI_TITLE[kind] || '名单';
+  document.getElementById('indSub').textContent = '读取中…';
+  document.getElementById('indBody').innerHTML = '<div class="iotip">读取中…</div>';
+  m.classList.add('on');
+  fetch('/api/senti?list=' + encodeURIComponent(kind), { cache: 'no-store' })
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j || !j.ok) throw new Error((j && j.error) || '读取失败');
+      SENTI_LIST = (j.list && j.list.items) || [];
+      sentiRender();
+    })
+    .catch(function(e){
+      document.getElementById('indSub').textContent = '';
+      document.getElementById('indBody').innerHTML =
+        '<div class="iotip">' + esc(String(e.message || e)) + '</div>';
+    });
+}
+
+function sentiRender(){
+  var kind = SENTI_OPEN;
+  if (!kind) return;
+  var arr = SENTI_LIST || [];
+  var S = SENTI || {};
+  document.getElementById('indTitle').textContent = SENTI_TITLE[kind] || '名单';
+  document.getElementById('indSub').textContent = arr.length + ' 只 · ' + (S.d || '');
+  var h, i, x;
+  if (kind === 'dt'){
+    h = '<div class="indwrap"><table class="indtb"><thead><tr>'
+      + '<th>简称</th><th>涨跌幅</th><th>成交额（亿）</th></tr></thead><tbody>';
+    for (i = 0; i < arr.length; i++){
+      x = arr[i];
+      h += '<tr data-stk="' + x.c + '"><td class="nm">' + esc(x.n || x.c)
+        + '<span class="cd">' + x.c + '</span></td>'
+        + '<td class="' + cc(x.p) + '">' + fpc(x.p) + '</td>'
+        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td></tr>';
+    }
+  } else {
+    h = '<div class="indwrap"><table class="indtb"><thead><tr>'
+      + '<th>简称</th><th>涨跌幅</th><th>连板</th><th>封单（亿）</th><th>成交额（亿）</th>'
+      + '</tr></thead><tbody>';
+    for (i = 0; i < arr.length; i++){
+      x = arr[i];
+      h += '<tr data-stk="' + x.c + '"><td class="nm">' + esc(x.n || x.c)
+        + '<span class="cd">' + x.c + '</span></td>'
+        + '<td class="' + cc(x.p) + '">' + fpc(x.p) + '</td>'
+        + '<td>' + (x.lb ? x.lb + ' 板' : '—') + '</td>'
+        + '<td>' + (x.seal > 0 ? (x.seal / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td></tr>';
+    }
+  }
+  h += '</tbody></table></div><p class="indnote">'
+    + (kind === 'zt'
+      ? '按封单额降序。封单＝买一价 × 买一量：2 亿以上通常是真封，几十万的随时会开。'
+      : kind === 'zb'
+        ? '按成交额降序。炸板数盘中会随回封减少，不是只增不减，别拿它当累计值。'
+        : '按成交额降序。跌停家数盘中系统性偏低（14:00 中位才 7 家），不宜与收盘值直接比。')
+    + '　点任意一行看这只票的分时。</p>';
+  var body = document.getElementById('indBody');
+  body.innerHTML = h;
+  body.scrollTop = 0;
+}
+
+function sentiStkOpen(code){
+  var arr = SENTI_LIST || [], x = null;
+  for (var i = 0; i < arr.length; i++) if (arr[i].c === code){ x = arr[i]; break; }
+  if (!x) return;
+  var km = { zt: '涨停', zb: '炸板', dt: '跌停' };
+  stkCardOpen(x, km[SENTI_OPEN] || '情绪名单', sentiRender,
+    x.lb ? '<span>连板<b>' + x.lb + ' 板</b></span>' : '');
+}
+
 (function(){
   var m = document.getElementById('indMask');
   var c = document.getElementById('indClose');
@@ -7816,10 +8102,28 @@ function stkOpen(code){
        弹层，不拦的话点一行会同时弹出两层——底下那层还会盖住背景板，
        看着像页面自己发疯了。 */
     e.stopPropagation();
-    stkOpen(tr.getAttribute('data-stk'));
+    var code = tr.getAttribute('data-stk');
+    // 同一个 #indBody 里装着三种名单，按当前打开的那份分派
+    if (IND) stkOpen(code); else if (SENTI_OPEN) sentiStkOpen(code);
   });
   /* 卡片每次重绘都会换一批 .indlk 节点，绑定要放在 document 上。
      绑在卡片上就得每次渲染后重绑，忘了就变成「点了没反应」。 */
+  /* 情绪卡上的两个入口：状态灯（展开判定依据）与三份名单。
+     按钮是每次重绘都换的新节点，所以同样绑在 document 上。 */
+  document.addEventListener('click', function(e){
+    if (!e.target || !e.target.closest) return;
+    var t = e.target.closest('[data-snt]');
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var k = t.getAttribute('data-snt');
+    if (k === 'why'){
+      var box = t.closest('.snt');
+      if (box) box.classList.toggle('open');
+      return;
+    }
+    sentiOpen(k);
+  });
   document.addEventListener('click', function(e){
     if (!e.target || !e.target.closest) return;
     var t = e.target.closest('.indlk');
@@ -9529,6 +9833,7 @@ if (HELP_MODE){
   // 全 A 快照和全量行情并行：它只要 0.5 秒，等 loadFull 的三四秒跑完再发，
   // 首屏那张卡片就已经用基线最后一天画完了（会显示「11-06」而不是「今天」）
   loadMktSnap();
+  loadSenti();                  // 与上面并行：两张卡片各走各的接口，互不等待
   futInit();                    // 期指这块不依赖全市场行情，先发出去
   loadFull().then(function(){
     renderCards();
