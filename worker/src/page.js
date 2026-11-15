@@ -48,7 +48,7 @@ export const HTML = `<!DOCTYPE html>
 --bg1:#f1f3f6;--bg3:#f1f3f6;--sunken:#f1f3f6;
 /* 线分三档：卡片边、区块分界、图表网格。原来的 #e3e6eb 对白底只有 1.25:1，
    等于没画——111 处分隔线在多数屏上是消失的，这也是"看着平"的原因之一。 */
---line:#d8dde6;--line2:#c6cddb;--grid:#e6e9ef;
+--line:#d8dde6;--line2:#c6cddb;--grid:#e6e9ef;--cardline:#e3e7ee;
 /* 文本按 WCAG AA 反推，不是凭手感调灰。--txt3 原来 #939aa7 只有 2.77:1
    （bg3 上 2.47:1），却承担了 164 处小标题、注释、表头、坐标轴——
    10.5px 的字配 2.47:1 的灰，是整页"看着累"的第一成因。 */
@@ -61,21 +61,21 @@ export const HTML = `<!DOCTYPE html>
 --accent:#2563eb;--accent-ink:#1d4ed8;--accent-bg:#eef3fe;--accent-line:#c7d7f7;
 /* 字号只留五档。原先 19 档、257 处声明，其中 10.5px 88 处、11.5px 81 处
    ——主次只差 1px，等于没有层级。 */
---fs-2xs:11px;--fs-xs:12px;--fs-sm:13px;--fs-md:15px;--fs-lg:20px;
+--fs-cap:10.5px;--fs-2xs:11.5px;--fs-xs:12.5px;--fs-sm:13.5px;--fs-md:15px;--fs-lg:21px;--fs-xl:26px;
 --lh-tight:1.2;--lh-ui:1.4;--lh-body:1.55;--lh-read:1.7;
---r-xs:4px;--r-sm:6px;--r-md:10px;--r-lg:14px;--r-pill:999px;
+--r-xs:4px;--r-sm:6px;--r-md:12px;--r-lg:14px;--r-pill:999px;
 --s1:4px;--s2:6px;--s3:8px;--s4:12px;--s5:16px;--s6:24px;
 --pad-card:10px 12px;--pad-dense:6px 8px;
 /* 阴影只做「贴纸感」，悬浮才抬起。原来 20 多个卡片容器一个阴影都没有，
    彼此之间全靠 1px 灰线，所以看着像一张平铺的白纸。 */
---sh-1:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.04);
+--sh-1:0 1px 2px rgba(16,24,40,.05),0 2px 8px -3px rgba(16,24,40,.08);
 --sh-2:0 2px 6px -1px rgba(16,24,40,.06),0 8px 24px -12px rgba(16,24,40,.16);
 --sh-3:0 24px 64px -16px rgba(16,24,40,.28);
 --mono:"SF Mono",Consolas,"Roboto Mono",Menlo,monospace;
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-font-variant-numeric:tabular-nums;padding:14px 18px 40px}
+font-variant-numeric:tabular-nums;padding:18px 22px 52px}
 .wrap{max-width:1560px;margin:0 auto}
 header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
 /* 标题：左边一个迷你柱线标识（三根递增柱），右边「ETF 盯盘」两段式——
@@ -83,7 +83,7 @@ header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12p
    平铺好读：一眼分得清「是什么」和「干什么」。
    红：页面底色是跌绿/涨红双色系统，标题取涨色（--up）才对得上「盯盘」这件
    事本身——蓝是通用 SaaS 味，跟行情没关系。 */
-h1{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:600;letter-spacing:.2px}
+h1{display:flex;align-items:center;gap:9px;font-size:var(--fs-lg);font-weight:600;letter-spacing:.2px}
 h1 .mk{display:inline-flex;align-items:flex-end;gap:2px;width:24px;height:24px;padding:5px;
   box-sizing:border-box;background:#fbe4e4;border-radius:7px}
 h1 .mk i{display:block;width:3px;border-radius:1px;background:var(--up)}
@@ -93,31 +93,31 @@ h1 .mk i:nth-child(3){height:14px}
 /* 「盯盘」并进 ETF 这一格里，不再单独当大字号主词：两个词本来就是一个意思，
    拆成「小徽标 + 大字」会让人先读 ETF 再读盯盘，多一次停顿。 */
 h1 .tag{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);
-  font-size:10.5px;font-weight:600;letter-spacing:1px;
+  font-size:var(--fs-2xs);font-weight:600;letter-spacing:1px;
   color:var(--up);background:#fbe6e6;border-radius:6px;padding:3px 8px 3px 7px}
 /* 中文小字在同样的红下会比拉丁字母"显得"淡一档（笔画细、抗锯齿占比高），
    所以字号压到跟 ETF 一档、颜色深半格，两段看起来才是同一种红。 */
 h1 .tag b{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-  font-size:11.5px;font-weight:700;letter-spacing:.5px;color:#cf2f2f}
-h1 em{color:var(--txt3);font-weight:400;font-size:12.5px;font-style:normal;margin-left:2px;
+  font-size:var(--fs-xs);font-weight:700;letter-spacing:.5px;color:#cf2f2f}
+h1 em{color:var(--txt3);font-weight:400;font-size:var(--fs-sm);font-style:normal;margin-left:2px;
   font-family:var(--mono);letter-spacing:.2px}
 .sp{flex:1}
 .dot{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;
-background:var(--bg3);border:1px solid var(--line);font-size:11.5px;color:var(--txt2)}
+background:var(--bg3);border:1px solid var(--line);font-size:var(--fs-xs);color:var(--txt2)}
 .dot i{width:7px;height:7px;border-radius:50%;background:var(--txt3)}
 .dot.up i{background:var(--down);box-shadow:0 0 0 3px rgba(14,154,97,.16)}
 .dot.down i{background:var(--up);box-shadow:0 0 0 3px rgba(217,58,58,.16)}
 .dot.down{color:var(--up)}
-#btnRs,#btnHelp{padding:3px 11px;border-radius:20px;font-size:11.5px;color:var(--txt2);
+#btnRs,#btnHelp{padding:3px 11px;border-radius:20px;font-size:var(--fs-xs);color:var(--txt2);
 display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid transparent}
 #btnHelp{margin-left:6px}
 #btnRs:hover,#btnHelp:hover{color:var(--txt);border-color:var(--accent)}
 /* 窄屏 header 是 wrap 的，两个按钮会把「使用说明」挤到第二行最左，看着像掉出来的 */
 @media(max-width:560px){
   header{gap:8px}
-  #btnRs,#btnHelp{font-size:10.5px;padding:2px 8px}
+  #btnRs,#btnHelp{font-size:var(--fs-2xs);padding:2px 8px}
   #btnHelp{margin-left:4px}
-  h1 em{font-size:11px}
+  h1 em{font-size:var(--fs-xs)}
 }
 /* 吸顶锚点导航：页面 7000px+，没有跳转每次找自选都要滚半天。
    top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
@@ -128,40 +128,53 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
   /* 六项在 375px 上必然溢出，横滑比换行好：换行会把吸顶导航顶成两行，吃掉半屏 */
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .secnav::-webkit-scrollbar{display:none}
-.secnav a{font-size:13px;color:var(--txt2);padding:4px 14px;border-radius:6px;cursor:pointer;
+.secnav a{font-size:var(--fs-sm);color:var(--txt2);padding:4px 14px;border-radius:6px;cursor:pointer;
   user-select:none;white-space:nowrap}
 .secnav a:hover{color:var(--txt)}
 .secnav a.on{background:var(--bg2);color:var(--txt);border:1px solid var(--line);padding:3px 13px;font-weight:600}
 .sec[id],.oncard[id]{scroll-margin-top:var(--navH,42px)}
-.cards{display:flex;gap:9px;margin-bottom:12px;flex-wrap:wrap}
-.cards .card{width:186px;flex:0 0 auto}
-@media(max-width:560px){.cards .card{width:calc(50% - 5px)}}
+/* 四张卡原来写死 186px、flex 排,在 1280 容器里只占 780px,右边空出
+   五百多像素——像四张小纸片贴在左边。改成栅格铺满,并且把卡内改成
+   「标签在左、数字在右」的横向排布：铺满后宽度变大，竖排会让数字孤零零
+   坐在左上角，横排则让每个格子左右都有依着。 */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));
+  gap:11px;margin-bottom:14px}
+.cards .card{width:auto;display:grid;align-items:center;
+  grid-template-columns:1fr auto;grid-template-areas:"k v" "s v";padding:11px 15px}
+.cards .card .k{grid-area:k;margin-bottom:3px;white-space:nowrap}
+.cards .card .v{grid-area:v;text-align:right;letter-spacing:-.6px}
+.cards .card .s{grid-area:s;margin-top:0;text-align:left}
+@media(max-width:560px){
+  .cards{grid-template-columns:1fr 1fr;gap:8px}
+  .cards .card{padding:9px 11px}
+  .cards .card .v{font-size:var(--fs-lg)}
+}
 /* 隔夜映射卡：美股收盘 + 外盘期货按「赛道」折算到 A 股 ETF。
    盘前打开页面第一眼要看的东西，所以放在统计卡上面。
    涨红跌绿是 A 股习惯，美股数据进来也按这个上色——
    页面要迁就读者的眼睛，不是迁就数据源的习惯。 */
 .oncard{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
-  padding:8px 12px;margin-bottom:12px;font-size:12.5px}
+  padding:8px 12px;margin-bottom:12px;font-size:var(--fs-sm)}
 .onhd{display:flex;align-items:baseline;gap:8px;color:var(--txt2)}
-.onhd b{color:var(--txt1);font-size:12.5px}
-.onhd .n{font-size:11.5px;color:var(--txt3)}
+.onhd b{color:var(--txt1);font-size:var(--fs-sm)}
+.onhd .n{font-size:var(--fs-xs);color:var(--txt3)}
 .onhd .ofold{margin-left:auto;cursor:pointer;color:var(--txt3);user-select:none}
 .onfut{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
 .onfut span{background:var(--bg1);border:1px solid var(--line);border-radius:4px;
-  padding:2px 7px;font-size:11.5px;color:var(--txt2)}
+  padding:2px 7px;font-size:var(--fs-xs);color:var(--txt2)}
 /* 美债那条是异步补进来的：外层 #onBond 只是挂载点，不能自己占一个框，
    否则先出现一个空边框、再撑成两个框。display:contents 让它的子元素
    直接当 .onfut 的 flex item 参与排布。 */
 .onfut #onBond{display:contents}
-.onfut span i{font-style:normal;margin-left:4px;font-size:11px}
+.onfut span i{font-style:normal;margin-left:4px;font-size:var(--fs-xs)}
 .ontrks{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .ontrk{cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:3px 9px;
   background:var(--bg1);user-select:none;display:flex;gap:6px;align-items:baseline}
 .ontrk b{font-weight:500;color:var(--txt1)}
-.ontrk i{font-style:normal;font-size:11.5px}
+.ontrk i{font-style:normal;font-size:var(--fs-xs)}
 .ontrk.sel{border-color:var(--txt3)}
 .ondet{margin-top:7px;padding:7px 10px;border-top:1px dashed var(--line);line-height:1.8}
-.ondet .ot{color:var(--txt2);font-size:11.5px;letter-spacing:.3px}
+.ondet .ot{color:var(--txt2);font-size:var(--fs-xs);letter-spacing:.3px}
 .ondet .ous{display:flex;gap:5px 12px;flex-wrap:wrap;margin:3px 0 5px}
 .ondet .ous span{white-space:nowrap}
 .ondet .oetfs{display:flex;gap:5px 12px;flex-wrap:wrap}
@@ -169,29 +182,29 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
 .ondet .mine{outline:1px solid currentColor;border-radius:3px;padding:0 3px}
 /* 上游故障时的横幅：贴在卡片下面，一进页面就能看见。
    放在 footer 里等于没有——100 行的表格把 footer 顶到 4600px 之外。 */
-.stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:12.5px;line-height:1.5;
+.stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:var(--fs-sm);line-height:1.5;
   background:#fff8e8;border:1px solid #f0dcb0;color:#8a5a00}
 .stalebar.bad{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
-.card .k{font-size:11.5px;color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
-.card .v{font-size:19px;font-weight:600;font-family:var(--mono);line-height:1.25}
-.card .v small{font-size:11.5px;font-weight:400;color:var(--txt3);margin-left:3px}
-.card .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
+.card .k{font-size:var(--fs-xs);color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
+.card .v{font-size:var(--fs-xl);font-weight:600;font-family:var(--mono);line-height:1.25}
+.card .v small{font-size:var(--fs-xs);font-weight:400;color:var(--txt3);margin-left:3px}
+.card .s{font-size:var(--fs-2xs);color:var(--txt3);margin-top:2px}
 /* ---------- 全市场异动 ---------- */
 .mktwrap{display:block}
 .mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 13px}
 .wbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:9px 0 7px;
   background:#eef1f5;box-shadow:inset 0 0 0 1px #e3e6eb}
 .wbar i{display:block;height:8px}
-.wstat{display:flex;justify-content:space-between;gap:8px;font-size:10.5px;
+.wstat{display:flex;justify-content:space-between;gap:8px;font-size:var(--fs-2xs);
   color:var(--txt3);font-family:var(--mono);flex-wrap:wrap}
 .wstat b{color:var(--txt);font-weight:600}
 .mtabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
-.mtab{font-size:11.5px;padding:2px 8px;border-radius:5px;border:1px solid var(--line);
+.mtab{font-size:var(--fs-xs);padding:2px 8px;border-radius:5px;border:1px solid var(--line);
   background:var(--bg3);color:var(--txt2);cursor:pointer;user-select:none;white-space:nowrap}
 .mtab:hover{border-color:#c9d6ef}
 .mtab.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8;font-weight:600}
-.mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:10.5px;opacity:.7}
+.mtab u{text-decoration:none;margin-left:5px;font-family:var(--mono);font-size:var(--fs-2xs);opacity:.7}
 /* 分组间距 + 窄屏强制断行：桌面靠 margin 分出「股指 / ETF期权 / 口径」三段，
    手机上 11 个标签挤成随机三行读不出分组，改用 mbrk 主动换行 */
 .mtab.grp{margin-left:10px}
@@ -206,19 +219,19 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
    「基差历史」占整行——曲线要横向空间，塞进半列会把 250 个点压成一团。 */
 .futgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .futgrid .wide{grid-column:1 / -1}
-@media(max-width:900px){.futgrid{grid-template-columns:1fr}.futgrid .wide{grid-column:auto}}
+@media(max-width:1100px){.futgrid{grid-template-columns:1fr}.futgrid .wide{grid-column:auto}}
 .futttl{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:7px}
-.futttl b{font-size:12.5px;font-weight:600;color:var(--txt);white-space:nowrap}
-.futttl span{font-size:10.5px;color:var(--txt3)}
+.futttl b{font-size:var(--fs-sm);font-weight:600;color:var(--txt);white-space:nowrap}
+.futttl span{font-size:var(--fs-2xs);color:var(--txt3)}
 /* 昨收基准掉了队时的强调色。只换颜色不换文案——「隔 2 个交易日」本身已经把事说清了，
    再加个感叹号反而像是页面坏了 */
 .futttl span.lag{color:#a9660a}
-.futgrp td{background:var(--bg3);font-size:11px;color:var(--txt2);font-weight:600;
+.futgrp td{background:var(--bg3);font-size:var(--fs-xs);color:var(--txt2);font-weight:600;
 padding:5px 9px!important;border-bottom:1px solid var(--line)}
 .futgrp b{font-family:var(--mono);font-weight:600}
 .futgh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;min-width:0}
 .futgh>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fq{font-size:10px;padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px;white-space:nowrap}
+.fq{font-size:var(--fs-cap);padding:0 4px;border-radius:3px;background:#f4f6fa;border:1px solid var(--line);margin-left:4px;white-space:nowrap}
 .tbl .nm + .code{margin-left:6px}
 /* 期指的表格列多（合约/价格/涨跌/基差/基差率/年化/持仓），375px 一定放不下。
    这里放开横滑而不是砍列：砍掉哪一列都会有人要，「剩 11 天」和基差率是连着看的。 */
@@ -240,20 +253,20 @@ padding:5px 9px!important;border-bottom:1px solid var(--line)}
    而这列恰恰是这张表最该被一眼看到的。压到 11px + 3px 内边距后 354px 正好放下 */
 @media(max-width:560px){
   #futSec table{min-width:0}
-  #futSec .tbl th,#futSec .tbl td{padding-left:3px;padding-right:3px;font-size:11px}
-  #futSec .tbl .nm{font-size:11px}
-  #futSec .tbl .code{font-size:10px}
+  #futSec .tbl th,#futSec .tbl td{padding-left:3px;padding-right:3px;font-size:var(--fs-xs)}
+  #futSec .tbl .nm{font-size:var(--fs-xs)}
+  #futSec .tbl .code{font-size:var(--fs-cap)}
 }
-.futfoot{margin-top:7px;font-size:10.5px;color:var(--txt3);line-height:1.7}
+.futfoot{margin-top:7px;font-size:var(--fs-2xs);color:var(--txt3);line-height:1.7}
 /* 基差图悬停：十字线要压住折线但不挡命中，光标给个 crosshair 提示「这里能读点」。
    touch-action:pan-y 让手机竖着滑还能滚页面，横着划才交给读点。 */
 #futHistChart svg.fh{cursor:crosshair;touch-action:pan-y}
 #futHistChart .fh-hov line{shape-rendering:crispEdges}
 .quad{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .qcell{border:1px solid var(--line);border-radius:7px;padding:8px 10px;background:var(--bg)}
-.qcell b{display:block;font-size:11px;color:var(--txt2);font-weight:500;margin-bottom:3px}
-.qcell u{text-decoration:none;font-family:var(--mono);font-size:15px;font-weight:600}
-.qcell i{display:block;font-style:normal;font-size:10px;color:var(--txt3);margin-top:3px;
+.qcell b{display:block;font-size:var(--fs-xs);color:var(--txt2);font-weight:500;margin-bottom:3px}
+.qcell u{text-decoration:none;font-family:var(--mono);font-size:var(--fs-md);font-weight:600}
+.qcell i{display:block;font-style:normal;font-size:var(--fs-cap);color:var(--txt3);margin-top:3px;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sechd .n.warn{color:#a9660a}
 .mhead,.mrow{display:grid;grid-template-columns:minmax(0,1fr) 44px 48px 46px 58px;
@@ -268,38 +281,42 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .mn em{display:none}
   .mhead,.mrow{grid-template-columns:minmax(0,1fr) 38px 34px 32px 50px;gap:5px}
 }
-.mhead{padding:0 0 5px;font-size:10.5px;color:var(--txt3);border-bottom:1px solid var(--line);
+.mhead{padding:0 0 5px;font-size:var(--fs-2xs);color:var(--txt3);border-bottom:1px solid var(--line);
   font-family:var(--mono);letter-spacing:.3px}
 .mhead span:not(:first-child){text-align:right}
-.mrow{padding:5px 0;border-bottom:1px dashed var(--line);cursor:pointer;font-size:12.5px}
-.mtag{font-size:10.5px;padding:1px 0;border-radius:4px;text-align:center;white-space:nowrap;
+.mrow{padding:5px 0;border-bottom:1px dashed var(--line);cursor:pointer;font-size:var(--fs-sm)}
+.mtag{font-size:var(--fs-2xs);padding:1px 0;border-radius:4px;text-align:center;white-space:nowrap;
   font-weight:600;letter-spacing:.2px}
-.mtag.t-up{background:#fdecee;color:#b02a2a;border:1px solid #f3c7c7}
-.mtag.t-warn{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
-.mtag.t-down{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
-.mtag.t-info{background:#eaf1ff;color:#1d4ed8;border:1px solid #b9cdf7}
-.mtag.t-mute{background:#f0f2f5;color:#6b7380;border:1px solid #e3e6eb}
+/* 「类型」是分类信息，不是涨跌信号。原来五套彩色并行、一行挂一块，
+   30 行铺开就是 30 段彩色胶带，红绿反而被稀释得认不出来。统一成浅灰底，
+   只用字色微差区分语义，色彩预算全部留给涨跌数字本身。 */
+.mtag{background:#f4f5f8;border:1px solid #e7e9ee;color:#6b7380}
+.mtag.t-up{background:#fbf2f2;border-color:#efdcde;color:#a05055}
+.mtag.t-warn{background:#fbf8f1;border-color:#eee4d0;color:#8a6a3a}
+.mtag.t-down{background:#f2f8f5;border-color:#dcebe3;color:#3a7a63}
+.mtag.t-info{background:#f3f6fa;border-color:#e1e7f0;color:#4f6891}
+.mtag.t-mute{background:#f4f5f8;border-color:#e7e9ee;color:#6b7380}
 .mrow:last-child{border-bottom:none}
 .mrow:hover .mn{color:#1d4ed8}
 .mn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.mn em{font-style:normal;font-size:10.5px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
-.mnum{font-family:var(--mono);font-size:11.5px;text-align:right}
-.mnum small{font-size:10.5px;color:var(--txt3);margin-right:2px}
+.mn em{font-style:normal;font-size:var(--fs-2xs);color:var(--txt3);margin-left:5px;font-family:var(--mono)}
+.mnum{font-family:var(--mono);font-size:var(--fs-xs);text-align:right}
+.mnum small{font-size:var(--fs-2xs);color:var(--txt3);margin-right:2px}
 /* ---- 急涨急跌 ---- */
 .spdgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .spdcol{min-width:0}
 .spdcol + .spdcol{border-left:1px solid var(--line);padding-left:14px}
 .spdcol:first-child{padding-right:14px}
-.spdnone{padding:9px 0;color:var(--txt3);font-size:11.5px}
-.spdch{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--txt3);
+.spdnone{padding:9px 0;color:var(--txt3);font-size:var(--fs-xs)}
+.spdch{display:flex;align-items:center;gap:6px;font-size:var(--fs-2xs);color:var(--txt3);
   padding-bottom:5px;border-bottom:1px solid var(--line);margin-bottom:2px;letter-spacing:.3px}
-.spdch b{font-weight:600;font-size:11.5px}
+.spdch b{font-weight:600;font-size:var(--fs-xs)}
 .spdch b.up{color:var(--up)}.spdch b.dn{color:var(--down)}
 /* 用 flex 而不是 grid：名称 + 走势线是「左边一块信息」，涨速和量比是
    「右边两个数」。网格会把走势线顶到栏宽的中段，两边各留一片空白，
    看着像中间缺了内容。 */
 .spdrow{display:flex;gap:8px;align-items:center;padding:5px 0;
-  border-bottom:1px dashed var(--line);cursor:pointer;font-size:12.5px}
+  border-bottom:1px dashed var(--line);cursor:pointer;font-size:var(--fs-sm)}
 .spdrow:last-child{border-bottom:none}
 .spdrow:hover{background:#f7f9fc}
 .spdrow:hover .spdnm{color:#1d4ed8}
@@ -310,15 +327,15 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
    死宽度 + 名字省略号，代码不缩——代码是拿来复制搜索的，比名字后半截有用。 */
 .spdnm{flex:0 0 168px;display:flex;align-items:baseline;gap:4px;min-width:0;font-weight:500}
 .spdnm .nmx{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.spdnm em{flex:0 0 auto;font-style:normal;font-size:10.5px;color:var(--txt3);font-family:var(--mono)}
+.spdnm em{flex:0 0 auto;font-style:normal;font-size:var(--fs-2xs);color:var(--txt3);font-family:var(--mono)}
 /* 走势线往右靠、紧贴两个数值：名字短的行中间留白，比「线飘在名字后面、
    数值孤零零在最右」稳。涨速/量比两个数成一组，才是「右块」。 */
 .spk{display:block;flex:0 0 auto;margin-left:auto;overflow:visible}
-.spdv{flex:0 0 56px;font-family:var(--mono);font-size:12.5px;
+.spdv{flex:0 0 56px;font-family:var(--mono);font-size:var(--fs-sm);
   text-align:right;font-weight:600}
-.spdq{flex:0 0 40px;font-family:var(--mono);font-size:11.5px;text-align:right;color:var(--txt2)}
+.spdq{flex:0 0 40px;font-family:var(--mono);font-size:var(--fs-xs);text-align:right;color:var(--txt2)}
 .spdq.hot{color:#a9660a;font-weight:600}
-.spdnote{font-size:10.5px;color:var(--txt3);margin-top:7px;padding-top:6px;
+.spdnote{font-size:var(--fs-2xs);color:var(--txt3);margin-top:7px;padding-top:6px;
   border-top:1px solid var(--line);line-height:1.5}
 @media(max-width:760px){
   .spdgrid{grid-template-columns:1fr;gap:10px}
@@ -328,11 +345,11 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .spdrow{gap:6px}
   .spdrow .spk{display:none}
   .spdnm{flex:1 1 auto;min-width:0}
-  .spdv{flex:0 0 52px;font-size:11.5px}
-  .spdq{flex:0 0 36px;font-size:10.5px}
+  .spdv{flex:0 0 52px;font-size:var(--fs-xs)}
+  .spdq{flex:0 0 36px;font-size:var(--fs-2xs)}
 }
 .mfoot{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);
-  font-size:10.5px;color:var(--txt3);line-height:1.6}
+  font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6}
 
 /* ---------- 今日变化 + 组合体检 ---------- */
 .split{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:9px;align-items:start}
@@ -345,26 +362,26 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .evt.lv2 i{background:#e0a12a}
 .evt.lv1 i{background:#9aa3b2}
 .eb{min-width:0}
-.eb b{font-size:12.5px;font-weight:600}
-.eb .ek{margin-left:7px;font-size:10.5px;color:var(--txt2);background:var(--bg3);
+.eb b{font-size:var(--fs-sm);font-weight:600}
+.eb .ek{margin-left:7px;font-size:var(--fs-2xs);color:var(--txt2);background:var(--bg3);
   border:1px solid var(--line);border-radius:4px;padding:0 5px;white-space:nowrap}
 .evt.lv3 .ek{color:#b02a2a;background:#fdecee;border-color:#f3c7c7}
 .evt.lv2 .ek{color:#a9660a;background:#fff6e5;border-color:#f0dcb4}
-.es{font-size:11.5px;color:var(--txt2);margin-top:3px;line-height:1.55}
-.eempty{padding:14px 2px 10px;font-size:12.5px;color:var(--txt2);line-height:1.7}
-.eempty span{color:var(--txt3);font-size:11.5px}
+.es{font-size:var(--fs-xs);color:var(--txt2);margin-top:3px;line-height:1.55}
+.eempty{padding:14px 2px 10px;font-size:var(--fs-sm);color:var(--txt2);line-height:1.7}
+.eempty span{color:var(--txt3);font-size:var(--fs-xs)}
 .prow{display:flex;gap:16px;margin-bottom:2px}
-.pk{font-size:10.5px;color:var(--txt3);margin-bottom:2px}
-.pv{font-size:21px;font-weight:600;font-family:var(--mono);line-height:1.25}
-.pv small{font-size:10.5px;color:var(--txt3);font-weight:400;margin-left:2px}
-.pnote{font-size:11.5px;color:var(--txt2);line-height:1.65;border-top:1px dashed var(--line);
+.pk{font-size:var(--fs-2xs);color:var(--txt3);margin-bottom:2px}
+.pv{font-size:var(--fs-xl);font-weight:600;font-family:var(--mono);line-height:1.25}
+.pv small{font-size:var(--fs-2xs);color:var(--txt3);font-weight:400;margin-left:2px}
+.pnote{font-size:var(--fs-xs);color:var(--txt2);line-height:1.65;border-top:1px dashed var(--line);
   padding-top:8px;margin-top:9px}
 .pnote b{color:var(--txt)}
 
 /* ---------- 位置诊断 ---------- */
 /* 这一栏是整页唯一「不是行情软件」的东西：行情软件给报价，这里给位置和量能。
    位置条用蓝色深浅而不是红绿——红绿在这页已经被涨跌占用，再用一次就乱了。 */
-.dnote{font-size:11.5px;color:var(--txt3);margin:-1px 0 9px;line-height:1.6}
+.dnote{font-size:var(--fs-xs);color:var(--txt3);margin:-1px 0 9px;line-height:1.6}
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:9px}
 @media(max-width:560px){.dgrid{grid-template-columns:1fr}}
 .dcard{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 12px 11px;
@@ -372,52 +389,59 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dcard:hover{border-color:#c9d6ef;box-shadow:0 3px 12px rgba(23,32,54,.1)}
 .dcard.pend{opacity:.55}
 .dtop{display:flex;align-items:baseline;gap:7px;margin-bottom:9px;min-width:0}
-.dtop .dn{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dtop .dc{font-family:var(--mono);font-size:11.5px;color:var(--txt3);flex:0 0 auto}
-.dtag{margin-left:auto;font-size:11.5px;font-weight:600;padding:2px 7px;border-radius:5px;
+.dtop .dn{font-size:var(--fs-sm);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dtop .dc{font-family:var(--mono);font-size:var(--fs-xs);color:var(--txt3);flex:0 0 auto}
+.dtag{margin-left:auto;font-size:var(--fs-xs);font-weight:600;padding:2px 7px;border-radius:5px;
   white-space:nowrap;flex:0 0 auto}
-.dtag.d0{background:#f0f2f5;color:#5b6472;border:1px solid #e3e6eb}
-.dtag.d1{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
-.dtag.d2{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
-.dtag.d3{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
-.dtag.d4{background:#fdecee;color:#b02a2a;border:1px solid #f3c7c7}
+.dtag.d0{background:#f4f5f8;color:#6b7380;border:1px solid #e7e9ee}
+.dtag.d1{background:#f2f8f5;color:#3a7a63;border:1px solid #dcebe3}
+.dtag.d2{background:#fbf8f1;color:#8a6a3a;border:1px solid #eee4d0}
+.dtag.d3{background:#fbf8f1;color:#8a6a3a;border:1px solid #eee4d0}
+.dtag.d4{background:#fbf2f2;color:#a05055;border:1px solid #efdcde}
 .posbar{position:relative;height:7px;border-radius:4px;background:#e7ebf1;overflow:visible}
 .posbar u{position:absolute;left:0;top:0;height:7px;border-radius:4px;
   background:linear-gradient(90deg,#c9dbff,#5c92ec)}
 .posbar i{position:absolute;top:-2.5px;width:4px;height:12px;border-radius:2px;background:#1d4ed8;
   box-shadow:0 0 0 2px #fff,0 1px 3px rgba(20,26,40,.25);transform:translateX(-2px)}
-.poslb{display:flex;align-items:baseline;justify-content:space-between;font-size:10.5px;
+.poslb{display:flex;align-items:baseline;justify-content:space-between;font-size:var(--fs-2xs);
   color:var(--txt3);font-family:var(--mono);margin-top:6px;letter-spacing:.2px}
-.poslb .pz{font-size:15px;font-weight:600;color:var(--txt);font-family:var(--mono);line-height:1}
-.poslb .pz em{font-style:normal;font-size:10.5px;color:var(--txt3);font-weight:400;margin-left:5px;
+.poslb .pz{font-size:var(--fs-md);font-weight:600;color:var(--txt);font-family:var(--mono);line-height:1}
+.poslb .pz em{font-style:normal;font-size:var(--fs-2xs);color:var(--txt3);font-weight:400;margin-left:5px;
   letter-spacing:.2px}
 .dchips{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px}
-.dchip{font-size:10.5px;color:var(--txt3);background:var(--bg3);border:1px solid var(--line);
+.dchip{font-size:var(--fs-2xs);color:var(--txt3);background:var(--bg3);border:1px solid var(--line);
   border-radius:5px;padding:2px 7px;font-family:var(--mono);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .dchip b{color:var(--txt);font-weight:600;margin-left:2px}
 .dchip b.up{color:var(--up)}.dchip b.down{color:var(--down)}
-.dwhy{margin-top:auto;padding-top:7px;font-size:11.5px;color:var(--txt2);line-height:1.55}
+.dwhy{margin-top:auto;padding-top:7px;font-size:var(--fs-xs);color:var(--txt2);line-height:1.55}
 
 .bar{display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
 input,select,button{background:var(--bg2);color:var(--txt);border:1px solid var(--line);
-border-radius:6px;padding:6px 10px;font-size:12.5px;font-family:inherit;outline:none}
+border-radius:6px;padding:6px 10px;font-size:var(--fs-sm);font-family:inherit;outline:none}
 input:focus,select:focus{border-color:var(--accent)}
 input#q{width:180px}
 button{cursor:pointer;transition:.15s}
 button:hover{background:var(--bg3)}
 button.pri{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
-.tag{display:inline-block;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12.5px;
+.tag{display:inline-block;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:var(--fs-sm);
 border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:.15s;user-select:none}
 .tag:hover{color:var(--txt)}
 .tag.on{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
-.tag b{font-weight:400;opacity:.6;font-size:10.5px;margin-left:3px}
+.tag b{font-weight:400;opacity:.6;font-size:var(--fs-2xs);margin-left:3px}
 /* 区块之间要能"断开"。原来 16px 间距 + 12.5px 标题 + 一排 10.5px 灰字，
    十二个区块连着往下排，看起来就是一张连续的白纸，找不到从哪开始读。 */
-.sec{margin-bottom:20px}
-.sechd{display:flex;align-items:center;gap:10px;margin-bottom:9px;font-size:var(--fs-xs);color:var(--txt2)}
-.sechd b{color:var(--txt);font-size:var(--fs-md);font-weight:600;white-space:nowrap;flex:0 0 auto;
-letter-spacing:-.1px}
+.sec{margin-bottom:30px}
+/* 章节头：十二个区块原来是十二行「标题 + 灰字」，长得一样、之间只隔二十
+   几像素白，滚起来像一份没分节的表格。加一根左侧竖条 + 一条通到底的细分隔，
+   区块才有"开头"这个动作。竖条用墨色不用红——红是涨跌的信号色，十二根红条
+   会把信号稀释成装饰。 */
+.sechd{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:0 0 9px 11px;
+  position:relative;font-size:var(--fs-xs);color:var(--txt2);border-bottom:1px solid var(--line)}
+.sechd::before{content:'';position:absolute;left:0;top:1px;width:3px;height:15px;
+  border-radius:2px;background:var(--txt);opacity:.42}
+.sechd b{color:var(--txt);font-size:17px;font-weight:650;white-space:nowrap;flex:0 0 auto;
+letter-spacing:-.2px}
 .sechd .n{color:var(--txt3);font-size:var(--fs-2xs);min-width:0;overflow:hidden;text-overflow:ellipsis}
 /* 「重算 / 刷新」原来在 CSS 里一条规则都没有，长得跟正文灰字一样，
    六个区块上都有、没一个看得出能点。补成最低限度的按钮样子。 */
@@ -432,9 +456,12 @@ user-select:none;transition:background .15s,border-color .15s,color .15s}
    sticky 就地失效（表头吸顶不出来）；clip 同样裁掉圆角外的内容但不建立滚动盒。 */
 .tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:clip}
 table{width:100%;border-collapse:collapse}
-thead th{background:var(--bg3);font-size:10.5px;font-weight:500;color:var(--txt2);
-letter-spacing:.3px;padding:9px;text-align:right;white-space:nowrap;
-border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+/* 表头不做"色块"，只做"标签"：灰底去掉，改字重 600 + 字距 .5px 立住，
+   下面一条细线交代列的范围。原来一块浅灰底 + 11.5px 常规字，跟数据行
+   抢，一屏十张表就是十条灰带。 */
+thead th{background:var(--bg2);font-size:var(--fs-cap);font-weight:600;color:var(--txt3);
+letter-spacing:.5px;padding:9px;text-align:right;white-space:nowrap;
+border-bottom:1px solid var(--line2);cursor:pointer;user-select:none}
 /* 表头吸顶：榜单 100 行、自选表滚过去之后列名还在。top 对齐锚点导航下缘，
    背景色要实（不能透），否则行文字会从表头底下透出来。 */
 .tbl thead th{position:sticky;top:var(--navH,42px);z-index:3}
@@ -478,7 +505,7 @@ border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
   .tbl.hs.shr td:nth-child(2),.tbl.hs.shr th:nth-child(2){border-right:1px solid var(--line);
     box-shadow:8px 0 10px -8px rgba(16,24,40,.32)}
   /* 提示条：没有它，横滑等于把「被裁掉」换成了「看不见还有」。只在真溢出时由 JS 插入 */
-  .hstip{margin:6px 0 0;font-size:11px;color:var(--txt3);text-align:right}
+  .hstip{margin:6px 0 0;font-size:var(--fs-xs);color:var(--txt3);text-align:right}
 }
 thead th:hover{color:var(--txt)}
 thead th.l{text-align:left}
@@ -487,66 +514,69 @@ thead th.on{color:var(--accent)}
 /* 排序指示：箭头放在标题**前面**，用 ::before 而不是 ::after。
    「申赎」表头里那句「11-11」是 display:block 的小字，::after 会掉到第三行去。 */
 thead th[data-sk].son{color:var(--accent)}
-thead th[data-sk].son::before{content:'▼';margin-right:0;font-size:8px;opacity:.8}
+thead th[data-sk].son::before{content:'▼';margin-right:0;font-size:var(--fs-cap);opacity:.8}
 thead th[data-sk].son.asc::before{content:'▲'}
 /* 展开某指数时，标出哪只是代表标的（成交额最大的那只） */
 tbody tr.rep td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-tbody td{padding:8px 9px;text-align:right;border-bottom:1px solid #e3e6eb;
-font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+tbody td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--grid);
+font-family:var(--mono);font-size:var(--fs-sm);white-space:nowrap}
+/* 一张表里只有第一列是"人读"的，其余都是给眼睛扫的。给名称一档字重，
+   扫的时候能顺着左边界走，不用每行重新找起点。 */
+tbody td:first-child{font-weight:500;color:var(--txt)}
 tbody tr:hover{background:#f7f9fd}
 tbody tr:last-child td{border-bottom:none}
 td.l{text-align:left;font-family:inherit}
 td.ctr{text-align:center}
-.code{color:var(--txt3);font-size:11.5px}
+.code{color:var(--txt3);font-size:var(--fs-xs)}
 .nm{font-weight:500}
 .up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--txt3)}
-.pm{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11.5px;font-weight:600;min-width:56px}
-.pm.hi{background:#fdecec;color:#c62f34;border:1px solid #f5c9cb}
-.pm.mid{background:#fff6e5;color:#a9660a;border:1px solid #f0dcb4}
-.pm.lo{background:#e9f8f1;color:#0b7d55;border:1px solid #c2e8d6}
+.pm{display:inline-block;padding:1px 7px;border-radius:4px;font-size:var(--fs-xs);font-weight:600;min-width:56px}
+.pm.hi{background:#fbf2f2;color:#a8454a;border:1px solid #efdcde}
+.pm.mid{background:#fbf8f1;color:#8a6a3a;border:1px solid #eee4d0}
+.pm.lo{background:#f2f8f5;color:#3a7a63;border:1px solid #dcebe3}
 .pm.na{background:transparent;color:var(--txt3);border:none;font-weight:400}
-.act{color:var(--txt3);cursor:pointer;font-size:15px;padding:1px 6px;border-radius:4px}
+.act{color:var(--txt3);cursor:pointer;font-size:var(--fs-md);padding:1px 6px;border-radius:4px}
 .act:hover{color:var(--accent);background:#eaf1ff}
 .act.del:hover{color:var(--up);background:#fdeeee}
-.ixb{display:inline-block;margin-left:5px;padding:0 5px;border-radius:3px;font-size:10.5px;
+.ixb{display:inline-block;margin-left:5px;padding:0 5px;border-radius:3px;font-size:var(--fs-2xs);
 font-weight:500;color:var(--txt3);background:#f0f2f5;border:1px solid var(--line);
 vertical-align:1px;cursor:default}
 .ixb.mx{color:#2563eb;background:#eaf1ff;border-color:#c9dbff}
-.syn{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:10.5px;
+.syn{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:var(--fs-2xs);
 color:#2563eb;background:#eaf1ff;border:1px solid #c9dbff;vertical-align:1px;font-weight:500}
 tr.hr{cursor:pointer}
 tr.hr:hover td{background:#f7f9fd}
 @keyframes fu{0%{background:#ffe3e3}100%{background:transparent}}
 @keyframes fd{0%{background:#d9f5ea}100%{background:transparent}}
 .fu{animation:fu .7s ease-out}.fd{animation:fd .7s ease-out}
-footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
+footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt3)}
 .err{color:var(--up)}
-.empty{padding:20px;text-align:center;color:var(--txt3);font-size:12.5px}
+.empty{padding:20px;text-align:center;color:var(--txt3);font-size:var(--fs-sm)}
 /* 现货整批缺失时压在期指表顶部的一行说明。左对齐、贴着表格，不要做成居中的空态——
    表本身是有内容的，缺的只是基差那三列。 */
-.futnospot{padding:2px 0 8px;color:var(--txt3);font-size:12px;line-height:1.7}
+.futnospot{padding:2px 0 8px;color:var(--txt3);font-size:var(--fs-xs);line-height:1.7}
 /* 清单的加载态与失败态。
    为什么单独做：清单是整页最后一块、也是最高的一块，首屏拉全市场要等上游
    （冷启动现场拉两个源要十几二十秒）。原来这里只有一行 12.5px 灰字「加载中…」，
    失败时也只有一行小字，视觉上跟「表格空了」没区别——看着像数据没了。
    现在给足占位：加载三个跳动的点，失败写明原因并给一个能点的重试。 */
-.lskel,.lerr{padding:34px 20px;text-align:center;font-size:12.5px;color:var(--txt3);line-height:1.8}
+.lskel,.lerr{padding:34px 20px;text-align:center;font-size:var(--fs-sm);color:var(--txt3);line-height:1.8}
 .lskel i{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);
   margin:0 3px;vertical-align:middle;animation:ldot 1.2s infinite}
 .lskel i:nth-child(2){animation-delay:.15s}
 .lskel i:nth-child(3){animation-delay:.3s}
 .lskel span{display:block;margin-top:6px}
 @keyframes ldot{0%,80%,100%{opacity:.18}40%{opacity:1}}
-.lerr b{display:block;font-size:13.5px;font-weight:600;color:var(--txt);margin-bottom:4px}
-.lerr span{display:block;font-size:12px;opacity:.72;margin-bottom:11px;word-break:break-all}
-.lerr button{font:inherit;font-size:12.5px;padding:5px 15px;border-radius:7px;border:1px solid var(--line);
+.lerr b{display:block;font-size:var(--fs-sm);font-weight:600;color:var(--txt);margin-bottom:4px}
+.lerr span{display:block;font-size:var(--fs-xs);opacity:.72;margin-bottom:11px;word-break:break-all}
+.lerr button{font:inherit;font-size:var(--fs-sm);padding:5px 15px;border-radius:7px;border:1px solid var(--line);
   background:var(--bg2);color:var(--txt);cursor:pointer}
 .lerr button:hover{background:var(--bg3)}
 /* 「今日变化」两格的空态不是错误也不是加载，只是一句话——按正文排版收紧行高，
    不再占一大块空白。 */
 .evtbox .empty,.portbox .empty{padding:6px 2px;text-align:left;line-height:1.7}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#fff;box-shadow:0 8px 28px rgba(23,32,54,.16);
-border:1px solid var(--line);padding:8px 16px;border-radius:6px;font-size:12.5px;opacity:0;
+border:1px solid var(--line);padding:8px 16px;border-radius:6px;font-size:var(--fs-sm);opacity:0;
 transition:.25s;pointer-events:none;z-index:9}
 #toast.show{opacity:1}
 @media(max-width:820px){.hide-sm{display:none}}
@@ -557,12 +587,12 @@ transition:.25s;pointer-events:none;z-index:9}
 /* 三只成分压成一串小标签。用底色块而不是纯文字：三行名字连在一起时，
    靠颜色块才分得清哪一段是名称、哪一段是贡献数字 */
 .t3{display:inline-block;padding:0 4px;margin-right:3px;border-radius:3px;
-  background:#f3f6fb;font-size:10.5px;line-height:17px;color:var(--txt2);
+  background:#f3f6fb;font-size:var(--fs-2xs);line-height:17px;color:var(--txt2);
   font-family:var(--sans);font-weight:500}
 .t3 em{font-style:normal;font-family:var(--mono);margin-left:3px;font-weight:600}
 .t3.up em{color:var(--up)}
 .t3.dn em{color:var(--down)}
-.t3ph{color:var(--txt3);font-size:11.5px;font-family:var(--mono)}
+.t3ph{color:var(--txt3);font-size:var(--fs-xs);font-family:var(--mono)}
 
 /* ---------- 历史 K 线面板 ---------- */
 #histMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:60;display:none;
@@ -572,34 +602,34 @@ align-items:center;justify-content:center;padding:18px}
 max-width:1060px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;
 box-shadow:0 8px 28px rgba(23,32,54,.16)}
 .hhd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.hhd .nm{font-size:14.5px;font-weight:600}
-.hhd .cd{font-family:var(--mono);font-size:12.5px;color:var(--txt3)}
-.hhd .px{font-family:var(--mono);font-size:16px;font-weight:600;margin-left:4px}
-.hhd .ch{font-family:var(--mono);font-size:12.5px}
+.hhd .nm{font-size:var(--fs-md);font-weight:600}
+.hhd .cd{font-family:var(--mono);font-size:var(--fs-sm);color:var(--txt3)}
+.hhd .px{font-family:var(--mono);font-size:var(--fs-lg);font-weight:600;margin-left:4px}
+.hhd .ch{font-family:var(--mono);font-size:var(--fs-sm)}
 .htabs{display:flex;gap:3px;margin-left:6px}
 /* 分时 / K线 切换：做成独立分段控件，和右边周期条分开——
    两者语义不同（一个是「看什么」，一个是「看多长」），混在一排会读错 */
 .hmodes{display:flex;gap:2px;background:var(--bg3);border:1px solid var(--line);
 border-radius:6px;padding:2px;margin-left:auto}
-.hmodes b{padding:2px 10px;border-radius:4px;font-size:11.5px;font-weight:400;
+.hmodes b{padding:2px 10px;border-radius:4px;font-size:var(--fs-xs);font-weight:400;
 color:var(--txt2);cursor:pointer;user-select:none}
 .hmodes b:hover{color:var(--txt)}
 .hmodes b.on{background:#fff;color:var(--txt);font-weight:600;box-shadow:0 3px 12px rgba(23,32,54,.1)}
 .hmodes b[data-m="min"].on{color:var(--accent)}
-.htabs span{padding:3px 9px;border-radius:5px;font-size:11.5px;color:var(--txt2);
+.htabs span{padding:3px 9px;border-radius:5px;font-size:var(--fs-xs);color:var(--txt2);
 cursor:pointer;border:1px solid transparent;user-select:none}
 .htabs span:hover{color:var(--txt)}
 .htabs span.on{background:var(--bg3);border-color:var(--line);color:var(--txt)}
 .hx{width:26px;height:26px;border-radius:6px;border:1px solid var(--line);background:transparent;
-color:var(--txt2);cursor:pointer;font-size:15px;line-height:1;padding:0}
+color:var(--txt2);cursor:pointer;font-size:var(--fs-md);line-height:1;padding:0}
 .hx:hover{color:var(--txt);background:var(--bg3)}
 #histCv{display:block;width:100%;height:clamp(300px,62vh,430px);flex:0 0 auto;cursor:crosshair;min-width:0;max-width:100%}
 /* 副图 / 叠加选择条：一行 chip，切换只重绘画布，不重新拉数据 */
 .hsbar{display:flex;align-items:center;gap:4px;padding:8px 14px 2px;flex-wrap:wrap}
-.hsbar .lb{font-size:10.5px;color:var(--txt3);margin-right:2px}
+.hsbar .lb{font-size:var(--fs-2xs);color:var(--txt3);margin-right:2px}
 .hsbar .lb+.sg+.lb{margin-left:8px}
 .hsbar .sg{display:flex;gap:3px;flex-wrap:wrap;min-width:0}
-.hsbar b{padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:11.5px;
+.hsbar b{padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:var(--fs-xs);
 font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-select:none}
 .hsbar b:hover{color:var(--txt)}
 .hsbar b.on{background:var(--bg3);color:var(--txt);border-color:#c9d6ef}
@@ -614,17 +644,17 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .hhold{display:none;flex:0 1 auto;max-height:calc(94vh - 132px);overflow-y:auto;padding:0 14px}
 .hhold.on{display:block}
 .hholdhd{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
-  font-size:10.5px;color:var(--txt3);padding:8px 0 7px;border-bottom:1px solid var(--line);
+  font-size:var(--fs-2xs);color:var(--txt3);padding:8px 0 7px;border-bottom:1px solid var(--line);
   position:sticky;top:0;background:var(--bg2);z-index:2}
 .hholdhd b{color:var(--txt);font-weight:600}
 .hcollapse{font-style:normal;cursor:pointer;color:#2f6fd0;border-bottom:1px dashed #9dbbeb}
 .hhrow{display:grid;grid-template-columns:minmax(0,220px) 62px 66px minmax(70px,1fr) 62px;
-  gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:12.5px}
+  gap:10px;align-items:center;padding:5px 0;border-bottom:1px dashed var(--line);font-size:var(--fs-sm)}
 .hhrow:hover{background:#f7f9fc}
 .hhrk{display:none}
 .hhnm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.hhnm em{font-style:normal;font-size:10.5px;color:var(--txt3);margin-left:5px;font-family:var(--mono)}
-.hhw,.hhc,.hhctr{font-family:var(--mono);text-align:right;font-size:11.5px}
+.hhnm em{font-style:normal;font-size:var(--fs-2xs);color:var(--txt3);margin-left:5px;font-family:var(--mono)}
+.hhw,.hhc,.hhctr{font-family:var(--mono);text-align:right;font-size:var(--fs-xs)}
 .hhc.up{color:var(--up)}.hhc.dn{color:var(--down)}
 /* 贡献列也要红涨绿跌：不写这条时负贡献会掉回默认的深灰，跟「-0.16 是坏事」
    这层意思对不上，整列看着像没上色 */
@@ -635,38 +665,38 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .hhbar u{position:absolute;top:0;height:7px;border-radius:3px}
 /* 合计行吸在底部：它是这一栏的结论（前 N 大解释了多少、剩下多少），
    被 30 行挤到屏幕外就等于没给。 */
-.hhfoot{display:flex;flex-wrap:wrap;gap:14px;padding:9px 0 8px;font-size:11.5px;color:var(--txt2);
+.hhfoot{display:flex;flex-wrap:wrap;gap:14px;padding:9px 0 8px;font-size:var(--fs-xs);color:var(--txt2);
   position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--line);z-index:1}
 .hhfoot b{font-family:var(--mono);font-weight:600}
 .hhfoot .k{color:var(--txt3)}
-.hhnote{padding:8px 0 2px;font-size:10.5px;color:var(--txt3);line-height:1.75}
+.hhnote{padding:8px 0 2px;font-size:var(--fs-2xs);color:var(--txt3);line-height:1.75}
 /* 展开按钮：整行居中，视觉上明显是「表格到此为止」的分界，不是又一条成分 */
 .hhmore{display:flex;justify-content:center;padding:9px 0 4px}
-.hhmore b{font-size:11.5px;font-weight:500;color:var(--acc,#2f6fd0);cursor:pointer;
+.hhmore b{font-size:var(--fs-xs);font-weight:500;color:var(--acc,#2f6fd0);cursor:pointer;
   padding:5px 14px;border:1px solid #cfdcf0;border-radius:14px;background:var(--bg2)}
 .hhmore b:hover{background:#eef4fe;border-color:#9dbbeb}
 .hhmore b:active{transform:translateY(1px)}
-.hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:12.5px;line-height:1.9}
+.hempty{padding:28px 0;text-align:center;color:var(--txt3);font-size:var(--fs-sm);line-height:1.9}
 @media(max-width:760px){
-  .hhrow{grid-template-columns:minmax(0,1fr) 48px 54px 52px;gap:6px;font-size:11.5px}
+  .hhrow{grid-template-columns:minmax(0,1fr) 48px 54px 52px;gap:6px;font-size:var(--fs-xs)}
   .hhbar{display:none}
-  .hhw,.hhc,.hhctr{font-size:11.5px}
+  .hhw,.hhc,.hhctr{font-size:var(--fs-xs)}
   .hhold{padding:0 12px 8px}
 }
 .hind .i.on{border-color:#c9d6ef;background:var(--bg3)}
-.hleg{display:flex;gap:16px;padding:7px 14px 0;font-size:11.5px;color:var(--txt2);flex-wrap:wrap}
+.hleg{display:flex;gap:16px;padding:7px 14px 0;font-size:var(--fs-xs);color:var(--txt2);flex-wrap:wrap}
 .hleg i{display:inline-block;width:8px;height:2px;vertical-align:3px;margin-right:4px}
-.hnote{padding:5px 14px 12px;font-size:10.5px;color:var(--txt3);line-height:1.7}
+.hnote{padding:5px 14px 12px;font-size:var(--fs-2xs);color:var(--txt3);line-height:1.7}
 .hnote:empty{display:none}
 /* 指标明细：K 线下方一排小卡，把 17 个字段里最能看的那几个摊开 */
 .hind{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:6px;padding:6px 14px 2px;min-width:0}
 .hind .i{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
-.hind .i .k{font-size:10.5px;color:var(--txt3);letter-spacing:.2px;white-space:nowrap}
-.hind .i .v{font-size:12.5px;font-family:var(--mono);font-weight:600;margin-top:1px;
+.hind .i .k{font-size:var(--fs-2xs);color:var(--txt3);letter-spacing:.2px;white-space:nowrap}
+.hind .i .v{font-size:var(--fs-sm);font-family:var(--mono);font-weight:600;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hind .i .s{font-size:10.5px;color:var(--txt2);margin-top:1px;white-space:nowrap;
+.hind .i .s{font-size:var(--fs-2xs);color:var(--txt2);margin-top:1px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
-.hload{padding:70px 0;text-align:center;color:var(--txt2);font-size:12.5px;line-height:2}
+.hload{padding:70px 0;text-align:center;color:var(--txt2);font-size:var(--fs-sm);line-height:2}
 @media(max-width:700px){
   /* 顶部一行装不下：名称/代码/价格/涨幅 + 4 个周期 + 关闭。
      不换行就会把面板撑得比屏幕还宽，连带右边价格轴一起被裁。 */
@@ -676,16 +706,16 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
   .hhd .cd{display:none}
   /* 名称不截断时，长名字（沪深300ETF华泰柏瑞）会把关闭按钮挤到第二行，
      面板顶部凭空多出一行，看着像渲染坏了 */
-  .hhd .nm{font-size:13.5px;max-width:28vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hhd .nm{font-size:var(--fs-sm);max-width:28vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .htabs{margin-left:0;order:9}
   .htabs span{padding:2px 7px}
   .hmodes{margin-left:auto;order:8;padding:2px}
-  .hmodes b{padding:2px 5px;font-size:10.5px}
+  .hmodes b{padding:2px 5px;font-size:var(--fs-2xs)}
   .hx{position:absolute;right:8px;top:10px;margin:0}
   .hsbar{padding:7px 10px 2px;gap:3px;overflow:hidden}
-  .hsbar .lb{font-size:10.5px}
+  .hsbar .lb{font-size:var(--fs-2xs)}
   .hsbar .lb+.sg+.lb{margin-left:5px}
-  .hsbar b{padding:2px 5px;font-size:10.5px}
+  .hsbar b{padding:2px 5px;font-size:var(--fs-2xs)}
   #histCv{height:300px}
   /* 小屏固定 3 列：auto-fit 在 400px 里会算出 4 列 96px，
      但 canvas 的固有宽度参与 flex 计算会把面板撑宽，导致第 4 列被裁掉 */
@@ -693,14 +723,14 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 }
 /* 自选标题行右侧的小按钮：上一版这里是「同步」，复制一条带编号的链接，
    谁打开谁能写。换成纯文本导入导出后，只需要一个入口。 */
-.sechd .io{margin-left:auto;font-size:11.5px;color:var(--txt);background:var(--bg3);
+.sechd .io{margin-left:auto;font-size:var(--fs-xs);color:var(--txt);background:var(--bg3);
 border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer;
 user-select:none;white-space:nowrap}
 .sechd .io:hover{border-color:#c3cad8}
 
 /* 板块地图标题下的一行体检：多少格、多少指数、多少只有报价、多少只进不来。
    被「229 个单只指数整组丢掉」坑过一次，覆盖率要写在明面上，不靠人去猜。 */
-.secmeta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:10.5px;color:var(--txt3);
+.secmeta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:var(--fs-2xs);color:var(--txt3);
 padding:0 2px 7px;line-height:1.5}
 .secmeta b{color:var(--txt2);font-weight:600}
 .secmeta span{white-space:nowrap}
@@ -716,7 +746,7 @@ color:var(--txt2);cursor:pointer;user-select:none}
 .secmeta .mt.bad{color:#a03030}
 /* 展开明细：flex-basis:100% 换到第二行，虚线隔开 */
 .secmeta .mtdet{display:none;flex-basis:100%;align-items:center;flex-wrap:wrap;gap:3px 14px;
-padding:3px 0 0;border-top:1px dashed var(--line);margin-top:2px;font-size:10.5px}
+padding:3px 0 0;border-top:1px dashed var(--line);margin-top:2px;font-size:var(--fs-2xs)}
 .secmeta.open .mtdet{display:flex}
 .secmeta .mtdet .ok{color:#2e7d4f}
 .secmeta .mtdet .warn{color:#a06a00}
@@ -728,46 +758,46 @@ padding:3px 0 0;border-top:1px dashed var(--line);margin-top:2px;font-size:10.5p
    看不出这个数是刚起步还是已经走了一半。 */
 .strend{margin:2px 0 10px;padding:9px 12px 7px;background:var(--bg2);
 border:1px solid var(--line);border-radius:8px}
-.sthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3)}
-.sthd b{font-size:15px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
-.sthd .sttag{font-size:10.5px;padding:1px 6px;border-radius:4px;background:var(--bg3);
+.sthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt3)}
+.sthd b{font-size:var(--fs-md);color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.sthd .sttag{font-size:var(--fs-2xs);padding:1px 6px;border-radius:4px;background:var(--bg3);
 color:var(--txt2);border:1px solid var(--line)}
 .sthd .sttag.hi{color:#a8541c;border-color:#f0dcc8;background:#fdf6ef}
 .sthd .sttag.lo{color:#1c6b8a;border-color:#cfe3ee;background:#f2f9fc}
 .strend svg{display:block;width:100%;height:86px;margin-top:5px}
-.stax{display:flex;justify-content:space-between;font-size:10.5px;color:var(--txt3);
+.stax{display:flex;justify-content:space-between;font-size:var(--fs-2xs);color:var(--txt3);
 margin-top:1px;font-variant-numeric:tabular-nums}
 
 /* 集中度 × 宽度四象限。格子回答「钱在哪条线」，这张图回答
    「这种分布是常态还是异常」——只给一个 58.7% 没人知道算高算低。 */
 .scq{margin:7px 0 8px;padding:8px 11px 6px;background:var(--bg2);
 border:1px solid var(--line);border-radius:8px;position:relative}
-.scqhd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:10.5px;color:var(--txt3)}
+.scqhd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:var(--fs-2xs);color:var(--txt3)}
 .scqhd>span:first-child{color:var(--txt2);font-weight:600}
-.scqhd .scqb{font-style:normal;font-weight:700;font-size:11.5px;padding:1px 7px;border-radius:4px;
+.scqhd .scqb{font-style:normal;font-weight:700;font-size:var(--fs-xs);padding:1px 7px;border-radius:4px;
 background:var(--bg3);border:1px solid var(--line)}
-.scqhd .scqtag{margin-left:auto;font-size:10.5px;color:var(--txt3);letter-spacing:.2px;cursor:help}
+.scqhd .scqtag{margin-left:auto;font-size:var(--fs-2xs);color:var(--txt3);letter-spacing:.2px;cursor:help}
 /* 四象限说明浮窗。四个角标签只有名字，不知道「抱团」和「涣散」差在哪，
    而且差的那一步正好决定该不该动手。浮窗用 2×2 小矩阵复刻图上的方位。 */
 .scqhelp{flex:none;width:14px;height:14px;line-height:12px;text-align:center;border-radius:50%;
-border:1px solid var(--line);background:var(--bg);color:var(--txt3);font-size:10.5px;cursor:pointer;
+border:1px solid var(--line);background:var(--bg);color:var(--txt3);font-size:var(--fs-2xs);cursor:pointer;
 user-select:none;font-style:normal}
 .scqhelp:hover{color:var(--txt2);border-color:var(--txt3)}
 .scqpop{display:none;position:absolute;right:8px;top:26px;z-index:40;
 width:min(424px,calc(100% - 16px));padding:10px 12px 9px;background:var(--bg);
 border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 28px rgba(23,32,54,.16)}
 .scq.open .scqpop{display:block}
-.scqaxs{font-size:10.5px;color:var(--txt3);margin:0 0 8px;letter-spacing:.2px}
+.scqaxs{font-size:var(--fs-2xs);color:var(--txt3);margin:0 0 8px;letter-spacing:.2px}
 .scqgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
 .scqcell{border-left:3px solid var(--line);padding:1px 0 1px 8px;min-width:0}
-.scqcell b{display:block;font-size:11.5px;color:var(--txt2);margin-bottom:2px}
-.scqcell b i{font-style:normal;font-size:10.5px;color:#fff;background:var(--txt3);
+.scqcell b{display:block;font-size:var(--fs-xs);color:var(--txt2);margin-bottom:2px}
+.scqcell b i{font-style:normal;font-size:var(--fs-2xs);color:#fff;background:var(--txt3);
 border-radius:3px;padding:0 3px;margin-left:4px;vertical-align:1px}
-.scqcell span{display:block;font-size:10.5px;color:var(--txt3);line-height:1.55}
+.scqcell span{display:block;font-size:var(--fs-2xs);color:var(--txt3);line-height:1.55}
 .scqcell span.act{color:var(--txt2)}
 .scqfoot{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--line);
-font-size:10.5px;color:var(--txt3);line-height:1.55}
-.scqstk{margin:0;font-size:10.5px;color:var(--txt3);font-variant-numeric:tabular-nums}
+font-size:var(--fs-2xs);color:var(--txt3);line-height:1.55}
+.scqstk{margin:0;font-size:var(--fs-2xs);color:var(--txt3);font-variant-numeric:tabular-nums}
 /* 点中某一天的浮窗。锚在被点的点上（left/top 是点的百分比坐标），
    默认出现在点的右下方；靠右（px>60%）翻到左侧、靠下（py>52%）翻到上方。
    不跟随鼠标——移动端没有 hover，跟随毫无意义，固定锚点反而稳。 */
@@ -775,7 +805,7 @@ font-size:10.5px;color:var(--txt3);line-height:1.55}
 .scqtip{display:none;position:absolute;z-index:6;box-sizing:border-box;
 min-width:230px;max-width:min(376px,calc(100% - 14px));
 padding:7px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;
-box-shadow:0 8px 28px rgba(23,32,54,.16);font-size:11.5px;color:var(--txt2);
+box-shadow:0 8px 28px rgba(23,32,54,.16);font-size:var(--fs-xs);color:var(--txt2);
 line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
 .scqtip.on{display:block}
 .scqtip{transform:translate(10px,12px)}
@@ -788,8 +818,8 @@ line-height:1.65;font-variant-numeric:tabular-nums;pointer-events:none}
 /* 涨跌色要盖过上面的 .scqtip i（0,1,1），否则「额前三」的涨幅全是黑的 */
 .scqtip i.up{color:var(--up)}.scqtip i.down{color:var(--down)}.scqtip i.flat{color:var(--txt3)}
 .scqtip .t3h{display:inline-block;margin-right:2px;padding:0 4px;border-radius:3px;
-background:#f1f3f7;color:var(--txt3);font-size:10px;line-height:15px;vertical-align:1px}
-.scqtip .esc{font-size:10.5px}
+background:#f1f3f7;color:var(--txt3);font-size:var(--fs-cap);line-height:15px;vertical-align:1px}
+.scqtip .esc{font-size:var(--fs-2xs)}
 .scqplot svg{cursor:crosshair}
 /* 电脑为主：图独占一行、放到 1000px，统计和描述缩到图下方一行。
    原来的三栏（360 图 + 190 统计 + 1fr 说明）在 1440 屏上图只有 360px，
@@ -802,24 +832,24 @@ background:#f1f3f7;color:var(--txt3);font-size:10px;line-height:15px;vertical-al
 .scqplot svg{display:block;width:100%;height:auto}
 .scqplot svg.m{display:none}
 .scqax{display:flex;justify-content:flex-start;gap:16px;flex-wrap:wrap;
-font-size:10.5px;color:var(--txt3);line-height:1.5;margin-top:1px}
+font-size:var(--fs-2xs);color:var(--txt3);line-height:1.5;margin-top:1px}
 /* 底部三块按图宽三等分：图 1000px，三项挤在左边 500px 会留下半屏空白，
    而且和上面的图对不齐。等分后每块一个竖排单元，读起来像一行表头。 */
 .scqfoot{margin-top:0}
 .scqstats{display:flex;flex-direction:column;gap:10px;
   padding:0 0 9px;border-bottom:1px solid var(--line)}
 .scqe{display:flex;align-items:baseline;gap:6px;cursor:help}
-.scqe>span{font-size:10.5px;color:var(--txt3);flex:none}
-.scqe b{font-size:17px;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
-.scqe em{font-style:normal;font-size:10.5px;color:var(--txt3);line-height:1.45}
+.scqe>span{font-size:var(--fs-2xs);color:var(--txt3);flex:none}
+.scqe b{font-size:var(--fs-lg);color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+.scqe em{font-style:normal;font-size:var(--fs-2xs);color:var(--txt3);line-height:1.45}
 .scqdesc{display:flex;flex-direction:column;gap:5px;padding-top:0;min-width:260px;flex:1;max-width:680px}
-.scqd{margin:0;font-size:12.5px;color:var(--txt2);line-height:1.7}
+.scqd{margin:0;font-size:var(--fs-sm);color:var(--txt2);line-height:1.7}
 /* 描述句里的行业名可点。用虚下划线而不是蓝色链接：这句话整体是叙述，
    突然冒出三个蓝字会把「钱压在什么上」这件事切成三块，读起来更累。 */
 .indlk{font-weight:600;color:var(--txt);cursor:pointer;
 border-bottom:1px dotted var(--txt3);transition:border-color .12s}
 .indlk:hover{border-bottom-color:var(--txt);color:var(--txt)}
-.scqnote{margin:0;font-size:10.5px;color:var(--txt3);line-height:1.75}
+.scqnote{margin:0;font-size:var(--fs-2xs);color:var(--txt3);line-height:1.75}
 @media(max-width:820px){
   .scqbody{grid-template-columns:1fr;gap:4px}
   .scqplot{max-width:100%}
@@ -833,7 +863,7 @@ border-bottom:1px dotted var(--txt3);transition:border-color .12s}
   .scqe{flex-direction:column;align-items:flex-start;gap:0}
   .scqdesc{padding-top:6px;min-width:0}
 }
-@media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:15px}.scqnote{font-size:10.5px}}
+@media(max-width:560px){.scq{padding:7px 9px 5px}.scqe b{font-size:var(--fs-md)}.scqnote{font-size:var(--fs-2xs)}}
 
 /* ---- 短线情绪 ----
    三类指标混排，但读法完全不同，所以分两层而不是摊平成一排数字：
@@ -843,32 +873,34 @@ border-bottom:1px dotted var(--txt3);transition:border-color .12s}
    有时偏低），一组固定权重不可能同时标定盘中与收盘，分数只会显得很确定。 */
 .snt{margin:0 0 8px;padding:8px 11px 7px;background:var(--bg2);
 border:1px solid var(--line);border-radius:8px;position:relative}
-.snthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:10.5px;color:var(--txt3)}
+.snthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:var(--fs-2xs);color:var(--txt3)}
 .snthd>span:first-child{color:var(--txt2);font-weight:600}
-.sntb{font-style:normal;font-weight:700;font-size:11.5px;padding:1px 7px;border-radius:4px;
+.sntb{font-style:normal;font-weight:700;font-size:var(--fs-xs);padding:1px 7px;border-radius:4px;
 background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:none}
-.snttag{margin-left:auto;font-size:10.5px;color:var(--txt3);letter-spacing:.2px}
+.snttag{margin-left:auto;font-size:var(--fs-2xs);color:var(--txt3);letter-spacing:.2px}
 .sntgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px 14px;margin-top:8px}
 .sntk{min-width:0}
-.sntk>span{display:block;font-size:10.5px;color:var(--txt3);white-space:nowrap;
+.sntk>span{display:block;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;
 overflow:hidden;text-overflow:ellipsis}
-.sntk>b{font-size:16px;font-variant-numeric:tabular-nums;letter-spacing:-.3px}
-.sntk>em{font-style:normal;font-size:10px;color:var(--txt3);margin-left:3px}
+.sntk>b{font-size:var(--fs-lg);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.sntk>em{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);margin-left:3px}
 .sntk>b.up{color:var(--up)}.sntk>b.down{color:var(--down)}
-.sntk>b i{font-style:normal;font-size:10px;color:var(--txt3);font-weight:400;
+.sntk>b i{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);font-weight:400;
 margin-left:3px;letter-spacing:0}
 /* 同刻对照单独一行、缩进两格：它修饰的是上面那个涨停数，不是另一个指标。
    并排成两列会被读成「今天 38 家 / 历史 41 家」两个平行的事实。 */
-.sntref{margin:6px 0 0;font-size:10.5px;color:var(--txt3);line-height:1.6}
+/* 解释性注释：比结构性小字（表头、坐标轴）再退一档。盯盘时这些是
+   「要看才看」的说明，和表头同重量就会在每个区块底部堆出一条灰带。 */
+.sntref{margin:6px 0 0;font-size:var(--fs-2xs);color:#7d8698;line-height:1.68}
 .sntref b{color:var(--txt2);font-variant-numeric:tabular-nums;font-weight:600}
 .sntline{display:flex;gap:12px;flex-wrap:wrap;align-items:baseline;
 margin-top:9px;padding-top:7px;border-top:1px solid var(--line);
-font-size:10.5px;color:var(--txt3);line-height:1.6}
+font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6}
 .sntline>b{color:var(--txt2);font-variant-numeric:tabular-nums}
 .sntlk{cursor:pointer;color:var(--txt2);border-bottom:1px dotted var(--txt3);white-space:nowrap}
 .sntlk:hover{border-bottom-color:var(--txt2)}
 .sntwhy{display:none;margin:7px 0 0;padding:6px 9px;border-radius:6px;background:var(--bg);
-border:1px solid var(--line);font-size:10.5px;color:var(--txt3);line-height:1.7}
+border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-height:1.7}
 .snt.open .sntwhy{display:block}
 .sntwhy i{font-style:normal;color:var(--txt2)}
 /* 两组口径之间加一条竖线：左边是「昨天的池子今天怎么样」，右边是「今天的过程量」，
@@ -879,28 +911,28 @@ border:1px solid var(--line);font-size:10.5px;color:var(--txt3);line-height:1.7}
 .sntlrow{display:flex;align-items:flex-end;gap:14px;margin-top:8px}
 .sntbar{display:flex;align-items:flex-end;gap:11px}
 .sntbar .sb{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px}
-.sntbar .sb>b{font-size:10.5px;color:var(--txt2);font-variant-numeric:tabular-nums;line-height:1}
+.sntbar .sb>b{font-size:var(--fs-2xs);color:var(--txt2);font-variant-numeric:tabular-nums;line-height:1}
 .sntbar .sb>i{display:block;width:20px;border-radius:2px 2px 0 0;background:var(--up);opacity:.55}
 .sntbar .sb.hi>i{opacity:1}
-.sntbar .sb>em{font-style:normal;font-size:9.5px;color:var(--txt3);white-space:nowrap;line-height:1}
-.sntrl{font-size:10.5px;color:var(--txt3);white-space:nowrap}
+.sntbar .sb>em{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);white-space:nowrap;line-height:1}
+.sntrl{font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap}
 /* 曲线图：宽度跟着卡片走，viewBox 直接按屏宽选好（窄屏换一套坐标），
    所以这里只做「不超过容器」，不靠缩放——缩放会把刻度压到读不出。 */
 .sntcv{display:block;width:100%;height:auto;max-width:100%;margin:7px 0 1px;overflow:visible}
-.sntcv text{font-size:10px;fill:var(--txt3);font-family:inherit;letter-spacing:0}
+.sntcv text{font-size:var(--fs-cap);fill:var(--txt3);font-family:inherit;letter-spacing:0}
 .nw{white-space:nowrap}
 .sntcv .cvg{stroke:var(--line);stroke-width:1}
 /* 副图标题：比刻度字小一号、颜色更淡，它只在说明这块区域是什么，
    不该和曲线上的数字抢注意力。 */
-.sntcv .cvlb{font-size:9.5px;fill:var(--txt2);opacity:.8}
+.sntcv .cvlb{font-size:var(--fs-cap);fill:var(--txt2);opacity:.8}
 .lbseg{display:inline}
 .lbsplit{color:#cdd2da;margin:0 2px}
 .sntsp{display:block;flex:none;overflow:visible}
-.sntlmx{margin-left:2px;font-size:10.5px;color:var(--txt3);white-space:nowrap;padding-bottom:1px}
+.sntlmx{margin-left:2px;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;padding-bottom:1px}
 .sntlmx b{color:var(--txt2);font-variant-numeric:tabular-nums}
 @media(max-width:820px){
   .sntgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 12px}
-  .sntk>b{font-size:15px}
+  .sntk>b{font-size:var(--fs-md)}
   .sntk.sep{padding-left:0;border-left:0}
   .sntbar{gap:9px}
   .sntbar .sb>i{width:17px}
@@ -923,14 +955,14 @@ align-items:center;justify-content:center;padding:18px}
 .trigrule.off{opacity:.55}
 .trigrule .trow{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}
 .trigrule select,.trigrule input[type=text]{border:1px solid var(--line);border-radius:5px;
-  background:var(--bg2);color:var(--txt);padding:4px 6px;font-size:12.5px;outline:none}
+  background:var(--bg2);color:var(--txt);padding:4px 6px;font-size:var(--fs-sm);outline:none}
 .trigrule input[type=text]{width:78px;font-family:var(--mono)}
-.trigrule .tand{font-size:11.5px;color:var(--txt3);margin-left:2px}
-.trigrule .tdel,.trigrule .tcdel{cursor:pointer;color:var(--txt3);font-size:13.5px;padding:0 4px;user-select:none}
+.trigrule .tand{font-size:var(--fs-xs);color:var(--txt3);margin-left:2px}
+.trigrule .tdel,.trigrule .tcdel{cursor:pointer;color:var(--txt3);font-size:var(--fs-sm);padding:0 4px;user-select:none}
 .trigrule .tdel:hover,.trigrule .tcdel:hover{color:var(--down)}
-.trigrule .tadd{cursor:pointer;color:var(--accent);font-size:11.5px;user-select:none}
-.trigrule .tname{font-size:11.5px;color:var(--txt3)}
-.trigcnt{font-size:11.5px;color:var(--txt3);line-height:1.65;margin-top:4px}
+.trigrule .tadd{cursor:pointer;color:var(--accent);font-size:var(--fs-xs);user-select:none}
+.trigrule .tname{font-size:var(--fs-xs);color:var(--txt3)}
+.trigcnt{font-size:var(--fs-xs);color:var(--txt3);line-height:1.65;margin-top:4px}
 /* 隔夜/亚太条目点击看分时：可点的条目加指针和悬停反馈 */
 .onfut span.ovclk{cursor:pointer}
 .onfut span.ovclk:hover,.ontrk:hover{border-color:var(--txt3)}
@@ -945,9 +977,9 @@ align-items:center;justify-content:center;padding:18px}
 align-items:center;justify-content:center;padding:18px}
 #ovMask.on,#shMask.on{display:flex}
 #ovBody svg{display:block;width:100%;height:auto}
-.ovmeta{display:flex;gap:8px 16px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
+.ovmeta{display:flex;gap:8px 16px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt2);
 margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
-#ovBody .ovretry{margin-top:2px;font-size:11.5px;padding:3px 11px;border:1px solid var(--line);
+#ovBody .ovretry{margin-top:2px;font-size:var(--fs-xs);padding:3px 11px;border:1px solid var(--line);
 border-radius:6px;background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:inherit}
 #ovBody .ovretry:hover{border-color:var(--txt3);color:var(--txt)}
 /* 「↑↓ 缩放」跟在统计行末尾，颜色再淡一档——它是提示，不是数据。
@@ -959,15 +991,15 @@ vertical-align:middle;position:relative;top:-1px}
 /* 分时 / K 线 切换。和别处的 .mtabs 同一套手感，但这里塞在标题栏右边，
    所以不占一整行、也不带下边框 */
 .ovtabs{display:inline-flex;gap:2px;margin-left:auto;padding:1px;border:1px solid var(--line);border-radius:6px}
-.ovtab{font-size:11.5px;line-height:16px;padding:2px 9px;border-radius:5px;cursor:pointer;color:var(--txt3);user-select:none}
+.ovtab{font-size:var(--fs-xs);line-height:16px;padding:2px 9px;border-radius:5px;cursor:pointer;color:var(--txt3);user-select:none}
 .ovtab.on{background:var(--line);color:var(--txt)}
 
 /* 份额（净申赎）列。数字等宽，正负一眼扫得出来；上标「合」表示这一行是
    同指数多只的合计——不加标记的话，去重行和展开行长得一样，很容易看错。 */
-.shd{display:block;font-size:9px;line-height:11px;color:var(--txt3);font-weight:400}
+.shd{display:block;font-size:var(--fs-cap);line-height:11px;color:var(--txt3);font-weight:400}
 .shcell{font-variant-numeric:tabular-nums;cursor:pointer;white-space:nowrap}
 .shcell:hover{text-decoration:underline;text-underline-offset:2px}
-.shcell .shagg{display:inline-block;margin-left:3px;padding:0 2px;font-size:9px;line-height:11px;
+.shcell .shagg{display:inline-block;margin-left:3px;padding:0 2px;font-size:var(--fs-cap);line-height:11px;
 border-radius:3px;background:var(--line);color:var(--txt2);font-style:normal;vertical-align:1px;
 letter-spacing:0}
 .shcell.up{color:var(--up)} .shcell.down{color:var(--down)}
@@ -977,10 +1009,10 @@ letter-spacing:0}
 #shMask .iohd .n{flex:1 1 auto;min-width:0;white-space:normal;line-height:1.45}
 .shchart{position:relative}
 .shchart svg{display:block;width:100%;height:auto}
-.shfoot{display:flex;gap:6px 18px;flex-wrap:wrap;font-size:11.5px;color:var(--txt2);
+.shfoot{display:flex;gap:6px 18px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt2);
 margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
 .shfoot b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
-.shnote{font-size:11px;color:var(--txt3);line-height:1.6;margin-top:8px}
+.shnote{font-size:var(--fs-xs);color:var(--txt3);line-height:1.6;margin-top:8px}
 /* 行业成分股弹层。点卡片上那三个行业名进来——「TOP3 占 21%」只是个结论，
    真正要回答的是「这 21% 是哪几只票堆出来的」。
    z-index 比份额弹层(80)高一层：它是从卡片里点开的，被压在下面会看着像没反应。 */
@@ -988,20 +1020,20 @@ margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
 align-items:center;justify-content:center;padding:18px}
 #indMask.on{display:flex}
 #indMask .iobox{max-width:640px;flex:0 1 640px}
-.indhd{display:flex;gap:5px 15px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3);
+.indhd{display:flex;gap:5px 15px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt3);
 padding-bottom:7px;margin-bottom:2px;border-bottom:1px solid var(--line)}
 .indhd b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
 .indwrap{max-height:min(62vh,520px);overflow:auto;margin:0 -4px;padding:0 4px}
-.indtb{width:100%;border-collapse:collapse;font-size:11.5px;font-variant-numeric:tabular-nums}
+.indtb{width:100%;border-collapse:collapse;font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
 /* 表头吸顶：一个行业最多 224 只，滚到一半还得知道右边那列是成交额还是占比 */
 .indtb th{position:sticky;top:0;z-index:1;background:var(--bg2);text-align:right;
-font-weight:500;color:var(--txt3);padding:5px 4px;border-bottom:1px solid var(--line);font-size:10.5px}
+font-weight:500;color:var(--txt3);padding:5px 4px;border-bottom:1px solid var(--line);font-size:var(--fs-2xs)}
 .indtb th:first-child,.indtb td:first-child{text-align:left}
 .indtb td{padding:4px;border-bottom:1px solid var(--line);text-align:right;color:var(--txt2)}
 .indtb tbody tr{cursor:pointer}
 .indtb tbody tr:hover td{background:var(--bg3)}
 .indtb td.nm{color:var(--txt)}
-.indtb .cd{color:var(--txt3);font-size:10px;margin-left:5px;letter-spacing:.2px}
+.indtb .cd{color:var(--txt3);font-size:var(--fs-cap);margin-left:5px;letter-spacing:.2px}
 .indtb td.up{color:var(--up)} .indtb td.down{color:var(--down)}
 /* 占比条：数字已经很密，条只是让「谁占大头」在扫视时先跳出来 */
 .indbar{display:inline-block;width:34px;height:3px;border-radius:2px;overflow:hidden;
@@ -1010,10 +1042,10 @@ background:var(--line);vertical-align:middle;margin-right:5px}
    整列右对齐会让条形左右浮动，扫一眼像是错位。 */
 .indtb .pv{display:inline-block;min-width:38px;text-align:right;font-weight:400}
 .indbar i{display:block;height:100%;background:var(--txt3)}
-.indnote{font-size:10.5px;color:var(--txt3);line-height:1.65;margin:8px 0 0;
+.indnote{font-size:var(--fs-2xs);color:var(--txt3);line-height:1.65;margin:8px 0 0;
 padding-top:7px;border-top:1px solid var(--line)}
 /* 个股卡：从成分股列表点进来，同一层里换内容，不叠第二个弹窗 */
-.stkk{display:flex;gap:5px 18px;flex-wrap:wrap;font-size:11.5px;color:var(--txt3);margin:0 0 4px}
+.stkk{display:flex;gap:5px 18px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt3);margin:0 0 4px}
 .stkk b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums;margin-left:4px}
 .stkk b.up{color:var(--up)} .stkk b.down{color:var(--down)}
 #indMin{margin-top:2px}
@@ -1027,15 +1059,15 @@ padding-top:7px;border-top:1px solid var(--line)}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
 max-width:470px;box-shadow:0 8px 28px rgba(23,32,54,.16);overflow:hidden}
 .iohd{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
-font-size:13.5px}
+font-size:var(--fs-sm)}
 .iobody{padding:13px 14px}
-.iotip{font-size:11.5px;color:var(--txt3);line-height:1.65;margin-bottom:9px}
-#ioTxt{width:100%;height:104px;resize:vertical;font-family:var(--mono);font-size:12.5px;
+.iotip{font-size:var(--fs-xs);color:var(--txt3);line-height:1.65;margin-bottom:9px}
+#ioTxt{width:100%;height:104px;resize:vertical;font-family:var(--mono);font-size:var(--fs-sm);
 line-height:1.7;padding:9px 10px;border:1px solid var(--line);border-radius:7px;
 background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
 #ioTxt:focus{border-color:var(--accent)}
 .iobar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
-.iobar .iom{font-size:11.5px;color:var(--txt3);margin-left:auto}
+.iobar .iom{font-size:var(--fs-xs);color:var(--txt3);margin-left:auto}
 
 /* ---- 使用说明（/help） ----
    版式与 /research 完全一致：整份页面切到独立页状态，主站 header 一起收起，
@@ -1044,10 +1076,10 @@ background:var(--bg);color:var(--txt);outline:none;box-sizing:border-box}
 #hsMask{display:none}
 .hshd{display:flex;align-items:center;gap:10px;padding:12px 20px;
   border-bottom:1px solid var(--line)}
-.hshd b{font-size:15px;white-space:nowrap;flex:0 0 auto}
-.hshd .sub{font-size:11.5px;color:var(--txt3);font-family:var(--mono);
+.hshd b{font-size:var(--fs-md);white-space:nowrap;flex:0 0 auto}
+.hshd .sub{font-size:var(--fs-xs);color:var(--txt3);font-family:var(--mono);
   min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hsback{font-size:11.5px;color:var(--txt2);text-decoration:none;padding:2px 8px;
+.hsback{font-size:var(--fs-xs);color:var(--txt2);text-decoration:none;padding:2px 8px;
   border:1px solid var(--line);border-radius:5px;white-space:nowrap}
 .hsback:hover{color:var(--txt)}
 body.hsmode{overflow:auto}
@@ -1055,7 +1087,7 @@ body.hsmode .wrap{display:none}
 body.hsmode #hsMask{display:block;max-width:1120px;margin:0 auto}
 body.hsmode .hshd{position:sticky;top:0;z-index:5;background:var(--bg)}
 .hsbody{padding:18px 20px 60px}
-.helpbody{font-size:13.3px;line-height:1.8;color:var(--txt);column-count:2;column-gap:46px}
+.helpbody{font-size:var(--fs-sm);line-height:1.8;color:var(--txt);column-count:2;column-gap:46px}
 .helpbody .hm{break-inside:avoid;page-break-inside:avoid}
 @media(max-width:900px){.helpbody{column-count:1}}
 @media(max-width:700px){
@@ -1063,16 +1095,16 @@ body.hsmode .hshd{position:sticky;top:0;z-index:5;background:var(--bg)}
   .hshd .sub{flex:1 1 100%;order:9;white-space:normal}
   .hsbody{padding:12px 12px 48px}
 }
-.helpbody h3{font-size:12.5px;font-weight:600;margin:15px 0 4px;color:var(--txt);
+.helpbody h3{font-size:var(--fs-sm);font-weight:600;margin:15px 0 4px;color:var(--txt);
   letter-spacing:.2px;padding-top:12px;border-top:1px solid var(--line)}
 .helpbody h3:first-of-type{margin-top:0;padding-top:0;border-top:0}
-.helpbody .hlead{margin:0 0 6px;font-size:13.3px;line-height:1.8;color:var(--txt);
+.helpbody .hlead{margin:0 0 6px;font-size:var(--fs-sm);line-height:1.8;color:var(--txt);
   column-span:all;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .helpbody p{margin:0 0 7px;color:var(--txt2)}
 .helpbody ul{margin:0 0 4px;padding-left:17px;color:var(--txt2)}
 .helpbody li{margin:2px 0}
 .helpbody b{color:var(--txt);font-weight:600}
-.helpbody code{font-family:var(--mono);font-size:12px;background:var(--bg3);
+.helpbody code{font-family:var(--mono);font-size:var(--fs-xs);background:var(--bg3);
   padding:1px 5px;border-radius:4px}
 
 /* ---- 因子研究面板 ---- */
@@ -1085,20 +1117,20 @@ box-shadow:0 8px 28px rgba(23,32,54,.16)}
 .rshd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
 /* 标题不许被压缩换行：以前「因子研究」在 390px 屏上会折成「因子/研究」两行，
    还把日期挤到旁边，看着像排版坏了。标题固定宽度，元信息自己换行。 */
-.rshd b{font-size:14.5px;white-space:nowrap;flex:0 0 auto}
-.rshd .sub{font-size:11.5px;color:var(--txt3);font-family:var(--mono);
+.rshd b{font-size:var(--fs-md);white-space:nowrap;flex:0 0 auto}
+.rshd .sub{font-size:var(--fs-xs);color:var(--txt3);font-family:var(--mono);
 min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rsbody{overflow-y:auto;padding:14px}
 .rssec{margin-bottom:18px}
-.rssec h4{font-size:12.5px;color:var(--txt2);font-weight:600;margin-bottom:8px;
+.rssec h4{font-size:var(--fs-sm);color:var(--txt2);font-weight:600;margin-bottom:8px;
 letter-spacing:.3px;display:flex;align-items:center;gap:7px}
 .rssec h4::after{content:'';flex:1;height:1px;background:var(--line)}
 .rsk{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
 .rsk .i{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
-.rsk .i .k{font-size:10.5px;color:var(--txt3);margin-bottom:3px}
-.rsk .i .v{font-size:17px;font-family:var(--mono);font-weight:600}
-.rsk .i .s{font-size:10.5px;color:var(--txt3);margin-top:2px}
-.rstbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.rsk .i .k{font-size:var(--fs-2xs);color:var(--txt3);margin-bottom:3px}
+.rsk .i .v{font-size:var(--fs-lg);font-family:var(--mono);font-weight:600}
+.rsk .i .s{font-size:var(--fs-2xs);color:var(--txt3);margin-top:2px}
+.rstbl{width:100%;border-collapse:collapse;font-size:var(--fs-xs)}
 /* 这几张表列多，手机上宽度不够时**宁可横向滚动**也不能把数字裁掉。
    之前直接裁在容器里，"最大回撤"和后面几列在 390px 宽的屏上完全看不见，
    但页面不报错、也不溢出，属于最难发现的一类排版 bug。 */
@@ -1109,12 +1141,12 @@ letter-spacing:.3px;display:flex;align-items:center;gap:7px}
    权重必须写成 .rstbl.indtbl，否则会被下面 .rstbl td 的 nowrap 盖掉。 */
 .rstbl.indtbl td{white-space:normal}
 .rstbl th{text-align:right;font-weight:500;color:var(--txt3);padding:5px 7px;
-border-bottom:1px solid var(--line);font-size:10.5px;white-space:nowrap}
+border-bottom:1px solid var(--line);font-size:var(--fs-2xs);white-space:nowrap}
 .rstbl th:first-child,.rstbl td:first-child{text-align:left}
 .rstbl td{padding:4px 7px;border-bottom:1px solid rgba(38,44,55,.5);
 font-family:var(--mono);text-align:right;white-space:nowrap}
 .rstbl tr:hover td{background:var(--bg3)}
-.rsnote{font-size:11.5px;color:var(--txt2);line-height:1.85;background:var(--bg3);
+.rsnote{font-size:var(--fs-xs);color:var(--txt2);line-height:1.85;background:var(--bg3);
 border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 .rsnote b{color:var(--txt)}
 .rsnote .warn{border-left-color:var(--up)}
@@ -1122,24 +1154,24 @@ border-left:2px solid var(--accent);border-radius:0 6px 6px 0;padding:9px 12px}
 .labchart{background:var(--bg3);border:1px solid var(--line);border-radius:8px;
 padding:10px 12px 6px;margin-top:10px}
 .labchart svg{display:block;width:100%;height:auto;overflow:visible}
-.labchart .cap{font-size:10.5px;color:var(--txt3);line-height:1.6;margin-top:6px}
-.lablg{display:flex;gap:14px;font-size:10.5px;color:var(--txt2);margin-bottom:4px;flex-wrap:wrap}
+.labchart .cap{font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6;margin-top:6px}
+.lablg{display:flex;gap:14px;font-size:var(--fs-2xs);color:var(--txt2);margin-bottom:4px;flex-wrap:wrap}
 .lablg i{display:inline-block;width:15px;height:2.5px;vertical-align:middle;margin-right:5px;border-radius:2px}
 /* 两期热力表并排，窄屏自动上下叠 */
 .labgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
 .labgrid .box{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
-.labgrid .box h5{font-size:10.5px;color:var(--txt3);font-weight:500;margin-bottom:6px}
-.labgrid table{width:100%;border-collapse:collapse;font-size:11.5px;font-family:var(--mono)}
-.labgrid th{font-size:10.5px;color:var(--txt3);font-weight:400;text-align:center;padding:3px 2px}
+.labgrid .box h5{font-size:var(--fs-2xs);color:var(--txt3);font-weight:500;margin-bottom:6px}
+.labgrid table{width:100%;border-collapse:collapse;font-size:var(--fs-xs);font-family:var(--mono)}
+.labgrid th{font-size:var(--fs-2xs);color:var(--txt3);font-weight:400;text-align:center;padding:3px 2px}
 .labgrid td{text-align:center;padding:4px 2px;border-radius:3px}
 .labgrid td.n{color:var(--txt3)}
 .labtabs{display:flex;gap:6px;margin:0 0 9px;flex-wrap:wrap}
-.labtabs button{padding:4px 11px;font-size:11.5px;border-radius:14px;background:var(--bg3);
+.labtabs button{padding:4px 11px;font-size:var(--fs-xs);border-radius:14px;background:var(--bg3);
 border:1px solid var(--line);color:var(--txt2);cursor:pointer;font-family:inherit}
 .labtabs button.on{background:rgba(76,141,255,.15);border-color:var(--accent);color:var(--txt)}
 .labtbl td.nm{text-align:left;font-family:inherit;color:var(--txt3);white-space:normal;
-font-size:10.5px;line-height:1.5;max-width:270px}
-.labtbl td.fam{text-align:left;font-family:inherit;color:var(--txt3);font-size:10.5px;white-space:nowrap}
+font-size:var(--fs-2xs);line-height:1.5;max-width:270px}
+.labtbl td.fam{text-align:left;font-family:inherit;color:var(--txt3);font-size:var(--fs-2xs);white-space:nowrap}
 /* ---- 因子明细：点一行展开构造方式 ---- */
 .fxtbl tr.fxr{cursor:pointer}
 .fxtbl tr.fxr.on td{background:rgba(59,130,246,.10)}
@@ -1148,18 +1180,18 @@ font-size:10.5px;line-height:1.5;max-width:270px}
 .fxdet td{padding:0 0 7px!important;border-bottom:1px solid var(--line)!important;
 text-align:left!important;white-space:normal!important;font-family:inherit!important;background:transparent!important}
 .fxd{background:var(--bg);border-left:2px solid var(--accent);border-radius:0 7px 7px 0;padding:10px 13px}
-.fxdn{font-size:11.5px;color:var(--txt2);margin-bottom:5px}
+.fxdn{font-size:var(--fs-xs);color:var(--txt2);margin-bottom:5px}
 .fxdn b{color:#0e7490;font-family:var(--mono);font-weight:600;margin-right:7px}
-.fxds{font-size:11.5px;color:var(--txt2);line-height:1.7;margin-bottom:8px}
-.fxf{font-family:var(--mono);font-size:10.5px;color:#2a2f38;background:var(--bg3);
+.fxds{font-size:var(--fs-xs);color:var(--txt2);line-height:1.7;margin-bottom:8px}
+.fxf{font-family:var(--mono);font-size:var(--fs-2xs);color:#2a2f38;background:var(--bg3);
 border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:0;
 white-space:pre-wrap;word-break:break-word;line-height:1.75}
 .rsmore{margin-top:9px;text-align:center}
-.rsmore button{font-size:11.5px;padding:5px 14px;border-radius:6px}
-.rssrc{font-size:10.5px;color:var(--txt3);margin-top:10px;text-align:right}
+.rsmore button{font-size:var(--fs-xs);padding:5px 14px;border-radius:6px}
+.rssrc{font-size:var(--fs-2xs);color:var(--txt3);margin-top:10px;text-align:right}
 /* /research 是独立页面：复用同一份 DOM，把遮罩层改成文档流里的整页布局。
    好处是因子面板只有一套 HTML 和一套渲染代码，不会出现「弹窗里对、页面上错」。 */
-.rback{display:none;font-size:11.5px;color:var(--txt2);text-decoration:none;padding:2px 8px;
+.rback{display:none;font-size:var(--fs-xs);color:var(--txt2);text-decoration:none;padding:2px 8px;
 border:1px solid var(--line);border-radius:5px;white-space:nowrap}
 .rback:hover{color:var(--txt)}
 body.rsmode{overflow:auto}
@@ -1170,7 +1202,7 @@ body.rsmode .rspanel{max-width:none;max-height:none;border:0;border-radius:0;
 background:transparent;box-shadow:none;overflow:visible}
 body.rsmode .rshd{position:sticky;top:0;z-index:5;background:var(--bg);
 border-bottom:1px solid var(--line);padding:12px 20px}
-body.rsmode .rshd b{font-size:15px}
+body.rsmode .rshd b{font-size:var(--fs-md)}
 body.rsmode .rback{display:inline-block;margin-right:2px}
 body.rsmode .rshd .hx{display:none}
 body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
@@ -1179,7 +1211,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   /* 窄屏：标题和返回按钮占一行，日期/样本区间整体降到第二行 */
   .rshd{flex-wrap:wrap;gap:4px 8px;padding:9px 12px}
   .rshd .sub{flex:1 1 100%;order:9;white-space:normal;line-height:1.5}
-  .rstbl{font-size:10.5px}
+  .rstbl{font-size:var(--fs-2xs)}
   .rstbl th,.rstbl td{padding:3px 4px}
   /* 列多的表给个宽度下限：窄屏下让它横向滚动，而不是把数字挤成省略或直接裁掉。
      指标说明表是整段文字，折行更好读，所以单独放开。 */
@@ -1192,12 +1224,12 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
   /* 表格右侧被裁一半的样子容易被当成本站坏了，标一句「能滑」。
      只对会横向滚动的那几张表显示，指标说明表换了行不需要。 */
   .rssec:has(.rstwrap>table:not(.indtbl)) > h4::after{
-    content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:10.5px}
+    content:'  ← 左右滑动看全部列';color:var(--txt3);font-weight:400;font-size:var(--fs-2xs)}
 }
 
 /* ---------- 板块地图 ---------- */
 .smhead{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap;margin-bottom:8px;
-  font-size:11.5px;color:var(--txt2)}
+  font-size:var(--fs-xs);color:var(--txt2)}
 .smhead b{font-variant-numeric:tabular-nums}
 /* 三组（A股/港股/跨境）各自可折起。组头一行放得下「几个板块/合计/最强/最弱/分化/涨跌」，
    收起后这行本身就是摘要，不用点开也能看个大概。 */
@@ -1205,19 +1237,19 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sgrp:first-child{margin-top:0}
 .sghd{display:flex;align-items:center;gap:3px 10px;flex-wrap:wrap;cursor:pointer;
   padding:5px 9px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;
-  background:var(--bg3);font-size:11.5px;color:var(--txt2);user-select:none}
+  background:var(--bg3);font-size:var(--fs-xs);color:var(--txt2);user-select:none}
 .sghd:hover{border-color:#c3cad8}
 .sghd .sgc{width:0;height:0;flex:none;margin-right:2px;
   border-left:4.5px solid var(--txt3);border-top:3.5px solid transparent;
   border-bottom:3.5px solid transparent;transform:rotate(90deg);transition:transform .12s}
 .sgrp.fold .sghd .sgc{transform:rotate(0)}
-.sghd .sgk{font-size:12.5px;font-weight:700;color:var(--txt);letter-spacing:.2px}
+.sghd .sgk{font-size:var(--fs-sm);font-weight:700;color:var(--txt);letter-spacing:.2px}
 .sghd .sgt{color:var(--txt3)}
 .sghd .sgm{white-space:nowrap}
 .sghd .sgm b{font-variant-numeric:tabular-nums}
 /* 集中度后面那个小数字是「近一年分位」，不是百分比，所以做得比正文轻一档，
    避免被读成「集中 53.0% 的 89%」。 */
-.sghd .sgm em{font-style:normal;color:var(--txt3);font-size:10.5px;margin-left:2px}
+.sghd .sgm em{font-style:normal;color:var(--txt3);font-size:var(--fs-2xs);margin-left:2px}
 
 @media(max-width:880px){.sghd .sgm.opt{display:none}}
 .sgrp.fold .smgrid,.sgrp.fold .sdet,.sgrp.fold .scq{display:none}
@@ -1226,9 +1258,9 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 @media(max-width:760px){
   .smgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
   .scell{padding:6px 7px 5px}
-  .scell .sn{font-size:10.5px}
-  .scell .sv{font-size:14px}
-  .scell .ss{font-size:10.5px;gap:2px}
+  .scell .sn{font-size:var(--fs-2xs)}
+  .scell .sv{font-size:var(--fs-md)}
+  .scell .ss{font-size:var(--fs-2xs);gap:2px}
   .scell .sbar{display:none}
 }
 .scell{border:1px solid var(--line);border-radius:7px;padding:7px 9px 6px;background:var(--bg2);
@@ -1238,18 +1270,18 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 /* 主题分界：AI / 新能源是跨行业的，虚线上方是行业格、下方是主题格。
    边框也用虚线，一眼能看出「这两格不能和上面的加在一起」。 */
 .sth{grid-column:1/-1;display:flex;align-items:center;gap:6px;margin:4px 0 0;
-  padding-top:6px;border-top:1px dashed #d7dce5;font-size:10.5px;color:var(--txt3)}
+  padding-top:6px;border-top:1px dashed #d7dce5;font-size:var(--fs-2xs);color:var(--txt3)}
 .sth b{color:var(--txt2);font-weight:600}
 .scell.th{border-style:dashed}
-.scell .sn{font-size:11.5px;color:var(--txt);display:flex;align-items:baseline;gap:4px}
+.scell .sn{font-size:var(--fs-xs);color:var(--txt);display:flex;align-items:baseline;gap:4px}
 /* 箭头紧跟板块名，不推到格子右边：右对齐时它正好落在「-3.25%」上方，
    读起来像涨跌幅的一部分。 */
 .scell .sn .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.scell .sn .sd{flex:none;font-size:10.5px;font-weight:700;
+.scell .sn .sd{flex:none;font-size:var(--fs-2xs);font-weight:700;
   font-variant-numeric:tabular-nums;letter-spacing:-.2px}
-.scell .sv{font-size:16px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;
+.scell .sv{font-size:var(--fs-lg);font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums;
   letter-spacing:-.2px}
-.scell .ss{font-size:10.5px;color:var(--txt3);margin-top:1px;
+.scell .ss{font-size:var(--fs-2xs);color:var(--txt3);margin-top:1px;
   font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:3px}
 .scell .ss .si{white-space:nowrap}
 .scell .ss .sa{color:var(--txt3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1261,7 +1293,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .scell .sz{position:absolute;left:0;top:0;bottom:0;width:2.5px}
 .sdet{margin-top:9px;border-top:1px dashed var(--line);padding-top:7px;display:none}
 .sdet.show{display:block}
-.sdet .sdhd{font-size:11.5px;color:var(--txt3);margin-bottom:4px}
+.sdet .sdhd{font-size:var(--fs-xs);color:var(--txt3);margin-bottom:4px}
 /* 明细两列：指数多的时候（新能源 6 条、计算机 19 条）单列会把面板拉得很长，
    两列在 1500px 下正好，窄屏退回单列。 */
 /* 用多列而不是 grid：这一列是按涨幅排序的，要竖着读。grid 是行优先，
@@ -1269,55 +1301,55 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sdet .sdrwrap{column-count:3;column-gap:26px;column-rule:1px solid #d7dce5}
 @media(max-width:1240px){.sdet .sdrwrap{column-count:2}}
 @media(max-width:900px){.sdet .sdrwrap{column-count:1}}
-.sdet .sr{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:11.5px;
+.sdet .sr{display:flex;gap:9px;align-items:baseline;padding:3px 0;font-size:var(--fs-xs);
   border-bottom:1px dotted var(--line)}
 .sdet .sr:last-child{border-bottom:0}
 .sdet .sr .nm2{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sdet .sr .cd2{font-family:var(--mono);color:var(--txt3);font-size:10.5px;width:52px;text-align:right}
+.sdet .sr .cd2{font-family:var(--mono);color:var(--txt3);font-size:var(--fs-2xs);width:52px;text-align:right}
 .sdet .sr .v2{font-variant-numeric:tabular-nums;width:56px;text-align:right;font-weight:600}
 .sdet .sr .a2{font-variant-numeric:tabular-nums;width:62px;text-align:right;color:var(--txt3)}
 /* ---------- 盘中提醒 ---------- */
 .alertbar{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .abtn{cursor:pointer;padding:2px 9px;border-radius:20px;border:1px solid var(--line);
-  color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:11.5px;user-select:none}
+  color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:var(--fs-xs);user-select:none}
 .abtn:hover{border-color:#c3cad8}
 .abtn.on{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
 .abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--up);
   margin-right:4px;vertical-align:1px}
-.aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:11.5px}
+.aset{display:none;align-items:center;gap:5px;color:var(--txt3);font-size:var(--fs-xs)}
 .aset.show{display:inline-flex}
-.aset input{width:40px;padding:1px 3px;font-size:11.5px;border:1px solid var(--line);
+.aset input{width:40px;padding:1px 3px;font-size:var(--fs-xs);border:1px solid var(--line);
   border-radius:4px;background:var(--bg2);color:var(--txt);text-align:center;
   font-variant-numeric:tabular-nums}
 .aset input:focus{outline:none;border-color:var(--accent)}
 #alertBox{position:fixed;right:14px;top:14px;z-index:999;display:flex;flex-direction:column;
   gap:6px;pointer-events:none}
 .aitem{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--txt3);
-  border-radius:6px;padding:7px 11px;box-shadow:0 3px 12px rgba(23,32,54,.1);font-size:12.5px;
+  border-radius:6px;padding:7px 11px;box-shadow:0 3px 12px rgba(23,32,54,.1);font-size:var(--fs-sm);
   min-width:220px;max-width:300px;animation:ain .18s ease-out}
 @keyframes ain{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
 .aitem.up{border-left-color:var(--up)}
 .aitem.dn{border-left-color:var(--down)}
-.aitem b{font-size:12.5px;font-variant-numeric:tabular-nums}
-.aitem small{display:block;color:var(--txt2);font-size:11.5px;margin-top:2px;line-height:1.4}
+.aitem b{font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+.aitem small{display:block;color:var(--txt2);font-size:var(--fs-xs);margin-top:2px;line-height:1.4}
 /* 提醒记录：浮层只停 9 秒，全市场模式下这个列表才是主要出口 */
 #alertLog{position:fixed;right:14px;top:52px;z-index:998;width:min(340px,calc(100vw - 24px));
   max-height:64vh;background:var(--bg2);border:1px solid var(--line);border-radius:8px;
   box-shadow:0 8px 28px rgba(23,32,54,.16);display:none;flex-direction:column;overflow:hidden}
 #alertLog.show{display:flex}
-#alertLog .lh{padding:8px 11px;border-bottom:1px solid var(--line);font-size:12.5px;
+#alertLog .lh{padding:8px 11px;border-bottom:1px solid var(--line);font-size:var(--fs-sm);
   color:var(--txt3);display:flex;align-items:center;gap:8px;flex:none}
-#alertLog .lh b{color:var(--txt);font-size:12.5px}
+#alertLog .lh b{color:var(--txt);font-size:var(--fs-sm)}
 #alertLog .lh u{margin-left:auto;cursor:pointer;text-decoration:none;color:var(--txt3)}
 #alertLog .lh u:hover{color:var(--txt)}
 #alertLog .lb{overflow-y:auto;padding:2px 0}
-#alertLog .li{padding:5px 11px;font-size:11.5px;border-left:2px solid transparent;
+#alertLog .li{padding:5px 11px;font-size:var(--fs-xs);border-left:2px solid transparent;
   display:flex;gap:7px;align-items:baseline}
 #alertLog .li.up{border-left-color:var(--up)}
 #alertLog .li.dn{border-left-color:var(--down)}
 #alertLog .li em{font-style:normal;color:var(--txt3);font-variant-numeric:tabular-nums;flex:none}
 #alertLog .li i{font-style:normal;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#alertLog .le{padding:18px 11px;text-align:center;color:var(--txt3);font-size:12.5px;line-height:1.6}
+#alertLog .le{padding:18px 11px;text-align:center;color:var(--txt3);font-size:var(--fs-sm);line-height:1.6}
 
 /* ---------- 卡片基线（后写覆盖，不删任何类名） ----------
    页面里有 14 个"白底 + 1px 边框 + 圆角"的容器，圆角 7/8/9、内边距各不相同，
@@ -1326,13 +1358,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
    为什么不删类名合并成一个：这些类名字符串散在 8800 行渲染函数里
    （class="mkbox" 8 处、scq 25 处、snt 29 处），删一个就得改半个文件。
-   放在 </style> 之前 = 同权重后写胜出，零 DOM 改动。
+   放在样式表末尾 = 同权重后写胜出，零 DOM 改动。
    但注意：padding / font-size / display 不写在这里，末尾规则会反过来
    覆盖掉媒体查询里的移动端降级。 */
 .card,.oncard,.mkbox,.evtbox,.portbox,.dcard,.strend,.scq,.snt,
-.trigrule,.labchart,.scell,.qcell,.tbl{
-  background:var(--surface);border:1px solid var(--line);
+.trigrule,.labchart,.scell,.tbl{
+  background:var(--surface);border:1px solid var(--cardline);
   border-radius:var(--r-md);box-shadow:var(--sh-1)}
+/* 凹槽格（qcell）不跟着走白卡：它是卡内的小格子，白底会让三十多格碎成一片 */
+.qcell{background:var(--sunken);border:1px solid var(--line);border-radius:var(--r-sm)}
 /* 表格不参与抬升：它要的是"嵌在卡里的一块"，不是浮起来的一张卡。
    clip 而不是 hidden——hidden 会让 .tbl 变成滚动容器，表头吸顶就地失效。 */
 .tbl{overflow:clip;box-shadow:none}
@@ -3999,9 +4033,9 @@ function shSvg(vals, dates, cv){
   // 纵轴只标上下两端（中间那几档在 250 根柱子里没人读，反而把柱子压得看不见）
   var ax1 = Math.abs(hi) >= 100 ? String(Math.round(hi)) : hi.toFixed(1);
   var ax2 = Math.abs(lo) >= 100 ? String(Math.round(lo)) : lo.toFixed(1);
-  g += '<text x="' + (ml - 6) + '" y="' + (yOf(hi) + 8).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">' + ax1 + '</text>';
-  g += '<text x="' + (ml - 6) + '" y="' + (yOf(lo) - 2).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">' + ax2 + '</text>';
-  g += '<text x="' + (ml - 6) + '" y="' + (y0 + 4).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">0</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (yOf(hi) + 8).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + ax1 + '</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (yOf(lo) - 2).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + ax2 + '</text>';
+  g += '<text x="' + (ml - 6) + '" y="' + (y0 + 4).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">0</text>';
 
   for (i = 0; i < n; i++){
     var v = vals[i];
@@ -4024,9 +4058,9 @@ function shSvg(vals, dates, cv){
         + '" r="2" fill="#f0b23c"/>';
     }
   }
-  g += '<text x="' + ml + '" y="' + (H - 6) + '" font-size="9.5" fill="var(--txt3)">'
+  g += '<text x="' + ml + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)">'
     + esc(String((dates && dates[0]) || '').slice(2)) + '</text>';
-  g += '<text x="' + (W - mr) + '" y="' + (H - 6) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">'
+  g += '<text x="' + (W - mr) + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)" text-anchor="end">'
     + esc(String((dates && dates[n - 1]) || '').slice(2)) + '</text>';
 
   /* 悬停层。和 futHistSvg 一样全部用 SVG 坐标：250 根柱子每根不到 3px，
@@ -4034,8 +4068,8 @@ function shSvg(vals, dates, cv){
   g += '<g class="sh-hov" style="display:none;pointer-events:none">'
     + '<line class="sh-ln" y1="' + mt + '" y2="' + (H - mb) + '" stroke="#9aa4b2" stroke-width="1" stroke-dasharray="3 3"/>'
     + '<g class="sh-tip"><rect class="sh-bg" rx="4" width="126" height="34" fill="#15181d" opacity="0.92"/>'
-    + '<text class="sh-d" font-size="9.5" fill="#cbd5e1"></text>'
-    + '<text class="sh-v" font-size="12" font-weight="600" fill="#fff"></text></g></g>';
+    + '<text class="sh-d" font-size="10" fill="#cbd5e1"></text>'
+    + '<text class="sh-v" font-size="11" font-weight="600" fill="#fff"></text></g></g>';
   g += '</svg>';
 
   SH_GEO = { vals: vals, dates: dates, n: n, ml: ml, mr: mr, W: W, H: H, mt: mt, mb: mb,
@@ -8792,7 +8826,7 @@ function ovChartSvg(pts, pre, cap){
     for (q = 0; q < usedY.length; q++) if (Math.abs(usedY[q] - yy) < 11) clash = true;
     if (!clash){
       usedY.push(yy);
-      g += '<text x="' + (ml + plotW + 5) + '" y="' + (yy + 3.5).toFixed(1) + '" font-size="9.5"'
+      g += '<text x="' + (ml + plotW + 5) + '" y="' + (yy + 3.5).toFixed(1) + '" font-size="10"'
          + ' fill="var(--txt3)">' + fmt(pv) + '</text>';
     }
   }
@@ -8908,7 +8942,7 @@ function ovKlineSvg(bars, i0){
     s += '<line x1="' + ml + '" y1="' + gy.toFixed(1) + '" x2="' + (ml + plotW)
       + '" y2="' + gy.toFixed(1) + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 3"/>';
     s += '<text x="' + (ml + plotW + 5) + '" y="' + (gy + 3).toFixed(1)
-      + '" font-size="9.5" fill="var(--txt3)">' + ovPx(gv) + '</text>';
+      + '" font-size="10" fill="var(--txt3)">' + ovPx(gv) + '</text>';
   }
 
   // 成交量：压在价格区下面，颜色跟蜡烛一致但更淡，不抢注意力
@@ -8956,7 +8990,7 @@ function ovKlineSvg(bars, i0){
   for (i=i0;i<n;i+=step){
     var ds = String(bars[i][0] || '').slice(5);
     var tx = Math.min(Math.max(xOf(i), ml + 12), ml + plotW - 12);
-    s += '<text x="' + tx.toFixed(1) + '" y="' + (H - 4) + '" font-size="9.5" fill="var(--txt3)" '
+    s += '<text x="' + tx.toFixed(1) + '" y="' + (H - 4) + '" font-size="10" fill="var(--txt3)" '
       + 'text-anchor="middle">' + esc(ds) + '</text>';
   }
   s += '</svg>';
@@ -10180,7 +10214,7 @@ function futHistSvg(vals, dates, st){
       + '" stroke="' + bands[i][1] + '" stroke-width="1" stroke-dasharray="4 4"/>';
     // 窄屏不印 p10/p90 的数字：350px 宽里这两串会把线盖住，副标题里本来就有
     if (W >= 520){
-      g += '<text x="' + (W - mr - 2) + '" y="' + (by - 3).toFixed(1) + '" font-size="9.5" fill="var(--txt3)" text-anchor="end">'
+      g += '<text x="' + (W - mr - 2) + '" y="' + (by - 3).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">'
         + (i === 0 ? 'p90 ' : 'p10 ') + (+bands[i][0]).toFixed(2) + '%</text>';
     }
   }
@@ -10197,8 +10231,8 @@ function futHistSvg(vals, dates, st){
     + '<line class="fh-ln" y1="' + mt + '" y2="' + (H - mb) + '" stroke="#9aa4b2" stroke-width="1" stroke-dasharray="3 3"/>'
     + '<circle class="fh-dot" r="3.4" fill="#2563eb" stroke="#fff" stroke-width="1.5"/>'
     + '<g class="fh-tip"><rect class="fh-bg" rx="4" width="94" height="34" fill="#15181d" opacity="0.9"/>'
-    + '<text class="fh-d" font-size="9.5" fill="#cbd5e1"></text>'
-    + '<text class="fh-v" font-size="12" font-weight="600" fill="#fff"></text></g></g>';
+    + '<text class="fh-d" font-size="10" fill="#cbd5e1"></text>'
+    + '<text class="fh-v" font-size="11" font-weight="600" fill="#fff"></text></g></g>';
   g += '</svg>';
   FH_GEO = { vals: vals, dates: dates, n: n, ml: ml, mr: mr, W: W, H: H, mt: mt, mb: mb, lo: lo, hi: hi };
   return g;
