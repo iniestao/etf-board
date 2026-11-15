@@ -9,7 +9,8 @@
  * 用法：
  *   node pipeline/gen_fut_daily.mjs                 # 补最近 5 个工作日（幂等，已有的跳过）
  *   node pipeline/gen_fut_daily.mjs --backfill 250  # 首次建库
- *   node pipeline/gen_fut_daily.mjs --force         # 忽略已有数据重算
+ *   node pipeline/gen_fut_daily.mjs --force         # 忽略已有数据重算（250 天全抓，几分钟）
+ *   node pipeline/gen_fut_daily.mjs --redo 2        # 只重算最后 2 天（补落空的 prev/oiD）
  *
  * 产物由 update-data.yml 的 cp 白名单带进 data 分支，Worker 用 readAsset 读。
  */
@@ -28,6 +29,14 @@ const BACKFILL = (() => {
   return i >= 0 ? Math.max(1, parseInt(args[i + 1], 10) || 250) : 5;
 })();
 const FORCE = args.includes('--force');
+/* 重算最后 N 天。日档追平之后，某天的 oiD / prev 若因上游抖动落空，得能单独补；
+   --force 会把 250 天全部重抓（几分钟，且中途失败会覆盖掉已有历史），代价太大。
+   注意 prev 只在「本次第一个真正处理到的日期」上缺一次，往后逐日滚动就接上了，
+   所以补一天要带上前一天：--redo 2 才能让最后一天拿到正确的昨收。 */
+const REDO = (() => {
+  const i = args.indexOf('--redo');
+  return i >= 0 ? Math.max(0, parseInt(args[i + 1], 10) || 0) : 0;
+})();
 const POS_DAYS = 60;          // 会员持仓只补最近 60 天：再往前没人看，且一天 4 个 90KB 文件
 const KEEP = 250;
 
@@ -597,6 +606,21 @@ async function main() {
   if (!FORCE && existsSync(dailyPath)) {
     try { hist = JSON.parse(readFileSync(dailyPath, 'utf8')); } catch (e) { log('旧日档读不出来，重建：' + e.message); }
   }
+  /* --redo：把最后 N 天从旧日档里摘掉，让它们重新走一遍「抓 XML → buildDay」。
+     只删数组元素不行——各序列是按 hist.d 的索引对齐的（收尾还要按日期重排），
+     所以按保留索引整体重建一遍。 */
+  if (REDO > 0 && hist.d && hist.d.length) {
+    const drop = new Set(hist.d.slice(-REDO));
+    const keep = hist.d.map((_, i) => i).filter((i) => !drop.has(hist.d[i]));
+    hist.d = keep.map((i) => hist.d[i]);
+    for (const grp of ['fut', 'opt', 'pos']) {
+      for (const p of Object.keys(hist[grp] || {})) {
+        for (const k of Object.keys(hist[grp][p])) hist[grp][p][k] = keep.map((i) => hist[grp][p][k][i] ?? null);
+      }
+    }
+    for (const c of Object.keys(hist.spot || {})) hist.spot[c] = keep.map((i) => hist.spot[c][i] ?? null);
+    log(`  重算最后 ${drop.size} 天（${[...drop].sort().join(', ')}），已从旧日档摘掉`);
+  }
   const have = new Set(hist.d || []);
 
   /* 「今天」先探一下再定。中金所的日行情是收盘后才归档的静态文件，而 GitHub 的
@@ -624,8 +648,14 @@ async function main() {
   log('现货收盘拿到 ' + Object.entries(spotHist).map(([k, v]) => k + ':' + Object.keys(v).length).join(' '));
 
   /* 上一交易日的 code→{oi,bp}，逐日滚动往前带，写进快照的 prev。
-     初始化只在「旧快照正好是本次第一天的前一个工作日」时做——否则补的是很久以前
-     的日期，拿今天的持仓去当它的昨收，算出来的增减仓全是错的，不如留空。 */
+     —— 初始化不再拿 todo[0] 去猜「它的前一工作日」。prevWeekdays 只排周末，
+     元旦/春节/清明/五一/端午/中秋/国庆全都还留在 todo 里（抓 XML 必 404、被跳过），
+     于是 todo[0] 常年是 2026-01-01，`_last.td === 前一个工作日` 永远不成立。
+     结果就是：只要窗口里还压着任何一个法定假日，快照的 prev 一律为 null，
+     收盘后「Δ基差率」「持仓变化」两列整列消失——2026-11-13 那次就是这样丢的。
+     改成延迟到「第一次真正拿到日行情的那一天」才初始化，基准取当时的 _last：
+     只要 _last.td 早于这一天，它就是这天的昨收；补很久以前的日子时条件不成立，
+     留空不猜（那些天后面逐日滚动自己会接上）。 */
   let prevOiBp = null;
   let prevDate = null;
   /* 期权同理：上一交易日「品种→{月份: 合成基差率}」。收盘后日档一追平今天，
@@ -633,15 +663,20 @@ async function main() {
      不存的话，16:35 之后的 Δ基差率整列会消失。 */
   let prevOptBp = null;
   let prevOptDate = null;
-  if (todo.length && hist._last && hist._last.td && Array.isArray(hist._last.opt)
-      && hist._last.td === prevWeekdays(todo[0], 1)[0]) {
-    prevOptBp = optBpMap(hist._last.opt);
-    prevOptDate = hist._last.td;
-  }
-  if (todo.length && hist._last && hist._last.td && Array.isArray(hist._last.fut)
-      && hist._last.td === prevWeekdays(todo[0], 1)[0]) {
-    prevOiBp = oiBpMap(hist._last.fut);
-    prevDate = hist._last.td;
+  let prevInited = false;
+  function initPrev(date) {
+    if (prevInited) return;
+    prevInited = true;
+    const lt = hist._last && hist._last.td;
+    if (!lt || !(lt < date)) return;
+    if (Array.isArray(hist._last.opt) && hist._last.opt.length) {
+      prevOptBp = optBpMap(hist._last.opt);
+      prevOptDate = lt;
+    }
+    if (Array.isArray(hist._last.fut) && hist._last.fut.length) {
+      prevOiBp = oiBpMap(hist._last.fut);
+      prevDate = lt;
+    }
   }
 
   let added = 0;
@@ -674,6 +709,10 @@ async function main() {
       if (v) spotMap[code] = v;
     }
     if (Object.keys(spotMap).length < 3) { log(`  ${date} 现货收盘缺，跳过`); continue; }
+
+    /* 到这一步才算「这天真的处理得了」：假日、未归档、现货缺失都已经在上面
+       continue 掉了。prev 在这里初始化，才不会像以前那样被 todo 里的假日带偏。 */
+    initPrev(date);
 
     // 逐日写进历史
     for (const [code, v] of Object.entries(spotMap)) {
