@@ -850,6 +850,9 @@ border:1px solid var(--line);font-size:10.5px;color:var(--txt3);line-height:1.7}
 .sntcv text{font-size:10px;fill:var(--txt3);font-family:inherit;letter-spacing:0}
 .nw{white-space:nowrap}
 .sntcv .cvg{stroke:var(--line);stroke-width:1}
+/* 副图标题：比刻度字小一号、颜色更淡，它只在说明这块区域是什么，
+   不该和曲线上的数字抢注意力。 */
+.sntcv .cvlb{font-size:9.5px;fill:var(--txt2);opacity:.8}
 .lbseg{display:inline}
 .lbsplit{color:#cdd2da;margin:0 2px}
 .sntsp{display:block;flex:none;overflow:visible}
@@ -1624,7 +1627,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
           <li><b>炸而未崩</b>：炸板股里现价仍在 +7% 以上的只数。只看炸板家数分不清是主动分歧还是被动错杀。</li>
           <li><b>涨停行业</b>：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情——同样是「涨停 38 家」，对第二天的意义正好相反。</li>
           <li><b>当日曲线</b>：红实线是今天到此刻为止的曾触板累积，灰虚线是近 14 个交易日同一时刻的中位数，中间那片是 25–75 分位。上方的线回答「今天比平常强还是弱」，弯曲的走势回答「在加速还是熄火」——同样 31 家曾触板，从 8 家一路冲上来和从 50 家掉下来，第二天的做法完全相反。</li>
-          <li><b>图下方的竖条</b>：每 15 分钟新增几家，灰短横是历史同期。累积线只说明今天走了多远，说明不了此刻还有没有人封板。柱子按速率换算（末档不满 15 分钟会折算），所以盘中最后一根不会因为窗口没走完就显得矮。涨停家数的当日轨迹只能靠本机采样画点（炸板池没有炸板时间，重建不出「此刻是否封住」），换台机器或清了缓存就没有这批点，曲线本身不受影响——它由服务端按两个池的首次封板时间回算，页面没打开的那些时段也在。</li>
+          <li><b>曲线下方那排竖条</b>：<b>每 15 分钟新封了几家</b>，也就是「封板速度」。上面的曲线是「累积进度」——只说明今天到此刻一共走了多远，说明不了现在还有没有人往里冲。同样是 62 家，一路匀速堆上去和开盘半小时堆完再躺平，第二天的应对完全相反，区别只在这排柱子上。<br>三件事：<b>柱高＝这 15 分钟新增的家数</b>（右侧标了满格是几家，线性刻度，可以直接读）；<b>灰横＝历史同一时段的中位新增</b>；<b>深红柱表示比历史同期快、浅红表示慢</b>，不用比高度也能一眼看出后半场是熄火还是加速。柱子按速率换算，末档不满 15 分钟会折算，所以盘中最后一根不会因为窗口没走完就显得矮；末档与前一档相隔不足 8 分钟时干脆不画（会和前一根叠住），当前速度由下方「最近 15 分 +N 家」那行文字给。鼠标停在柱子上能看到具体数字。<br>涨停家数的当日轨迹只能靠本机采样画点（炸板池没有炸板时间，重建不出「此刻是否封住」），换台机器或清了缓存就没有这批点，曲线本身不受影响——它由服务端按两个池的首次封板时间回算，页面没打开的那些时段也在。</li>
           <li><b>近 20 日红盘率</b>：横轴是「天」，跟当日曲线回答的不是一件事。连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。纵轴按当段自适应，所以旁边标出实际区间。</li>
           <li><b>曾触板同刻中位</b>：近 15 个交易日里，到同一时刻为止曾封上涨停的只数区间。这一项能从东财两个池精确重建，所以只有它配同刻对照。</li>
         </ul>
@@ -2383,10 +2386,12 @@ function sentiCard(){
     cvs.push('<span class="nw">历史中位 <b>' + (cvMed == null ? '—' : cvMed) + '</b> 家（' + CV.n + ' 天）</span>');
     if (vd) cvs.push('<span class="nw"><b style="color:var(--' + vd.c + ')">' + vd.k + '</b></span>');
     if (CV.v15 != null){
-      cvs.push('<span class="nw">末档 <b>' + (CV.v15 >= 0 ? '+' : '') + CV.v15 + '</b>'
-        + (CV.v15med == null ? '' : ' 对历史 ' + (CV.v15med > 0 ? '+' : '') + CV.v15med) + '</span>');
+      cvs.push('<span class="nw">最近 15 分 <b>' + (CV.v15 >= 0 ? '+' : '') + CV.v15 + '</b> 家'
+        + (CV.v15med == null ? '' : ' · 历史 ' + (CV.v15med > 0 ? '+' : '') + CV.v15med) + '</span>');
     }
-    cvs.push('<span class="nw">下方为每 15 分钟新增</span>');
+    /* 副图第一根柱是顶到边的：它代表开盘 5 分钟（含集合竞价）那一下，被排除在
+       定标之外，所以真实家数必须在这里说，否则读者会把满格当成最大值。 */
+    cvs.push('<span class="nw">开盘 <b>+' + CV.today[0] + '</b> 家</span>');
     h += '<p class="sntref" style="margin-top:1px">当日曾触板　' + cvs.join(' · ') + '</p>';
   }
 
@@ -2517,15 +2522,26 @@ function curveChart(C, S){
   /* viewBox 直接按屏宽定，不用「固定 640 再缩放」：那张图在 1320px 的卡片里
      会被拉到 1260 显示（1.97 倍），10px 的字变成 19.7px、线变成 3.4px；在手机上
      又反过来把字压到 5px。宽度跟着容器走，字号才是真的 10px。 */
+  /* viewBox 按「卡片实际内宽」定，不按屏宽猜。以前用 innerWidth-96，在 1320 的
+     屏上算出 1224，而卡片内宽只有 1068——SVG 被 CSS width:100% 又缩了 0.87 倍，
+     10px 的字实际只有 8.7px，副图标题小到读不出。sentiBody 在生成字符串时还在
+     DOM 里（旧内容，宽度不变），可以直接量。 */
   var mob = (window.innerWidth || 999) < 700;
-  var W = Math.max(320, Math.min(1240, (window.innerWidth || 1200) - 96));
+  var W = (function(){
+    var b = document.getElementById('sentiBody');
+    var w = b ? b.clientWidth : 0;
+    if (!(w > 240)) w = Math.max(320, (window.innerWidth || 1200) - 96);
+    return Math.max(320, Math.min(1240, w - 22));   // 22 = 卡片左右 padding 11×2
+  })();
   var pL = 26, pR = mob ? 30 : 38, pT = 8;
   var iw = W - pL - pR;
   var ih = mob ? 80 : 114;          // 累积线绘图区
-  var HB = mob ? 24 : 30;           // 增量柱区
-  var Hh = pT + ih + 15 + HB + 16;  // 总高
+  var HB = mob ? 32 : 40;           // 增量柱区高度
+  var Hh = pT + ih + 14 + 5 + HB + 16;   // 总高
   var y0 = pT + ih;                 // 累积线 0 基线
-  var ib = y0 + 15 + HB;            // 增量区基线
+  var yT = y0 + 12;                 // 副图标题基线（间隙里，不压柱子）
+  var yR = y0 + 17;                 // 副图底色顶
+  var ib = yR + HB;                 // 副图基线，柱子从这往上画
 
   /* 纵轴按「今日线」和「历史中位」定标，不按区间带上界：14 天里有一次 132 家
      的爆发日，拿它定标会把 18–62 的今日线压成一条贴地的线，而这条线要看的
@@ -2556,7 +2572,7 @@ function curveChart(C, S){
   var clip = 'cvc' + (mob ? 'm' : 'd') + n;
 
   var h = '<svg class="sntcv" viewBox="0 0 ' + W + ' ' + Hh + '" width="' + W + '" height="' + Hh
-    + '" role="img" aria-label="当日曾触板累积与历史同刻中位对比，下方为每 15 分钟新增">'
+    + '" role="img" aria-label="当日曾触板累积与历史同刻中位对比；下方副图为每 15 分钟新增家数，灰横为历史同期">'
     + '<defs><clipPath id="' + clip + '"><rect x="' + pL + '" y="' + pT + '" width="' + iw
     + '" height="' + ih + '"/></clipPath></defs>';
 
@@ -2618,12 +2634,17 @@ function curveChart(C, S){
 
   /* 增量柱：累积线只说明「今天走了多远」，说明不了「现在还有没有人封板」。
      同样 62 家，一路匀速堆上去和开盘半小时堆完再躺平，是两种完全不同的局面。
-     柱子按每档新增画，灰短横是历史同期的中位新增——柱比灰线矮就是熄火。 */
+     柱子是每 15 分钟新增的曾触板家数，灰横是历史同期中位——柱比灰横矮就是熄火。
+
+     这块以前没有标题、柱子又是平方根缩放的，结果被读成「曲线下面的投影」：
+     高度读不出数值，灰横不知道是什么，整块等于没画。现在三件事一起改：
+     ① 独立底色 + 左侧标题 + 右侧图例，先说明它是另一个指标；
+     ② 改线性缩放，高度直接对应家数，右侧标出满格是多少家；
+     ③ 颜色二分：高过历史同期用实红、低于用浅红，不比高度也能看出快慢。 */
   /* 增量必须换成「每 15 分钟」的速率再比：盘中最后一档往往只有几分钟
      （10:07 打开页面，末档 10:00–10:07 只有 7 分钟），直接拿家数画柱子会
      永远比历史同期矮，看着像熄火，其实只是窗口没走完。
      跨午休那一档要扣掉 90 分钟，否则 11:30→13:15 会被当成 105 分钟的交易时间。 */
-  var m2 = function(t){ return Math.floor(t / 10000) * 60 + Math.floor(t % 10000 / 100); };
   var inc = [], incm = [], mxi = 0;
   for (i = 0; i < n; i++){
     var span = 15;
@@ -2635,19 +2656,33 @@ function curveChart(C, S){
     var v1 = (i === 0) ? a[0] : (a[i] == null || a[i - 1] == null ? null : (a[i] - a[i - 1]) / span * 15);
     var v2 = (i === 0) ? med[0] : (med[i] == null || med[i - 1] == null ? null : (med[i] - med[i - 1]) / span * 15);
     inc.push(v1); incm.push(v2);
-    if (v1 != null && v1 > mxi) mxi = v1;
-    if (v2 != null && v2 > mxi) mxi = v2;
+    /* 定标排除首档。09:30–09:35 那 5 分钟里封住的是集合竞价那一批，它不是一个
+       「每 15 分钟」的流量——拿它顶格，后面 16 根柱全被压成贴地的条，这条副图
+       就只剩「开盘很猛」一句话，而这句本来就是废话。首档超量程就顶到边，刻度
+       与下方图例会把真实家数说清楚。 */
+    if (i > 0){
+      if (v1 != null && v1 > mxi) mxi = v1;
+      if (v2 != null && v2 > mxi) mxi = v2;
+    }
   }
+  if (!(mxi > 0)) mxi = Math.max(a[0] || 1, 1);
+  var hm2 = function(t){ var s = ('000000' + String(t)).slice(-6); return s.slice(0, 2) + ':' + s.slice(2, 4); };
   if (mxi > 0){
-    /* 垫一层浅底色把副图圈出来：两层的量纲不同（上是累积家数，下是每 15 分钟
-       新增），没有底色时读者会顺着 0 线往下读成负值。 */
-    h += '<rect x="' + pL + '" y="' + (y0 + 5) + '" width="' + f1(iw) + '" height="' + (HB + 10)
-      + '" fill="var(--bg3)" opacity=".7" rx="2"/>';
     /* 柱宽按「15 分钟的时间槽」算，不按档数算。盘中只有 4 档时按档数算，
        每根柱会宽到 200px，四根叠在一起糊成一片。 */
     var bw = Math.max(2, iw / 16 * 0.58);
-    /* 平方根缩放：开盘那一档 18 家，后面各档 3~8 家，线性缩放下后半排全被压成
-       2px 的同一高度——而这条副图要看的恰恰是「后半排比前半排矮多少」。 */
+    var bmax = HB - 3;
+    /* 底色跟着「此刻」截断，不铺满整行。盘中 10:15 打开时，铺满的底框右侧
+       一大片空白会被读成「后面十几档都是 0 家」——那不是熄火，是还没到。 */
+    var xR = Math.min(pL + iw, nx(n - 1) + bw);
+    /* 垫一层底色把副图圈出来：两层的量纲完全不同（上是累积家数，下是每 15 分钟
+       新增），没有底色时读者会顺着上图的 0 线往下读成负值。 */
+    h += '<rect x="' + pL + '" y="' + yR + '" width="' + f1(xR - pL) + '" height="' + HB
+      + '" fill="var(--bg3)" opacity=".85" rx="2"/>';
+    h += '<text x="' + (pL + 2) + '" y="' + yT + '" class="cvlb">'
+      + (mob ? '新增 / 15 分' : '新增（家 / 15 分钟）') + '</text>';
+    h += '<text x="' + f1(pL + iw) + '" y="' + yT + '" text-anchor="end" class="cvlb">'
+      + (mob ? '灰横＝历史 · 深红＝快' : '灰横＝历史同期中位　深红＝快于历史') + '</text>';
     for (i = 0; i < n; i++){
       /* 末档与前一档只差几分钟时不画柱：它的窗口没走完，柱子会和前一档叠在
          一起，而且高度已经是按速率换算过的，与左边的柱子不同量纲。
@@ -2658,19 +2693,33 @@ function curveChart(C, S){
       }
       var bx = Math.min(pL + iw - bw, Math.max(pL, nx(i) - bw / 2));
       if (inc[i] != null && inc[i] > 0){
-        var bh = Math.max(1.5, Math.sqrt(inc[i] / mxi) * (HB - 2));
+        var over = inc[i] > mxi + 0.01;
+        var bh = Math.max(2, Math.min(bmax, inc[i] / mxi * bmax));
+        var fast = (incm[i] == null) || (inc[i] >= incm[i]);
         h += '<rect x="' + f1(bx) + '" y="' + f1(ib - bh) + '" width="' + f1(bw) + '" height="' + f1(bh)
-          + '" fill="var(--up)" opacity=".38" rx=".8"/>';
+          + '" fill="var(--up)" opacity="' + (fast ? '.75' : '.34') + '" rx=".8">'
+          + '<title>' + hm2(C.at[i]) + '　新增 ' + inc[i].toFixed(1) + ' 家 / 15 分'
+          + (incm[i] == null ? '' : '，历史同期 ' + incm[i].toFixed(1) + ' 家') + '</title></rect>';
+        /* 超出量程的柱顶到边，柱顶抹一道底色做出「被裁断」的缺口——不标一下的话，
+           读者会把满格当成真实最大值，把「开盘 23 家」读成「开盘 6 家」。 */
+        if (over){
+          h += '<rect x="' + f1(bx) + '" y="' + f1(ib - bmax) + '" width="' + f1(bw)
+            + '" height="1.8" fill="var(--bg3)" opacity=".9"/>';
+        }
       }
       if (incm[i] != null && incm[i] > 0){
-        var yh = ib - Math.sqrt(incm[i] / mxi) * (HB - 2);
+        var yh = ib - Math.min(bmax, incm[i] / mxi * bmax);
         h += '<line x1="' + f1(bx) + '" y1="' + f1(yh) + '" x2="' + f1(bx + bw) + '" y2="' + f1(yh)
-          + '" stroke="var(--txt3)" stroke-width="1.4" opacity=".75"/>';
+          + '" stroke="var(--txt2)" stroke-width="1.8" opacity=".85"/>';
       }
     }
     h += '<line x1="' + pL + '" y1="' + ib + '" x2="' + f1(pL + iw) + '" y2="' + ib
       + '" stroke="var(--line)" stroke-width="1"/>';
-
+    /* 副图自己的刻度。不标的话读者不知道满格是几家，只能看相对高低——而
+       「相对高低」上面那条曲线已经回答过了，副图要答的是「每分钟进了几家」。 */
+    h += '<text x="' + f1(xR + 4) + '" y="' + f1(ib - bmax + 3) + '" text-anchor="start">'
+      + Math.round(mxi) + '</text>';
+    h += '<text x="' + f1(xR + 4) + '" y="' + f1(ib + 3) + '" text-anchor="start">0</text>';
   }
 
   /* 刻度钉在时间上而不是钉在档位上：盘中的 x 轴要能读出「才走到 10 点」，

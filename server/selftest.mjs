@@ -1037,6 +1037,19 @@ async function runContracts(base, pass) {
   (r.text.includes('function curvePos(') && r.text.includes('120 + (m - 780)) / 240'))
     ? ok('曲线横轴按交易时间定位（午休不占宽度）')
     : bad('曲线横轴仍按索引排：盘中只画到一半时会铺满全天');
+  /* 副图必须自带量纲说明和刻度。它跟上面的累积线同一条 x 轴、同一个红色，
+     没有标题和刻度就会被读成「曲线下面的投影」——柱子高度读不出数值，
+     灰横不知道是什么，这块图等于没画。这三样少一样，误读就会回来。 */
+  (r.text.includes('新增（家 / 15 分钟）') && r.text.includes('灰横＝历史同期中位')
+    && r.text.includes('cvlb'))
+    ? ok('曲线副图自带量纲标题、图例与独立刻度')
+    : bad('曲线副图缺标题或刻度，柱子会被读成主图的投影');
+  /* 纵轴定标必须排除首档（09:30–09:35 的集合竞价），否则后面十几根柱全被
+     压成贴地的条。首档超量程要顶到边，真实家数由「开盘 +N 家」那句话给。 */
+  (r.text.includes('if (i > 0){\n      if (v1 != null && v1 > mxi) mxi = v1;')
+    && r.text.includes('开盘 <b>+'))
+    ? ok('副图定标排除开盘首档，并在图例给出真实家数')
+    : bad('副图定标把开盘首档算进满格：后面各档会被压平');
 
   r = await rawRequest(base, '/api/mktprobe?t=senti', { cookie });
   const sp = r.json();
