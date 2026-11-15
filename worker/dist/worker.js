@@ -9366,17 +9366,11 @@ function sntRecord(S){
 /* 把 HHMMSS 时点表换算成「采样点落在第几格」的浮点索引。
    午休那一段 HHMMSS 之差不是真实分钟数（113000→131500 是 105 分钟），
    但只在格与格之间插值，误差落在午休两侧，视觉上无害。 */
-function curveIdxOf(C, mins){
-  var t = Math.floor(mins / 60) * 10000 + (mins % 60) * 100, n = C.at.length;
-  if (t <= C.at[0]) return 0;
-  if (t >= C.at[n - 1]) return n - 1;
-  for (var i = 1; i < n; i++){
-    if (C.at[i] >= t){
-      var f = (t - C.at[i - 1]) / (C.at[i] - C.at[i - 1]);
-      return i - 1 + f;
-    }
-  }
-  return n - 1;
+function curvePos(mins){
+  if (mins < 570) return 0;
+  if (mins > 900) return 1;
+  if (mins <= 690) return (mins - 570) / 240;
+  return (120 + (mins - 780)) / 240;
 }
 
 /* 前半段与后半段各自相对历史中位的平均偏离。「全程弱」和「午后转弱」是
@@ -9424,7 +9418,19 @@ function curveChart(C, S){
   if (!(ytop > 0)) return '';
   var ymax = Math.ceil(ytop * 1.1 / 20) * 20;
 
-  var nx = function(j){ return pL + j / (n - 1) * iw; };
+  /* X 轴按真实交易时间定位，不按数组索引。按索引排的话，盘中只有 4 档时
+     第 4 档会被甩到最右边——10:07 的图看起来像「全天已经走完，最后一家封在
+     15:00」，这是最容易看错的一种错。09:30–11:30 与 13:00–15:00 各占一半宽，
+     午休不占宽度。 */
+  var m2 = function(t){ return Math.floor(t / 10000) * 60 + Math.floor(t % 10000 / 100); };
+  var xp = function(t){
+    var m = m2(t);
+    if (m < 570) return 0;
+    if (m > 900) return 1;
+    if (m <= 690) return (m - 570) / 240;
+    return (120 + (m - 780)) / 240;
+  };
+  var nx = function(j){ return pL + xp(C.at[j]) * iw; };
   var ny = function(v){ return y0 - v / ymax * ih; };
   var f1 = function(v){ return v.toFixed(1); };
   var clip = 'cvc' + (mob ? 'm' : 'd') + n;
@@ -9460,8 +9466,7 @@ function curveChart(C, S){
   var smp = sntSamples();
   if (S && S.mode === 'live' && smp.d === S.d && smp.p.length >= 2){
     for (i = 0; i < smp.p.length; i++){
-      var g = curveIdxOf(C, smp.p[i][0]);
-      var x1 = pL + g / (n - 1) * iw;
+      var x1 = pL + curvePos(smp.p[i][0]) * iw;
       if (smp.p[i][1] != null && smp.p[i][1] <= ymax){
         h += '<circle cx="' + f1(x1) + '" cy="' + f1(ny(smp.p[i][1])) + '" r="1.7" fill="var(--up)" opacity=".5"/>';
       }
@@ -9479,10 +9484,8 @@ function curveChart(C, S){
   h += '<text x="' + (pL - 5) + '" y="' + (ny(ymax) + 3) + '" text-anchor="end">' + ymax + '</text>';
 
   /* 午休竖线：11:30–13:00 一定平，不标一道会被读成「午后开不动」。 */
-  var ix = -1;
-  for (i = 0; i < n; i++) if (C.at[i] === 113000) ix = i;
-  if (ix >= 0 && ix < n - 1){
-    var xm = (nx(ix) + nx(ix + 1)) / 2;
+  if (xp(C.at[n - 1]) > 0.5){
+    var xm = pL + 0.5 * iw;
     h += '<line x1="' + f1(xm) + '" y1="' + pT + '" x2="' + f1(xm) + '" y2="' + f1(ib)
       + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 4"/>';
   }
@@ -9520,10 +9523,19 @@ function curveChart(C, S){
        新增），没有底色时读者会顺着 0 线往下读成负值。 */
     h += '<rect x="' + pL + '" y="' + (y0 + 5) + '" width="' + f1(iw) + '" height="' + (HB + 10)
       + '" fill="var(--bg3)" opacity=".7" rx="2"/>';
-    var bw = Math.max(2, iw / (n - 1) * 0.58);
+    /* 柱宽按「15 分钟的时间槽」算，不按档数算。盘中只有 4 档时按档数算，
+       每根柱会宽到 200px，四根叠在一起糊成一片。 */
+    var bw = Math.max(2, iw / 16 * 0.58);
     /* 平方根缩放：开盘那一档 18 家，后面各档 3~8 家，线性缩放下后半排全被压成
        2px 的同一高度——而这条副图要看的恰恰是「后半排比前半排矮多少」。 */
     for (i = 0; i < n; i++){
+      /* 末档与前一档只差几分钟时不画柱：它的窗口没走完，柱子会和前一档叠在
+         一起，而且高度已经是按速率换算过的，与左边的柱子不同量纲。
+         「现在多快」由下面那行「末档 +N」负责说。 */
+      if (i === n - 1 && i > 0){
+        var gapM = m2(C.at[i]) - m2(C.at[i - 1]);
+        if (gapM > 0 && gapM < 8) continue;
+      }
       var bx = Math.min(pL + iw - bw, Math.max(pL, nx(i) - bw / 2));
       if (inc[i] != null && inc[i] > 0){
         var bh = Math.max(1.5, Math.sqrt(inc[i] / mxi) * (HB - 2));
@@ -9541,16 +9553,18 @@ function curveChart(C, S){
 
   }
 
-  var marks = { 93500: '09:30', 100000: '10:00', 103000: '10:30', 110000: '11:00',
-    113000: '11:30', 133000: '13:30', 140000: '14:00', 143000: '14:30', 150000: '15:00' };
-  var keep = mob ? { 93500: 1, 113000: 1, 150000: 1 } : null;
-  for (i = 0; i < n; i++){
-    var t = C.at[i], s2 = marks[t];
-    if (keep && s2 && !keep[t]) s2 = null;
-    if (!s2) continue;
-    h += '<text x="' + f1(nx(i)) + '" y="' + (Hh - 2) + '"'
-      + (i === 0 ? ' text-anchor="start"' : (i === n - 1 ? ' text-anchor="end"' : ' text-anchor="middle"'))
-      + '>' + s2 + '</text>';
+  /* 刻度钉在时间上而不是钉在档位上：盘中的 x 轴要能读出「才走到 10 点」，
+     钉在档位上会让 4 个点均匀铺满全天。 */
+  var marks = [[570, '09:30'], [600, '10:00'], [630, '10:30'], [660, '11:00'],
+    [690, '11:30'], [810, '13:30'], [840, '14:00'], [870, '14:30'], [900, '15:00']];
+  var mEnd = m2(C.at[n - 1]);
+  for (i = 0; i < marks.length; i++){
+    if (marks[i][0] > mEnd) break;
+    if (mob && marks[i][0] !== 570 && marks[i][0] !== 690 && marks[i][0] !== 900) continue;
+    var xm2 = pL + curvePos(marks[i][0]) * iw;
+    var anc = (marks[i][0] === 570) ? 'start' : (marks[i][0] === 900 ? 'end' : 'middle');
+    h += '<text x="' + f1(xm2) + '" y="' + (Hh - 2) + '" text-anchor="' + anc + '">'
+      + marks[i][1] + '</text>';
   }
   return h + '</svg>';
 }

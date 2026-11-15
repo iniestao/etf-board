@@ -1031,6 +1031,12 @@ async function runContracts(base, pass) {
   (r.text.includes('function curveChart(') && r.text.includes('function sntRecord('))
     ? ok('首页已含当日曲线与本地采样两段')
     : bad('首页缺曲线渲染或采样记录函数');
+  /* 横轴必须按交易时间定位。按数组索引排的话，盘中只有 4 档时第 4 档会被
+     算在最右边——10:07 的图看起来像「全天走完了，最后一家封在 15:00」，
+     而且这一种错在收盘态完全看不出来（收盘正好 17 档，铺满就是对的）。 */
+  (r.text.includes('function curvePos(') && r.text.includes('120 + (m - 780)) / 240'))
+    ? ok('曲线横轴按交易时间定位（午休不占宽度）')
+    : bad('曲线横轴仍按索引排：盘中只画到一半时会铺满全天');
 
   r = await rawRequest(base, '/api/mktprobe?t=senti', { cookie });
   const sp = r.json();
