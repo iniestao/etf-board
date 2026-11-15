@@ -10,6 +10,8 @@ import { LAB } from './src/lab_data.js';
 import { SEC_HIST } from './src/sec_hist.js';
 import { MKT_HIST, MKT_INDS } from './src/mkt_hist.js';
 import { MKT_IND_NAMES, MKT_IND_OF, MKT_IND_MEM, MKT_STK_NAME } from './src/mkt_ind.js';
+import { SENTI_HIST } from './src/senti_hist.js';
+import { SENTI_BASE } from './src/senti_base.js';
 
 /* 两份文件各自生成，唯一会悄悄错位的地方就是行业名的顺序：mkt_hist 里存的是
    每天 TOP3 的**下标**，mkt_ind 里存的是「代码 → 下标」。顺序一错，盘中算出来的
@@ -45,9 +47,103 @@ if (MKT_IND_MEM.length !== MKT_IND_NAMES.length) {
   }
 }
 
+/* ---------------- 情绪基准：两份数据的咬合 ----------------
+ * SENTI_HIST 来自 250 天腾讯日线回算，SENTI_BASE 来自东财 13 天池，是两个上游、
+ * 两次独立运行。它们和 MKT_HIST 之间只要有一处对不齐，盘中「今天 vs 此刻历史」
+ * 就是拿两个不同世界的数在比——而那种错在页面上看起来完全正常。
+ * 这几条断言全部是「结构必须成立」，不写死具体数值（历史天天在长）。 */
+if (JSON.stringify(SENTI_HIST.d) !== JSON.stringify(MKT_HIST.d)) {
+  const a = SENTI_HIST.d, b = MKT_HIST.d;
+  console.error(`senti_hist.js 的日期(${a.length} 天，末 ${a[a.length - 1]})`
+    + `与 mkt_hist.js(${b.length} 天，末 ${b[b.length - 1]})不一致，`
+    + '两个文件必须同一次 gen_mkt_hist.mjs 生成');
+  process.exit(1);
+}
+{
+  const H = SENTI_HIST, n = H.d.length;
+  const KEYS = ['zt', 'dt', 'touch', 'red', 'mid', 'big', 'promo', 'pn',
+    'touchN', 'ydtRed', 'ydtStill', 'ydtN'];
+  for (const k of KEYS) {
+    if (!Array.isArray(H[k]) || H[k].length !== n) {
+      console.error(`SENTI_HIST.${k} 长度 ${Array.isArray(H[k]) ? H[k].length : '缺失'} != ${n}`);
+      process.exit(1);
+    }
+  }
+  /* 曾触板 >= 涨停，且都不超过当日有成交个股数。第一条挂了说明判定口径错，
+     第二条挂了说明两个文件不是同一天的口径（比如 n 用了旧的一份）。 */
+  for (let i = 0; i < n; i++) {
+    if (H.zt[i] > H.touch[i]) {
+      console.error(`${H.d[i]}：涨停 ${H.zt[i]} > 曾触板 ${H.touch[i]}，判定口径错了`);
+      process.exit(1);
+    }
+    if (H.touch[i] > MKT_HIST.n[i]) {
+      console.error(`${H.d[i]}：曾触板 ${H.touch[i]} > 当日有成交 ${MKT_HIST.n[i]}`);
+      process.exit(1);
+    }
+  }
+  /* 池内代码必须在行业映射里：盘中要点名单看简称和行业，查不到就只能显示裸代码。
+     留 2% 余量——新股上市头几天行业表还没收录。 */
+  const miss = [];
+  for (const pool of [H.zpool, H.dpool]) {
+    for (const day of Object.keys(pool)) {
+      for (const it of pool[day]) {
+        const c = Array.isArray(it) ? it[0] : it;
+        if (MKT_IND_OF[c] === undefined) miss.push(c);
+      }
+    }
+  }
+  const tot = Object.values(H.zpool).reduce((s, a) => s + a.length, 0)
+    + Object.values(H.dpool).reduce((s, a) => s + a.length, 0);
+  if (miss.length > tot * 0.02) {
+    console.error(`情绪池里 ${miss.length}/${tot} 只代码不在行业映射里（如 ${miss.slice(0, 5).join(',')}）`);
+    process.exit(1);
+  }
+  /* 新鲜度探针：昨日池的收盘价。少于 20 条就没法判断历史表是不是过期，
+     整块承接指标都得降级成「—」，那种情况应该先在管线里修好。 */
+  const np = Object.keys(H.zpx).length, nd = Object.keys(H.dpx).length;
+  if (np < 20) {
+    console.error(`SENTI_HIST.zpx 只有 ${np} 条探针价（应 ≥ 20），历史过期检测会失效`);
+    process.exit(1);
+  }
+  if (H.lastDay !== H.d[n - 1]) {
+    console.error(`SENTI_HIST.lastDay(${H.lastDay}) != 最后一天(${H.d[n - 1]})`);
+    process.exit(1);
+  }
+  if (nd === 0) console.warn('  提示：昨日跌停池为空（当天 0 家跌停），dpx 无探针属正常');
+}
+
+/* 同刻基准：东财涨停池 + 炸板池合并的 17 档曲线。只做结构校验——
+   具体数值天天变，写死会天天误报。 */
+{
+  const B = SENTI_BASE;
+  if (!Array.isArray(B.days) || B.days.length < 5) {
+    console.error(`senti_base.js 只有 ${B.days ? B.days.length : 0} 天，东财回溯窗口至少要 5 天`);
+    process.exit(1);
+  }
+  if (B.touch.length !== B.days.length) {
+    console.error(`senti_base.js 曲线行数 ${B.touch.length} != 天数 ${B.days.length}`);
+    process.exit(1);
+  }
+  for (let i = 1; i < B.at.length; i++) {
+    if (B.at[i] <= B.at[i - 1]) { console.error(`senti_base.at 不是递增的：${B.at.slice(0, 5)}`); process.exit(1); }
+  }
+  for (let i = 0; i < B.touch.length; i++) {
+    const row = B.touch[i];
+    if (row.length !== B.at.length) {
+      console.error(`senti_base.js 第 ${i} 行有 ${row.length} 档，应为 ${B.at.length}`);
+      process.exit(1);
+    }
+    for (let j = 1; j < row.length; j++) {
+      if (row[j] < row[j - 1]) {
+        console.error(`${B.days[i]} 的曾触板在 ${B.at[j]} 回退（${row[j - 1]} → ${row[j]}），累计口径错了`);
+        process.exit(1);
+      }
+    }
+  }
+}
+
 const page = readFileSync('src/page.js', 'utf8');
 const core = readFileSync('src/index.js', 'utf8');
-
 const m = page.match(/export const HTML = `([\s\S]*)`;\s*$/);
 if (!m) { console.error('未能在 page.js 中定位 HTML 模板'); process.exit(1); }
 

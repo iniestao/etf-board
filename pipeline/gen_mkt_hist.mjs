@@ -55,6 +55,8 @@ const JSON_OUT = argOf('--json', 'dist/mkt_hist.json');
 const IND_MAP = argOf('--ind', 'pipeline/ind_em2016.json');
 // 紧跟 --out 走：本地用 --out /tmp/x.js 试跑时不该往仓库里写东西
 const IND_OUT = join(dirname(OUT), 'mkt_ind.js');
+const SENTI_OUT = join(dirname(OUT), 'senti_hist.js');
+const SENTI_JSON = join(dirname(JSON_OUT), 'senti_hist.json');
 const CH = +argOf('--concurrency', 10);
 const SNAP = DAYS + 70;   // 多要一些根：第一根没有前收要丢，停牌股还会少几根
 
@@ -137,6 +139,38 @@ const indAmtL2 = new Map();         // 二级行业 -> Map(day -> amt)，只用�
 const failed = [];
 const empty = [];
 
+/* ---------------- 3b. 情绪口径（涨跌停） ----------------
+ * 「昨日涨停池今日表现」这类指标盘中任何时刻样本都不变，是唯一能在 10:00 就定调
+ * 的那一组（涨停家数 10:00 只完成 17%~58%，SD 13.9pt，纯噪声）。所以历史里必须
+ * 有「每天哪些票涨停、次日表现如何」，否则盘中只能拿收盘数糊弄。
+ *
+ * 规则必须与 worker 的 aggSenti 完全一致，差一个字盘中「今天」和历史「那一刻」
+ * 就没法比了。20cm 是 688/300/301/302——科创、创业板的 ST 仍是 20%；只有
+ * 「主板 + ST/*ST」才是 5%。
+ *
+ * 已知偏差：ST 状态取当前简称，250 天里摘帽/戴帽的票会算错一档（行业归属用当前
+ * 快照也是同性质偏差）。复牌日 chg 跨停牌期，靠 rate*1.6 上限挡掉，不单独处理。 */
+const ztDay = new Map(), dtDay = new Map(), touchDay = new Map();
+const zPoolByDay = new Map();       // day -> [[code, 连板数], …]
+const dPoolByDay = new Map();       // day -> [code, …]
+/* 只存「曾涨停或曾跌停过」的票的逐日表现（约 2000 只 × 250 天）。
+ * 全存是 130 万条、几十 MB；只存这些票就够回算承接，省一个数量级。 */
+const dayRec = new Map();           // code -> {days:[], p:[], h:[], c:[]}
+const nmOf = (code) => (indFile.items[code] && indFile.items[code].n) || '';
+/* 历史口径一律忽略 ST —— 下面两处调用都刻意传 false。
+ * 原因：ST 状态只有「当前」快照（行业表里的简称），250 天里戴帽摘帽改过好几轮。
+ * 实测 11-13：*ST闻泰、ST椰岛、*ST未名、*ST威领、*ST华鹏 这些票当时都不是 ST，
+ * 按今天的简称套 5% 会把它们 -6% 的下跌判成跌停，跌停家数从 33 虚报到 44，
+ * 涨停也从 37 虚报到 40。反方向（当时是 ST、现在摘帽）只会漏判几只，不会凭空多票。
+ * 漏判比多判安全：池子少一只 ST 对承接率影响 < 2%；凭空多 11 只会让「昨日跌停池
+ * 今日仍跌停」整体失真。盘中实时则相反——当天的 ST 就写在当天简称里，必须判 5%，
+ * 那份逻辑在 worker 的 aggSenti 里，与这里不是同一份代码。 */
+function sentiRate(code, isSt) {
+  const p = code.slice(0, 3);
+  if (p === '688' || p === '300' || p === '301' || p === '302') return 0.20;
+  return isSt ? 0.05 : 0.10;
+}
+
 async function one(sym) {
   let rows;
   try { rows = await txKline(sym, SNAP); } catch (e) { failed.push(sym); return; }
@@ -144,6 +178,10 @@ async function one(sym) {
   if (!rows.length) { empty.push(sym); return; }
 
   const em = indOf(sym);
+  const code = sym.slice(2);
+  const rate = sentiRate(code, false);
+  let streak = 0, ztEver = false, dtEver = false;
+  const rec = { days: [], p: [], h: [], c: [] };
   const l3 = em ? em.split('-')[2] : null;
   const l2 = em ? em.split('-')[1] : null;
   let m3 = null, m2 = null, m3p = null;
@@ -172,10 +210,54 @@ async function one(sym) {
     if (m2) m2.set(d, (m2.get(d) || 0) + amt);
     const chg = close / prev - 1;
     if (m3p) m3p.set(d, (m3p.get(d) || 0) + amt * chg);
+
+    /* 涨跌停判定：一律走整数分，不用「涨跌幅 ± 比例容差」。
+       比例容差是个陷阱——涨停价 round 到分之后，低价股的实际涨停涨幅只有
+       9.71%（1.03 → 1.13），而中价股 -9.7% 的真实跌幅又会被 0.3pt 容差吞进来。
+       实测这一条会让 11-13 的跌停家数从 33 虚报到 53，多出来的 20 只全是
+       跌 9.7%~9.9% 但没封板的票（600183、002384、002463 …）。
+       qfq 价格带小数，round 到分本身有 ±0.5 分误差，边界票仍可能错一只，
+       但比 0.3pt 容差准确一个数量级。
+       上限 rate*1.6 挡掉新股首日与复牌跳空——那些日子没有涨跌幅限制。 */
+    const prevC = Math.round(prev * 100), closeC = Math.round(close * 100);
+    const hiC = Math.round((+a[3] || 0) * 100);
+    const limUp = Math.round(prevC * (1 + rate));
+    const limDn = Math.round(prevC * (1 - rate));
+    const inBand = chg <= rate * 1.6 && chg >= -rate * 1.6;
+    const isZt = closeC >= limUp && inBand;
+    const isTouch = hiC >= limUp && inBand;
+    const isDt = closeC <= limDn && inBand;
+
+    if (isZt) {
+      ztEver = true;
+      // 连板：停牌日上面已经 continue 过了，streak 不会被打断——交易所口径
+      // 也是「连续交易日」，停一天不算断板
+      streak++;
+      let zl = zPoolByDay.get(d);
+      if (!zl) { zl = []; zPoolByDay.set(d, zl); }
+      zl.push([code, streak]);
+      ztDay.set(d, (ztDay.get(d) || 0) + 1);
+    } else streak = 0;
+    if (isDt) {
+      dtEver = true;
+      let dl = dPoolByDay.get(d);
+      if (!dl) { dl = []; dPoolByDay.set(d, dl); }
+      dl.push(code);
+      dtDay.set(d, (dtDay.get(d) || 0) + 1);
+    }
+    if (isTouch) touchDay.set(d, (touchDay.get(d) || 0) + 1);
+    if (ztEver || dtEver) {
+      /* p = 当日涨跌幅；h / c = 最高价 / 收盘价的「整数分」。
+         存分而不是比例，是为了回算时还能重算涨停价——比例容差在低价股上
+         会把 -9.7% 当成跌停（见上面的注释）。 */
+      rec.days.push(d); rec.p.push(chg); rec.h.push(hiC); rec.c.push(closeC);
+    }
+
     if (chg > 0.0001) dayUp.set(d, (dayUp.get(d) || 0) + 1);
     else if (chg < -0.0001) dayDn.set(d, (dayDn.get(d) || 0) + 1);
     else dayFlat.set(d, (dayFlat.get(d) || 0) + 1);
   }
+  if (ztEver || dtEver) dayRec.set(code, rec);
 }
 
 console.log(`拉个股日线（每只 ${SNAP} 根，${CH} 并发）…`);
@@ -283,6 +365,85 @@ for (let i = 0; i < dates.length; i++) {
   A.push(Math.round(tot / 1e8));
 }
 
+/* ---------------- 4b. 承接回算（昨日池 → 今日表现） ----------------
+ * 分母用「当日仍有成交的池成员数」，不是池总数：停牌票没有涨跌幅，算进分母
+ * 会把红盘率往下拽。卡片上同时显示样本数，用户看得见分母是谁。
+ * 中位涨幅存「百分数 × 100」的整数（−427 = −4.27%），与盘中两位小数同精度。 */
+const pC = new Map();               // code -> Map(day -> 该日在本票记录里的下标)
+for (const [code, r] of dayRec) pC.set(code, new Map(r.days.map((d, i) => [d, i])));
+
+function sideOf(pool, day, isZt) {
+  let n = 0, red = 0, big = 0, promo = 0, touch = 0, still = 0;
+  const ps = [];
+  for (const it of pool) {
+    const code = isZt ? it[0] : it;
+    const r = dayRec.get(code);
+    if (!r) continue;
+    const m = pC.get(code);
+    const k = m ? m.get(day) : undefined;
+    if (k === undefined) continue;    // 当日停牌/无成交
+    const p = r.p[k];
+    n++;
+    if (p > 0) red++;
+    if (p <= -0.07) big++;
+    ps.push(p);
+    const rate = sentiRate(code, false);
+    // 昨日收盘价反推（r.c 是收盘整数分、p 是涨跌幅），再算今日涨停 / 跌停价。
+    // 与循环里那套整数分判定同源，不引入第二套容差。
+    const prevC = Math.round((r.c[k] / (1 + p)));
+    const limUp = Math.round(prevC * (1 + rate));
+    const limDn = Math.round(prevC * (1 - rate));
+    if (isZt) {
+      if (r.c[k] >= limUp) promo++;
+      if (r.h[k] >= limUp) touch++;
+    } else if (r.c[k] <= limDn) still++;        // 今日仍跌停
+  }
+  ps.sort((x, y) => x - y);
+  return { n, red, big, promo, touch, still,
+    mid: ps.length ? Math.round(ps[ps.length >> 1] * 10000) : 0 };
+}
+
+const SZT = [], SDT = [], STOUCH = [], STOUCHN = [], SRED = [], SMID = [], SBIG = [];
+const SPROMO = [], SPN = [], SYRED = [], SYSTILL = [], SDN = [];
+for (let i = 0; i < dates.length; i++) {
+  const d = dates[i];
+  SZT.push(ztDay.get(d) || 0);
+  SDT.push(dtDay.get(d) || 0);
+  STOUCH.push(touchDay.get(d) || 0);
+  const pd = i > 0 ? dates[i - 1] : null;
+  const a = pd ? sideOf(zPoolByDay.get(pd) || [], d, true) : { n: 0 };
+  const b = pd ? sideOf(dPoolByDay.get(pd) || [], d, false) : { n: 0 };
+  SRED.push(a.n ? Math.round(a.red / a.n * 1000) : 0);
+  SMID.push(a.n ? a.mid : 0);
+  SBIG.push(a.n ? Math.round(a.big / a.n * 1000) : 0);
+  SPROMO.push(a.promo || 0);
+  SPN.push(a.n || 0);
+  STOUCHN.push(a.touch || 0);
+  SYRED.push(b.n ? Math.round(b.red / b.n * 1000) : 0);
+  SYSTILL.push(b.n ? Math.round(b.still / b.n * 1000) : 0);
+  SDN.push(b.n || 0);
+}
+
+/* 只留最近 30 天涨停池 / 10 天跌停池：卡片只需要「昨日」那一池，
+ * 多留是给回看与对账用的。全 250 天会让这个文件从 40KB 涨到 200KB，
+ * 而 Worker 每次启动都要 import 它。 */
+const zpool = {}, dpool = {};
+for (const d of dates.slice(-30)) if (zPoolByDay.has(d)) zpool[d] = zPoolByDay.get(d);
+for (const d of dates.slice(-10)) if (dPoolByDay.has(d)) dpool[d] = dPoolByDay.get(d);
+
+/* 新鲜度探针：最后一日两个池的收盘价。运行时拿池内票的「今日昨收(f18)」与这里
+ * 比，命中 < 80% 说明历史表不是上一交易日（春节/国庆用日历差会误杀，用价格不会）。 */
+const lastD = dates[dates.length - 1];
+const zpx = {}, dpx = {};
+for (const [code] of (zPoolByDay.get(lastD) || [])) {
+  const m = pC.get(code), k = m ? m.get(lastD) : undefined;
+  if (k !== undefined) zpx[code] = dayRec.get(code).c[k] / 100;
+}
+for (const code of (dPoolByDay.get(lastD) || [])) {
+  const m = pC.get(code), k = m ? m.get(lastD) : undefined;
+  if (k !== undefined) dpx[code] = dayRec.get(code).c[k] / 100;
+}
+
 /* ---------------- 5. 自检 ---------------- */
 const last = dates.length - 1;
 const amtLast = dayAllAmt.get(dates[last]) || 0;
@@ -387,3 +548,51 @@ const indJs = '// 由 pipeline/gen_mkt_hist.mjs 生成，勿手改。\n'
 writeFileSync(IND_OUT, indJs);
 console.log(`${IND_OUT}  ${(indJs.length / 1024).toFixed(1)} KB · ${Object.keys(indFlat).length} 只映射`
   + ` · 最大行业 ${Math.max(...indMem.map((a) => a.length))} 只`);
+
+/* ---------------- 8. 情绪历史落盘 → worker/src/senti_hist.js ----------------
+ * 单独一个文件，不并进 mkt_hist.js：后者在 Worker 里是 JSON.parse 出来的
+ * （index.js 的 mktPack），多 40KB 就是每次冷启动都白烧一遍 CPU；而这两份数据
+ * 的失败语义也不同（集中度缺了还能显示家数，情绪池缺了整套指标都得降级）。 */
+const sLast = dates.length - 1;
+console.log('情绪自检：');
+console.log(`  ${dates[sLast]} 涨停 ${SZT[sLast]} 家 · 曾触板 ${STOUCH[sLast]} · 跌停 ${SDT[sLast]}`
+  + ` · 昨日涨停池 ${SPN[sLast]} 只（红盘 ${(SRED[sLast] / 10).toFixed(0)}%`
+  + ` 中位 ${(SMID[sLast] / 100).toFixed(2)}% 大面 ${(SBIG[sLast] / 10).toFixed(0)}%）`);
+console.log(`  昨日跌停池 ${SDN[sLast]} 只（红盘 ${(SYRED[sLast] / 10).toFixed(0)}%`
+  + ` 仍跌停 ${(SYSTILL[sLast] / 10).toFixed(0)}%）· 最高连板 `
+  + Math.max(...(zpool[lastD] || [[0, 0]]).map((x) => x[1])));
+
+/* 结构断言，量级断言只兜底：真实值（11-13 涨停 37、曾触 58）随日期变，
+   写死会天天误报，所以只在日志里打出来给人看。 */
+for (let i = 0; i < dates.length; i++) {
+  if (STOUCH[i] < SZT[i]) throw new Error(`曾触板 ${STOUCH[i]} < 涨停 ${SZT[i]}（${dates[i]}），判定口径错了`);
+}
+const sBad = SZT.filter((v) => !(v >= 0 && v <= 400));
+if (sBad.length > dates.length * 0.02) throw new Error(`涨停家数量级异常 ${sBad.length}/${dates.length} 天`);
+if (SPN[sLast] < 10) throw new Error(`昨日涨停池只有 ${SPN[sLast]} 只有效样本，日线口径有问题`);
+if (Object.keys(zpx).length < 20) throw new Error(`zpx 探针只有 ${Object.keys(zpx).length} 条，少于 20`);
+
+const sPayload = {
+  d: dates,
+  zt: SZT, dt: SDT, touch: STOUCH,
+  red: SRED, mid: SMID, big: SBIG, promo: SPROMO, pn: SPN, touchN: STOUCHN,
+  ydtRed: SYRED, ydtStill: SYSTILL, ydtN: SDN,
+  zpool, dpool, zpx, dpx,
+  lastDay: lastD, cVer: 'senti-v1',
+};
+const sHead = '// 由 pipeline/gen_mkt_hist.mjs 回算生成，勿手改。\n'
+  + '// 短线情绪的 250 天历史基准（全 A 个股口径，与盘中 aggSenti 同一套规则）：\n'
+  + '//   zt/dt/touch = 当日涨停 / 跌停 / 曾触板家数（收盘口径，只作背景，不可与盘中比）\n'
+  + '//   red/mid/big = 昨日涨停池今日 红盘率(‰) / 中位涨幅(百分数×100) / 大面率(‰)\n'
+  + '//   promo/pn/touchN = 昨池今日晋级数 / 有效样本数 / 曾触板数\n'
+  + '//   ydtRed/ydtStill/ydtN = 昨日跌停池今日 红盘率(‰) / 仍跌停率(‰) / 有效样本数\n'
+  + '//   zpool = 最近 30 日涨停池 [[code, 连板], …]；dpool = 最近 10 日跌停池 [code, …]\n'
+  + '//   zpx/dpx = 最后一日两池收盘价，运行时作新鲜度探针（命中 < 80% 判历史过期）\n'
+  + `// ${dates.length} 个交易日（${dates[0]} → ${lastD}）\n`;
+const sJs = sHead + 'export const SENTI_HIST = ' + JSON.stringify(sPayload) + ';\n';
+mkdirSync(dirname(SENTI_OUT), { recursive: true });
+writeFileSync(SENTI_OUT, sJs);
+mkdirSync(dirname(SENTI_JSON), { recursive: true });
+writeFileSync(SENTI_JSON, JSON.stringify({ generated_at: new Date().toISOString(), ...sPayload }));
+console.log(`${SENTI_OUT}  ${(sJs.length / 1024).toFixed(1)} KB · 涨停池 ${Object.keys(zpool).length} 天`
+  + ` · 跌停池 ${Object.keys(dpool).length} 天 · 探针 ${Object.keys(zpx).length}/${Object.keys(dpx).length}`);

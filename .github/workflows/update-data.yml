@@ -196,6 +196,9 @@ jobs:
           node pipeline/gen_ind_map.mjs || echo "::warning::行业映射刷新失败，沿用仓库里那份"
           node pipeline/gen_sec_hist.mjs || echo "::warning::日档回算失败，沿用上一次发布的那份"
           node pipeline/gen_mkt_hist.mjs || echo "::warning::全A结构回算失败，沿用上一次发布的那份"
+          # 同刻「曾触板」基准：东财涨停池+炸板池，只回溯 ~14 个交易日。
+          # 它失败不影响主图，只是盘中的「此刻历史」不更新（卡片会显示旧基准或不显示）。
+          node pipeline/gen_senti_base.mjs || echo "::warning::同刻基准回算失败，沿用上一次发布的那份"
           python3 - <<'PY'
           import json, pathlib
           d = json.loads(pathlib.Path('dist/sec_daily.json').read_text())
@@ -209,6 +212,20 @@ jobs:
           assert len(m['u']) == len(m['d']) and len(m['w']) == len(m['d']), '涨跌家数与日期长度不一致'
           # 全 A 有成交的股票常年在 4500-5500 之间。低于 3000 说明上游限流捞漏了
           assert m['u'][-1] + m['w'][-1] > 3000, f"个股家数异常偏少 {m['u'][-1]}+{m['w'][-1]}"
+          s = json.loads(pathlib.Path('dist/senti_hist.json').read_text())
+          print(f"情绪历史 {len(s['d'])} 天，涨停池 {len(s['zpool'])} 天 / 跌停池 {len(s['dpool'])} 天，"
+                f"最新 {s['lastDay']}（涨停 {s['zt'][-1]} 曾触 {s['touch'][-1]} 跌停 {s['dt'][-1]}），"
+                f"昨日涨停池 {s['pn'][-1]} 只有效样本")
+          # 两个文件的日期数组必须逐项相同，否则盘中「今天」会跟历史的另一天对齐
+          assert s['d'] == m['d'], '情绪历史的日期与全A结构不一致'
+          assert s['pn'][-1] >= 10, f"昨日涨停池只有 {s['pn'][-1]} 只有效样本，日线口径有问题"
+          assert len(s['zpx']) >= 20, '新鲜度探针不足 20 条，历史过期检测会失效'
+          try:
+              b = json.loads(pathlib.Path('dist/senti_base.json').read_text())
+              assert len(b['days']) >= 5, f"同刻基准只有 {len(b['days'])} 天"
+              print(f"同刻基准 {len(b['days'])} 天 × {len(b['at'])} 档，最新 {b['days'][-1]}")
+          except Exception as e:
+              print(f'::warning::同刻基准不可用（{e}），盘中「此刻历史」会退回不显示')
           PY
 
       # ---------- 3. 期指期权日档 ----------
@@ -408,7 +425,7 @@ jobs:
           # 首次跑或回算失败时这几个文件可能不存在，别让 cp 把发布带崩。
           # etfopt_hist.json 千万别漏：这个分支是每次 force push 重建的，
           # 少拷一个文件等于把它从线上删掉，页面 ETF 组会直接退回「还没发布」。
-          for f in sec_daily.json mkt_hist.json fut_daily.json fut_last.json etfopt_hist.json; do
+          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json; do
             if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; else echo "::warning::dist/$f 不存在，这轮不发布它"; fi
           done
           if [ -d dist/shares ]; then cp -r dist/shares "$PUB/"; else echo "::warning::dist/shares 不存在，这轮不发布份额"; fi
@@ -426,7 +443,7 @@ jobs:
           python3 -c "import json;d=json.load(open('$PUB/research.json'));print('因子研究数据:',d['generated_at'],'因子',d['ic']['n'],'个')"
 
       # ---------- 4b. 把内联快照回写 main ----------
-      # worker/src/mkt_hist.js、sec_hist.js 不是运行时拉取的，是构建 Worker 时由
+      # worker/src/mkt_hist.js、sec_hist.js、senti_hist.js、senti_base.js 不是运行时拉取的，是构建 Worker 时由
       # build.mjs 直接拼进 HTML 的常量。上面「回算」只在 runner 上生成它们，不回写
       # 就等于白算：data 分支的 json 天天新，页面里的散点云却停在最后一次手提交的
       # 那天。2026-11-11 体检报「全 A 散点停在 11-06」，Actions 其实天天在跑。
@@ -439,7 +456,7 @@ jobs:
         run: |
           git config user.name "etf-board-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          FILES="worker/src/mkt_hist.js worker/src/mkt_ind.js worker/src/sec_hist.js pipeline/ind_em2016.json"
+          FILES="worker/src/mkt_hist.js worker/src/mkt_ind.js worker/src/sec_hist.js worker/src/senti_hist.js worker/src/senti_base.js pipeline/ind_em2016.json"
           if git diff --quiet -- $FILES; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "内联快照无变化（回算失败时会走到这里，属正常降级）"
@@ -447,7 +464,7 @@ jobs:
           fi
           git diff --stat -- $FILES
           echo "--- 其它脏文件（rebase 会因它们失败）---"
-          git status --porcelain | grep -v -E '(src/(mkt_hist|mkt_ind|sec_hist)\.js|pipeline/ind_em2016\.json)' | head -10 || true
+          git status --porcelain | grep -v -E '(src/(mkt_hist|mkt_ind|sec_hist|senti_hist|senti_base)\.js|pipeline/ind_em2016\.json)' | head -10 || true
           ( cd worker && node build.mjs && node --check dist/worker.js )
           git add $FILES worker/dist/worker.js
           git commit -q -m "chore(data): 内联快照跟随 $(date -u '+%Y-%m-%d') 回算结果"
