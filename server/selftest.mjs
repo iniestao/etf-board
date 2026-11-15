@@ -813,6 +813,141 @@ async function runContracts(base, pass) {
   if (indBad && indBad.ok === false) ok('/api/ind 未知行业正确拒绝');
   else bad('/api/ind 未知行业应返回 ok:false');
 
+  /* ---- 情绪面板 -----------------------------------------------------------
+     这块的数字天生「看起来全都正常」：曾触板只数涨停池会少 35%、跌停拿下界
+     去比历史会虚报 150%、0.3pt 的比例容差能把 -9.7% 算成跌停。所以光验接口
+     活着没有意义，每条守恒关系都得钉死——错一条就是一张骗人的图。 */
+  r = await rawRequest(base, '/api/senti', { cookie });
+  const sn = r.json();
+  if (sn && sn.ok) {
+    ok('/api/senti ' + sn.mode + '：涨停 ' + sn.zt + ' 家、曾触板 ' + sn.touch
+      + '、炸板 ' + sn.zb + '、跌停 ' + sn.dt + ' 家、封板率 '
+      + (sn.seal == null ? '—' : Math.round(sn.seal * 100) + '%')
+      + '、状态 ' + (sn.state || '—'));
+    if (sn.mode !== 'live' && sn.mode !== 'close') bad('/api/senti mode 非法：' + sn.mode);
+    if (!(sn.zt >= 0) || !(sn.touch >= 0) || !(sn.dt >= 0)) bad('/api/senti 家数出现负数或非数');
+    if (sn.zt > sn.touch) bad('/api/senti 涨停 ' + sn.zt + ' > 曾触板 ' + sn.touch + '，口径倒挂');
+    if (sn.zb !== sn.touch - sn.zt) {
+      bad('/api/senti 炸板 ' + sn.zb + ' ≠ 曾触板 − 涨停 ' + (sn.touch - sn.zt));
+    }
+    if (sn.n != null && (sn.touch > sn.n || sn.dt > sn.n)) {
+      bad('/api/senti 家数超过有效成交 ' + sn.n + ' 只（停牌没挡住？）');
+    }
+
+    if (sn.touch > 0) {
+      const wantSeal = sn.zt / sn.touch;
+      if (sn.seal == null) bad('/api/senti 有曾触板却没给封板率');
+      else if (Math.abs(sn.seal - wantSeal) > 0.005) {
+        bad('/api/senti 封板率 ' + sn.seal + ' 与 zt/touch ' + wantSeal.toFixed(3) + ' 对不上');
+      }
+    } else if (sn.seal != null) bad('/api/senti 曾触板为 0 却给了封板率 ' + sn.seal);
+
+    const tiers = (sn.ladder && sn.ladder.t) || [];
+    const tierSum = tiers.reduce((x, y) => x + (y || 0), 0);
+    if (tierSum !== sn.zt) {
+      bad('/api/senti 梯队各板合计 ' + tierSum + ' ≠ 涨停 ' + sn.zt + '（有票没进梯队）');
+    }
+    if (tiers.length && (sn.ladder.mx > 0) !== (sn.zt > 0)) {
+      bad('/api/senti 最高板 ' + sn.ladder.mx + ' 与涨停家数 ' + sn.zt + ' 不自洽');
+    }
+
+    if (sn.prem) {
+      const p = sn.prem;
+      if (!(p.n > 0)) bad('/api/senti 昨日涨停池样本 n=' + p.n);
+      if (!(p.red >= 0 && p.red <= 100)) bad('/api/senti 红盘率越界 ' + p.red);
+      if (!(p.big >= 0 && p.big <= 100)) bad('/api/senti 大面率越界 ' + p.big);
+      if (p.mid != null && Math.abs(p.mid) > 30) bad('/api/senti 中位涨幅越界 ' + p.mid);
+      if (p.promo > p.n) bad('/api/senti 晋级 ' + p.promo + ' > 昨涨停池 ' + p.n);
+      if (p.touchN > p.n || p.touchN < p.promo) {
+        bad('/api/senti 昨涨停池曾触板 ' + p.touchN + ' 不在 [' + p.promo + ', ' + p.n + '] 内');
+      }
+    }
+    if (sn.yprem && !(sn.yprem.red >= 0 && sn.yprem.red <= 100
+      && sn.yprem.still >= 0 && sn.yprem.still <= 100)) {
+      bad('/api/senti 昨跌停池比例越界 ' + JSON.stringify(sn.yprem));
+    }
+
+    const ST = ['冰点', '退潮', '分歧', '修复', '发酵', null];
+    if (!ST.includes(sn.state)) bad('/api/senti 状态灯出现未知档位：' + sn.state);
+    if (sn.state && !(Array.isArray(sn.why) && sn.why.length)) bad('/api/senti 有档位却没给理由');
+    /* 这两条是修过的错，改回去会立刻在这里现形：跌停池只有 lbt 没有 fbt，
+       拿下界当同刻基准会把常态说成恐慌（11-13 实测虚报 150%）。 */
+    if ('refSealed' in sn || 'refDt' in sn) {
+      bad('/api/senti 又出现 refSealed/refDt：跌停下来自池子的下界，不可作同刻基准');
+    }
+    if (sn.mode === 'close' && sn.ref) bad('/api/senti 收盘态不该有同刻基准');
+  } else bad('/api/senti 失败：' + r.text.slice(0, 160));
+
+  // 三份名单：条数必须和卡片上的家数对得起来，否则「点开数不上」
+  for (const kind of ['zt', 'zb', 'dt']) {
+    r = await rawRequest(base, '/api/senti?list=' + kind, { cookie });
+    const L = r.json();
+    if (!L || !L.ok) { bad('/api/senti?list=' + kind + ' 失败：' + r.text.slice(0, 120)); continue; }
+    const items = (L.list && L.list.items) || null;
+    if (!items) { bad('/api/senti?list=' + kind + ' 没有返回名单'); continue; }
+    const cardN = kind === 'zt' ? sn && sn.zt : kind === 'zb' ? sn && sn.zb : sn && sn.dt;
+    /* 收盘态是两套数：卡片读历史表（当日收盘回算），名单是现拉一次行情回算。
+       同一套规则、同一天，但上游价可能有分位差，容许 2 家以内的出入。 */
+    const tol = (sn && sn.mode === 'live') ? 0 : Math.max(2, Math.round((cardN || 0) * 0.05));
+    if (cardN != null && Math.abs(items.length - cardN) > tol) {
+      bad('/api/senti?list=' + kind + ' 名单 ' + items.length + ' 条，卡片上是 '
+        + cardN + ' 家（容差 ' + tol + '）');
+    } else ok('/api/senti?list=' + kind + ' ' + items.length + ' 条，与卡片一致');
+    const noPx = items.filter((x) => !x.c || !(x.px > 0)).length;
+    if (noPx) bad('/api/senti?list=' + kind + ' 有 ' + noPx + ' 条缺代码或价格，点开是空卡');
+    const sortKey = kind === 'zt' ? 'seal' : 'a';
+    for (let i = 1; i < Math.min(items.length, 40); i++) {
+      if ((items[i][sortKey] || 0) > (items[i - 1][sortKey] || 0) + 1e-9) {
+        bad('/api/senti?list=' + kind + ' 没按 ' + sortKey + ' 降序（第 ' + i + ' 条）');
+        break;
+      }
+    }
+  }
+
+  r = await rawRequest(base, '/', { cookie });
+  (r.text.includes('id="sentiCard"') && r.text.includes('sentiOpen('))
+    ? ok('首页已拼入情绪卡片与三份名单入口')
+    : bad('首页缺情绪卡片：id="sentiCard" / sentiOpen 没拼进 renderSectors');
+
+  r = await rawRequest(base, '/api/mktprobe?t=senti', { cookie });
+  const sp = r.json();
+  if (sp && sp.ok && sp.got) {
+    ok('/api/mktprobe ?t=senti 固定样本对上：涨停 ' + sp.got.zt + '、炸板 ' + sp.got.zb
+      + '、跌停 ' + sp.got.dt + '、封板率 ' + sp.got.seal);
+    /* diag 数的是「涨幅与涨停价换算值差 0.02pt 以内却没判成涨停」。这个数
+       正常恒为 0；一旦 >0 说明 round 到分或 rate 判错，家数会系统性偏少。 */
+    if (sp.got.diag !== 0) {
+      bad('/api/mktprobe 有 ' + sp.got.diag + ' 只落在涨停容差内却没判封（round/rate 有错）');
+    }
+  } else bad('/api/mktprobe ?t=senti 失败：' + r.text.slice(0, 160));
+
+  /* 两张基准表是离线生成的静态文件，结构坏了接口不会报错，只会默默降级
+     （承接、梯队、状态灯一起变「—」）。所以这里直接读源码里的常量对数。 */
+  try {
+    const { SENTI_HIST: SH } = await import(path.join(SRC, 'senti_hist.js'));
+    const { SENTI_BASE: SB } = await import(path.join(SRC, 'senti_base.js'));
+    const nn = SH.d.length;
+    ok('情绪基准 ' + nn + ' 天（' + SH.d[0] + ' → ' + SH.d[nn - 1] + '）· 同刻曾触板 '
+      + SB.days.length + ' 天 × ' + SB.at.length + ' 档');
+    if (nn < 60) bad('情绪历史只有 ' + nn + ' 天，算不出分位数');
+    const badLen = ['zt', 'dt', 'touch', 'red', 'mid', 'big', 'promo', 'pn',
+      'touchN', 'ydtRed', 'ydtStill', 'ydtN']
+      .filter((k) => !Array.isArray(SH[k]) || SH[k].length !== nn);
+    if (badLen.length) bad('情绪历史字段长度与 d 不一致：' + badLen.join('、'));
+    if (SH.lastDay !== SH.d[nn - 1]) bad('情绪历史 lastDay ' + SH.lastDay + ' ≠ 最后一根 ' + SH.d[nn - 1]);
+    const inv = SH.d.filter((_, i) => SH.zt[i] > SH.touch[i]).length;
+    if (inv) bad(inv + ' 天的涨停家数大于曾触板家数');
+    const npx = Object.keys(SH.zpx || {}).length;
+    if (npx < 20) bad('情绪历史只有 ' + npx + ' 条探针价（应 ≥ 20），过期检测会失效');
+    if (!SB.at.every((v, i) => i === 0 || v > SB.at[i - 1])) bad('senti_base 的时点没有严格递增');
+    const rowBad = SB.touch.filter((row) => row.length !== SB.at.length).length;
+    if (rowBad) bad('senti_base 有 ' + rowBad + ' 行长度不等于时点数');
+    const mono = SB.touch.filter((row) => row.some((v, i) => i && v < row[i - 1])).length;
+    if (mono) bad('senti_base 有 ' + mono + ' 行的曾触板数不是单调不降（累积值不可能变少）');
+  } catch (e) {
+    bad('情绪基准表读不出来：' + ((e && e.message) || e));
+  }
+
   /* 聚合逻辑的离线自检：不碰上游，喂一段固定样本进去对数。
      5 条里 1 条停牌（f6=0、f3='-'）、1 条代码不在映射表里。
      有效 4 只、合计 150 亿、3 涨 1 跌 1 平 → b=2/3、p5=8e9/15e9。
