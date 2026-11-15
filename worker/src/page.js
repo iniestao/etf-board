@@ -831,9 +831,36 @@ font-size:10.5px;color:var(--txt3);line-height:1.6}
 border:1px solid var(--line);font-size:10.5px;color:var(--txt3);line-height:1.7}
 .snt.open .sntwhy{display:block}
 .sntwhy i{font-style:normal;color:var(--txt2)}
+/* 两组口径之间加一条竖线：左边是「昨天的池子今天怎么样」，右边是「今天的过程量」，
+   横着加不起来。不加分隔会有人拿涨停 38 去减昨涨停 37。 */
+.sntk.sep{padding-left:14px;border-left:1px solid #d3d7de}
+.sntgrid.sntrowsplit{margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
+/* 梯队柱：8 档固定列宽，柱子按最大档归一。底部对齐，柱高才可比。 */
+.sntlrow{display:flex;align-items:flex-end;gap:14px;margin-top:8px}
+.sntbar{display:flex;align-items:flex-end;gap:11px}
+.sntbar .sb{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px}
+.sntbar .sb>b{font-size:10.5px;color:var(--txt2);font-variant-numeric:tabular-nums;line-height:1}
+.sntbar .sb>i{display:block;width:20px;border-radius:2px 2px 0 0;background:var(--up);opacity:.55}
+.sntbar .sb.hi>i{opacity:1}
+.sntbar .sb>em{font-style:normal;font-size:9.5px;color:var(--txt3);white-space:nowrap;line-height:1}
+.sntrl{font-size:10.5px;color:var(--txt3);white-space:nowrap}
+.lbseg{display:inline}
+.lbsplit{color:#cdd2da;margin:0 2px}
+.sntsp{display:block;flex:none;overflow:visible}
+.sntlmx{margin-left:2px;font-size:10.5px;color:var(--txt3);white-space:nowrap;padding-bottom:1px}
+.sntlmx b{color:var(--txt2);font-variant-numeric:tabular-nums}
 @media(max-width:820px){
   .sntgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 12px}
   .sntk>b{font-size:15px}
+  .sntk.sep{padding-left:0;border-left:0}
+  .sntbar{gap:9px}
+  .sntbar .sb>i{width:17px}
+  .sntlmx{margin-left:0}
+  .sntlrow{flex-wrap:wrap;gap:6px}
+  .sntk>b i.more{display:none}
+  .lbseg{display:block}
+  .lbsplit{display:none}
+  .snttag{display:none}
 }
 @media(max-width:560px){.snt{padding:7px 9px 6px}.snttag{letter-spacing:0}}
 
@@ -1255,6 +1282,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
 <nav class="secnav" id="secNav" aria-label="区块导航">
   <a data-t="onCard">隔夜</a>
+  <a data-t="sentiSec">情绪</a>
   <a data-t="secSec">板块地图</a>
   <a data-t="watchSec">自选</a>
   <a data-t="spdSec">急涨急跌</a>
@@ -1264,6 +1292,15 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
 <div class="oncard" id="onCard" style="display:none"></div>
 <div class="oncard" id="asiaCard" style="display:none"></div>
+
+<!-- 短线情绪独立成一区：它看的是全 A 个股（涨停/跌停/连板），和下面按 ETF
+     成交额画的板块地图是两套口径。原先挂在板块地图的 A 股分组里，滚到那
+     才能看见，而且一旦折叠 A 股就把情绪一起藏了。 -->
+<div class="sec" id="sentiSec">
+  <div class="sechd"><b>短线情绪</b><span class="n" id="sentiN">-</span>
+    <span class="sync" id="btnSenti" title="丢掉缓存，按最新行情重算">重算</span></div>
+  <div id="sentiBody"><div class="empty">正在读取情绪数据…</div></div>
+</div>
 
 <div class="sec" id="secSec">
   <div class="sechd"><b>板块地图</b><span class="n" id="secN">-</span>
@@ -1570,6 +1607,21 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 
         <div class="hm"><h3>隔夜与亚太的数字为什么可能与别处不同</h3>
         <p>这两行与条目弹窗的行情按覆盖范围从多个厂商分别取用。同一条目在各家的报价时点相差几秒到十几分钟，跨源的价格基准也可能不同——期货的涨跌以昨结算为基准，指数的涨跌以前收盘为基准。卡片与分时图不一致时，以卡片上带时间戳的报价为准。</p></div>
+
+        <div class="hm"><h3>短线情绪</h3>
+        <p>看的是全 A 个股的涨跌停。单个数字本身没有意义——涨停家数是单向往上累积的量，10:00 的 30 家和收盘的 80 家不是同一件事。所以按参照物分成三类：<b>昨日涨停池今日表现</b>（样本盘中固定，09:35 就能定调）、<b>封板率</b>（分子分母同为「到此刻」的累积量，比值抗时间）、<b>涨停 / 炸板 / 跌停家数</b>（只能与历史同刻对标）。</p>
+        <ul>
+          <li><b>晋级率</b>：昨日涨停池里今天又封住的占比。分母是池子大小，所以比家数可比；旁边的小字是它在近 250 个交易日里的分位。</li>
+          <li><b>大面</b>：昨日涨停池里今日跌超 7% 的占比。这个指标二元性极强，0% 和 15% 是两个世界。</li>
+          <li><b>分层</b>：同一批票按昨日板数切成首板与连板。整体红盘率会被池子结构加权——一波首板普涨日里九成是首板，龙头那几只的表现被稀释，分开看才知道是「接力资金撤了」还是「高位票自己在走」。</li>
+          <li><b>一字 / T 字 / 换手</b>：一字板最低价即涨停价，全天买不到；T 字开过口又回封；换手板盘中才封上。三者之和等于涨停家数——一字板再多也和你没关系。</li>
+          <li><b>炸而未崩</b>：炸板股里现价仍在 +7% 以上的只数。只看炸板家数分不清是主动分歧还是被动错杀。</li>
+          <li><b>涨停行业</b>：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情——同样是「涨停 38 家」，对第二天的意义正好相反。</li>
+          <li><b>近 20 日红盘率</b>：连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。纵轴按当段自适应，所以旁边标出实际区间。</li>
+          <li><b>曾触板同刻中位</b>：近 15 个交易日里，到同一时刻为止曾封上涨停的只数区间。这一项能从东财两个池精确重建，所以只有它配同刻对照。</li>
+        </ul>
+        <p>跌停不给同刻基准：跌停池只有「最后封板时间」，没有「首次跌停时间」，拿它重建盘中值是严格下界——11-13 收盘 33 家里 26 家当天开过板，10:00 重建值仅 2 家，比盘中真实的 5 家少一半以上，方向恰好是最坏的那种假恐慌。所以跌停只报绝对值，另配「昨日跌停池今日表现」做交叉验证。</p>
+        <p>收盘后读到的是当日收盘数据；周末与节假日沿用最近一个完整交易日，标题右侧会写明日期。上游不可用时退回本地回算的日档，卡片上会标「（回算）」并说明缺了哪几项。</p></div>
 
         <div class="hm"><h3>板块地图</h3>
         <p>按跟踪指数聚合，同一指数只计一票（取成交额最大者）。若不去重，同指数发行数量多的板块会因权重堆叠而虚高，得到的是发行结构而不是资金轮动。A 股、港股、跨境分别计算分母。表内只含行业与主题类，宽基、债券、货币、商品不入表。附 250 个交易日占比曲线，用于判断当前占比处于扩张初期还是已过半程。</p></div>
@@ -2134,16 +2186,27 @@ var MKT_REQ = false, MKT_RETRY = null;
 var SENTI = null, SENTI_REQ = false, SENTI_RETRY = null, SENTI_OPEN = null;
 
 function repaintSenti(){
-  var el = document.getElementById('sentiCard');
-  if (!el) return;
-  var wrap = document.createElement('div');
-  wrap.innerHTML = sentiCard();
-  var nw = wrap.firstChild;
-  if (nw && nw.className && nw.className.indexOf('snt') >= 0) el.parentNode.replaceChild(nw, el);
+  var body = document.getElementById('sentiBody');
+  if (!body) return;
+  // 30 秒一刷会把整块重建，展开着的「判定依据」要跟着活下来，否则每次刷新都收起
+  var old = body.querySelector('#sentiCard');
+  var wasOpen = !!(old && old.classList.contains('open'));
+  body.innerHTML = sentiCard();
+  var nw = body.querySelector('#sentiCard');
+  if (nw && wasOpen) nw.classList.add('open');
+  var n = document.getElementById('sentiN');
+  if (n){
+    var S = SENTI;
+    n.textContent = !S ? '读取中'
+      : !S.ok ? '暂不可用'
+        : S.mode === 'live' ? '盘中 ' + (S.snapAt || '')
+          : (S.d || '').slice(5) + ' 收盘' + (S.src === 'hist' ? '（回算）' : '');
+  }
 }
 
-function loadSenti(){
+function loadSenti(force){
   if (SENTI_REQ) return;
+  if (force){ SENTI = null; SENTI_REQ = false; repaintSenti(); }
   SENTI_REQ = true;
   // 不走浏览器缓存：盘中是 30 秒一变，被缓存 120 秒就等于不刷新了。
   // 服务端的 Cache-Control 仍然生效（那是给边缘节点的），这里只挡浏览器。
@@ -2173,66 +2236,116 @@ function loadSenti(){
 function sentiCard(){
   var S = SENTI;
   if (!S || !S.ok){
-    return '<div class="snt" id="sentiCard"><div class="snthd"><span>短线情绪</span>'
+    return '<div class="snt" id="sentiCard"><div class="snthd">'
       + '<em class="sntb" style="color:var(--txt3)">' + (S ? '不可用' : '读取中') + '</em>'
       + (S && S.error ? '<span class="snttag">' + esc(S.error) + '</span>' : '')
       + '</div></div>';
   }
 
   var mode = S.mode || 'close';
-  var bjDay = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
-  var dayStr = S.d || '';
-  var dayTag = mode === 'live' ? '盘中 ' + (S.snapAt || '')
-    : mode === 'snap' ? '快照 ' + (S.snapAt || '')
-      : dayStr === bjDay ? '今天收盘' : dayStr.slice(5) + ' 收盘';
-
   var STC = { '冰点': 'var(--down)', '退潮': 'var(--down)',
     '修复': 'var(--up)', '发酵': 'var(--up)' };
   var stCol = STC[S.state] || 'var(--txt3)';
+  var P = S.prem, Y = S.yprem, F = S.form, pct = S.pct || {};
 
-  function cell(k, v, sub, cls){
-    return '<div class="sntk"><span>' + k + '</span><b' + (cls ? ' class="' + cls + '"' : '')
-      + '>' + v + (sub ? '<i>' + sub + '</i>' : '') + '</b></div>';
+  /* cell 的第四个字是小字：分位、合计、口径说明都塞这儿。分位统一写成
+     「30分位」，前面不留空格——小字本来就窄，多一个空格会把 37 只挤到换行。 */
+  /* sub 是必看的小字（分位/口径），sub2 是明细，窄屏上会被隐藏：
+     手机一格只有 114px，「18.9% · 7/37 只 · 54分位」必然断成两行还断在字中间。
+     分位比分子分母重要，所以窄屏留 sub、砍 sub2。 */
+  function cell(k, v, sub, cls, extra, sub2){
+    return '<div class="sntk' + (extra ? ' ' + extra : '') + '"><span>' + k + '</span><b'
+      + (cls ? ' class="' + cls + '"' : '') + '>' + v
+      + (sub ? '<i>' + sub + '</i>' : '')
+      + (sub2 ? '<i class="more">' + sub2 + '</i>' : '')
+      + '</b></div>';
   }
+  function pq(v){ return v == null ? '' : ' · ' + v + '分位'; }
 
-  var h = '<div class="snt" id="sentiCard">'
-    + '<div class="snthd"><span>短线情绪</span>'
+  var h = '<div class="snt" id="sentiCard">';
+
+  /* 第一行只放状态灯 + 一句分位摘要：「短线情绪」四个字已经在区块标题上了，
+     卡里再写一遍是重复；把那一行省下来放真正要看的东西。 */
+  var brief = [];
+  if (pct.red != null) brief.push('红盘 ' + pct.red + ' 分位');
+  if (pct.big != null) brief.push('大面 ' + pct.big + ' 分位');
+  if (pct.promo != null) brief.push('晋级 ' + pct.promo + ' 分位');
+  h += '<div class="snthd">'
     + '<em class="sntb" style="color:' + stCol + '" data-snt="why"'
     + ' title="点一下看判定依据">' + (S.state || '样本不足') + '</em>'
-    + '<span class="snttag">' + dayTag + '</span></div>';
+    + '<span class="snttag">' + (brief.length
+      ? '近 250 天：' + brief.join(' · ') : '点状态灯看判定依据') + '</span></div>';
 
-  /* 三行共用一套 6 列：昨日涨停池 / 昨日跌停池 / 今日过程量。
-     行数少但列宽窄，眼睛不用横跨半屏去对比「红盘」和「大面」。 */
-  var P = S.prem;
+  /* 两行各六格，行内不分组就不留空格子：
+     第 1 行是「昨天的池子今天怎么样」（样本盘中固定，A 类）；
+     第 2 行是「今天到现在为止的过程量」（累积量，C 类 + 封板率 B 类）。
+     两行口径完全不同，中间用一条线断开，别让人以为可以横向加减。 */
+  var h1 = '';
   if (P){
-    h += '<div class="sntgrid">'
-      + cell('昨涨停', P.n, '只')
-      + cell('今日红盘', Math.round(P.red) + '%', null, P.red >= 50 ? 'up' : 'down')
-      + cell('大面', Math.round(P.big) + '%', '≤-7%', P.big >= 15 ? 'down' : '')
+    h1 += cell('昨涨停', P.n, '只')
+      + cell('今日红盘', Math.round(P.red) + '%', pq(pct.red), P.red >= 50 ? 'up' : 'down')
+      + cell('大面', Math.round(P.big) + '%', '≤-7%' + pq(pct.big), P.big >= 15 ? 'down' : '')
       + cell('中位', fpc(P.mid), null, P.mid >= 0 ? 'up' : 'down')
-      + '</div>';
+      + cell('晋级', P.promoRate == null ? '—' : P.promoRate + '%',
+        pq(pct.promo), P.promoRate >= 30 ? 'up' : '', '',
+        '· ' + P.promo + '/' + P.n + ' 只');
   } else {
-    h += '<p class="sntref">昨日涨停池样本不足，承接指标暂不可用</p>';
+    h1 += cell('昨涨停', '—', '样本不足');
   }
+  /* 跌停侧只有两个数，不单独占一行——但必须和数据完全不同的涨停池隔开，
+     否则「昨跌停 5 只」会被读成「这 5 只来自上面那个池」。 */
+  h1 += Y
+    ? cell('昨跌停', Y.n, '只 · 仍跌 ' + Math.round(Y.still) + '%', Y.still >= 30 ? 'down' : '', 'sep')
+    : cell('昨跌停', 0, '只 · 昨日无跌停', '', 'sep');
+  h += '<div class="sntgrid">' + h1 + '</div>';
 
-  var Y = S.yprem;
-  if (Y){
-    h += '<div class="sntgrid" style="margin-top:6px">'
-      + cell('昨跌停', Y.n, '只')
-      + cell('今日红盘', Math.round(Y.red) + '%', null, Y.red >= 50 ? 'up' : 'down')
-      + cell('仍跌停', Math.round(Y.still) + '%', null, Y.still >= 30 ? 'down' : '')
-      + '</div>';
-  } else {
-    h += '<p class="sntref">昨日无跌停（全市场 0 家）—— 跌停侧没有可比样本</p>';
-  }
-
-  h += '<div class="sntgrid" style="margin-top:9px;padding-top:8px;border-top:1px solid var(--line)">'
-    + cell('今日涨停', S.zt, '家')
-    + cell('曾触板', S.touch, '家')
-    + cell('炸板', S.zb, '家')
+  var h2 = cell('今日涨停', S.zt, '家')
+    + cell('一字板', F ? F.yz : '—', F ? '· 买不到' : '· 盘中才有')
+    + cell('炸板', S.zb, S.zbHold == null ? '家' : '家 · 未崩 ' + S.zbHold)
     + cell('跌停', S.dt, '家')
-    + cell('封板率', S.seal == null ? '—' : Math.round(S.seal * 100) + '%', '封住/触板')
-    + '</div>';
+    + cell('封板率', S.seal == null ? '—' : Math.round(S.seal * 100) + '%', '· 封住/触板')
+    + cell('曾触板', S.touch, '家');
+  h += '<div class="sntgrid sntrowsplit">' + h2 + '</div>';
+
+  /* 分层：整体红盘率被池子结构加权，首板和连板分开看才知道是「接力资金撤了」
+     还是「高位票自己在走」。这两个结论对应的动作完全相反。 */
+  var LB = P && P.lb;
+  if (LB && (LB.n1 || LB.n2)){
+    h += '<p class="sntref">分层　<span class="lbseg">首板 <b>' + LB.n1 + '</b> 只 · 红盘 <b>'
+      + (LB.red1 == null ? '—' : Math.round(LB.red1) + '%') + '</b> · 中位 <b>' + fpc(LB.mid1) + '</b>'
+      + '</span><span class="lbsplit">｜</span><span class="lbseg">连板 <b>' + LB.n2 + '</b> 只 · 红盘 <b>'
+      + (LB.red2 == null ? '—' : Math.round(LB.red2) + '%') + '</b> · 中位 <b>' + fpc(LB.mid2) + '</b>'
+      + '</span></p>';
+  }
+
+  var L = S.ladder;
+  if (L && L.t && L.mx > 0){
+    var bars = ladderBars(L);
+    h += '<div class="sntlrow">' + bars
+      + '<span class="sntlmx">最高 <b>' + L.mx + '</b> 板'
+      + (S.yMx ? '（昨日 ' + S.yMx + ' 板）' : '') + '</span></div>';
+  }
+
+  /* 近 20 日轨迹：单个数字只回答「今天多冷」，回答不了「冷到哪一步」。
+     连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。 */
+  if (S.trail && S.trail.red && S.trail.red.length >= 5){
+    var tr = S.trail.red, lo = 100, hi = 0, k;
+    for (k = 0; k < tr.length; k++){ if (tr[k] < lo) lo = tr[k]; if (tr[k] > hi) hi = tr[k]; }
+    h += '<div class="sntlrow" style="align-items:center">'
+      + '<span class="sntrl">近 ' + tr.length + ' 日红盘率</span>'
+      + sentiSpark(S.trail)
+      + '<span class="sntlmx">区间 <b>' + Math.round(lo) + '%–' + Math.round(hi) + '%</b></span></div>';
+  }
+
+  /* 行业集中度：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情。
+     同样是「涨停 38 家」，对第二天的意义正好相反。 */
+  if (S.ind && S.ind.length){
+    var seg = [], i;
+    for (i = 0; i < S.ind.length; i++) seg.push(esc(S.ind[i].k) + ' <b>' + S.ind[i].c + '</b>');
+    h += '<p class="sntref">涨停行业　' + seg.join(' · ')
+      + (S.zt > 0 ? '　前 ' + S.ind.length + ' 占 <b>'
+        + Math.round(S.indTop3 / S.zt * 100) + '%</b>' : '') + '</p>';
+  }
 
   var bits = [];
   if (S.ref && S.ref.med != null){
@@ -2240,21 +2353,11 @@ function sentiCard(){
     var hhmm = a6.slice(0, 2) + ':' + a6.slice(2, 4);
     bits.push('曾触板此刻历史中位 <b>' + S.ref.med + '</b>（' + S.ref.lo + '–' + S.ref.hi
       + '，近 ' + S.ref.n + ' 日 ' + hhmm + '）');
-  } else if (mode === 'live') {
+  } else if (mode === 'live'){
     // 收盘态没有「此刻」可言，别把「没数据」写在正确的地方上
     bits.push('曾触板同刻基准暂缺');
   }
   if (bits.length) h += '<p class="sntref">' + bits.join(' · ') + '</p>';
-
-  var L = S.ladder;
-  if (L && L.t){
-    var segs = [], nm = ['首板', '2板', '3板', '4板', '5板', '6板', '7板', '8板+'];
-    for (var i = 0; i < L.t.length; i++) if (L.t[i] > 0) segs.push(nm[i] + ' ' + L.t[i]);
-    if (segs.length){
-      h += '<p class="sntref">梯队 ' + segs.join(' · ') + '　最高 <b>' + L.mx + '</b> 板'
-        + (S.yMx ? '（昨日 ' + S.yMx + ' 板）' : '') + '</p>';
-    }
-  }
 
   h += '<div class="sntline">'
     + '<span class="sntlk" data-snt="zt">涨停 ' + S.zt + ' 只 →</span>'
@@ -2267,6 +2370,53 @@ function sentiCard(){
       + '</div>';
   }
   if (S.note) h += '<p class="sntref" style="color:var(--down)">' + esc(S.note) + '</p>';
+  return h + '</div>';
+}
+
+/* 近 20 日红盘率迷你折线。只有 20 个点，一条 polyline 就够，不必上 canvas
+   ——卡片每 30 秒会被 innerHTML 重建一次，canvas 每次都得重画，SVG 跟着字符串走。
+   纵轴按当段自适应（并在旁边标出区间）：固定 0–100 的话，40%–60% 的波动会被压成
+   一条几乎水平的线，而「横住不动」和「正在往下掉」正是这条线要回答的问题。 */
+function sentiSpark(T){
+  var a = T.red, n = a.length, i;
+  var W = 128, Hh = 26, pad = 3;
+  var mx = 0, mn = 100;
+  for (i = 0; i < n; i++){ if (a[i] > mx) mx = a[i]; if (a[i] < mn) mn = a[i]; }
+  if (mx - mn < 4){ mx = mn + 4; }          // 一段完全走平时别画成心电图
+  var sx = function(i2){ return pad + i2 / (n - 1) * (W - 2 * pad); };
+  var sy = function(v){ return Hh - pad - (v - mn) / (mx - mn) * (Hh - 2 * pad); };
+  var pts = [], area = [];
+  for (i = 0; i < n; i++) pts.push(sx(i).toFixed(1) + ',' + sy(a[i]).toFixed(1));
+  area.push(pad.toFixed(1) + ',' + (Hh - 1));
+  for (i = 0; i < n; i++) area.push(sx(i).toFixed(1) + ',' + sy(a[i]).toFixed(1));
+  area.push((W - pad).toFixed(1) + ',' + (Hh - 1));
+  return '<svg class="sntsp" viewBox="0 0 ' + W + ' ' + Hh + '" width="' + W + '" height="' + Hh + '"'
+    + ' aria-label="近 ' + n + ' 日红盘率轨迹">'
+    + '<polygon points="' + area.join(' ') + '" fill="var(--up)" opacity=".10"/>'
+    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--up)" stroke-width="1.4"'
+    + ' stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle cx="' + sx(n - 1).toFixed(1) + '" cy="' + sy(a[n - 1]).toFixed(1)
+    + '" r="2.4" fill="var(--up)"/></svg>';
+}
+
+/* 连板梯队的柱状图。原先是一行「首板 31 · 2板 4 · 3板 2 · 4板 1」，数字念得
+   出来但看不出形状——梯队是「厚底尖顶」还是「2 板断层直接接 5 板」，扫一眼
+   柱子就知道，读数字要在脑子里重建一遍。柱高按最大档归一，4 板以上换深色。 */
+function ladderBars(L){
+  var nm = ['首板', '2板', '3板', '4板', '5板', '6板', '7板', '8板+'];
+  var mx = 0, i;
+  for (i = 0; i < L.t.length; i++) if (L.t[i] > mx) mx = L.t[i];
+  if (!mx) return '';
+  var h = '<div class="sntbar">';
+  for (i = 0; i < L.t.length; i++) if (L.t[i] > 0){
+    // 平方根缩放：线性缩放下 31:4 会让 2 板和 3 板一起压成同高的矮条，
+    // 而梯队要看的恰恰是「中间有几档」——柱子一样高就等于没画。
+    var hh = Math.max(5, Math.round(Math.sqrt(L.t[i] / mx) * 28));
+    h += '<span class="sb' + (i >= 3 ? ' hi' : '') + '">'
+      + '<b>' + L.t[i] + '</b>'
+      + '<i style="height:' + hh + 'px"></i>'
+      + '<em>' + nm[i] + '</em></span>';
+  }
   return h + '</div>';
 }
 
@@ -3153,7 +3303,7 @@ function renderSectors(){
       + (bk ? '<span class="sgm">资金 <b class="up">' + bk + ' +' + bv.toFixed(1) + 'pt</b></span>' : '')
       + '<span class="sgm t3">' + nUp + ' 涨 ' + (core.length - nUp) + ' 跌</span>'
       + '</div>'
-      + (G2.code === 'a' ? secQuadCard() + sentiCard() : '')
+      + (G2.code === 'a' ? secQuadCard() : '')
       + '<div class="smgrid">'
       + cellHtml(G2, core, mxAmt, sdel)
       + (ths.length
@@ -8863,6 +9013,19 @@ Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
   var b = document.getElementById('btnSec');
   if (b) b.onclick = function(){ SEC_CACHE = {}; renderSectors(); toast('已按最新快照重算板块'); };
 })();
+/* 情绪卡的重算。服务端有两层缓存（内部 Cache API + 浏览器），只清前端没用：
+   内部 cache key 是固定的内部 URL，加时间戳绕不过去，所以走 fresh=1 显式让开。 */
+(function(){
+  var b = document.getElementById('btnSenti');
+  if (b) b.onclick = function(){
+    SENTI = null; SENTI_REQ = false;
+    repaintSenti();
+    fetch('/api/senti?fresh=1', { cache: 'no-store' })
+      .then(function(r){ return r.json(); })
+      .then(function(j){ SENTI = j || null; repaintSenti(); toast('已按最新行情重算情绪'); })
+      .catch(function(){ repaintSenti(); toast('重算失败，保留原数据'); });
+  };
+})();
 document.getElementById('limitSel').onchange = function(){ limit = parseInt(this.value,10); renderList(); };
 /* 表头点击排序。绑在表头上而不是每行：thead 只有一行，重绘时也不会被换掉 */
 (function(){
@@ -9696,7 +9859,7 @@ function futInit(){
 /* 锚点导航：点击平滑滚动；滚动时把视口上缘以下 120px 处的区块点亮。
    量出来的 --navH 同时供区块 scroll-margin-top 和表格表头 sticky 用，
    窗口尺寸变化（转屏、缩放）时重算。 */
-var NAV_SECS = ['onCard', 'secSec', 'watchSec', 'spdSec', 'futSec', 'rankSec'];   // 按文档顺序
+var NAV_SECS = ['onCard', 'sentiSec', 'secSec', 'watchSec', 'spdSec', 'futSec', 'rankSec'];   // 按文档顺序
 function navMeasure(){
   var nav = document.getElementById('secNav');
   if (nav) document.documentElement.style.setProperty('--navH', (nav.offsetHeight + 8) + 'px');
