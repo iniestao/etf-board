@@ -876,6 +876,63 @@ async function runContracts(base, pass) {
       bad('/api/senti 又出现 refSealed/refDt：跌停下来自池子的下界，不可作同刻基准');
     }
     if (sn.mode === 'close' && sn.ref) bad('/api/senti 收盘态不该有同刻基准');
+
+    /* 一字 / T字 / 换手是按同一批涨停分的类，三者之和必须正好等于涨停家数。
+       漏一只就说明判定分支有洞（f16/f17 缺失时没落到 else 是最常见的那个）。 */
+    if (sn.form) {
+      const fs2 = sn.form.yz + sn.form.tz + sn.form.hs;
+      if (fs2 !== sn.zt) bad('/api/senti 一字+T字+换手 = ' + fs2 + '，与涨停 ' + sn.zt + ' 不符');
+    } else if (sn.src === 'sina') {
+      bad('/api/senti 现算路径没返回涨停形态（sina 的 f16/f17 没带上？）');
+    }
+    if (sn.zbHold != null && sn.zbHold > sn.zb) {
+      bad('/api/senti 炸而未崩 ' + sn.zbHold + ' > 炸板 ' + sn.zb);
+    }
+    if (sn.ind) {
+      if (sn.ind.length > 3) bad('/api/senti 涨停行业给了 ' + sn.ind.length + ' 个（应 ≤3）');
+      for (let i = 1; i < sn.ind.length; i++) {
+        if (sn.ind[i].c > sn.ind[i - 1].c) { bad('/api/senti 涨停行业没按家数降序'); break; }
+      }
+      if (sn.indTop3 > sn.zt) bad('/api/senti 前三行业合计 ' + sn.indTop3 + ' > 涨停 ' + sn.zt);
+    } else if (sn.src === 'sina') {
+      bad('/api/senti 现算路径没返回涨停行业分布');
+    }
+    /* 分层是「昨日涨停池」按板数切开，切开后不能多也不能少——多一只说明有些票
+       被算进了两组，少一只说明 lbY 取到 0 的票被两边都漏掉了。 */
+    if (sn.prem && sn.prem.lb) {
+      const L2 = sn.prem.lb;
+      if (L2.n1 + L2.n2 !== sn.prem.n) {
+        bad('/api/senti 分层 ' + L2.n1 + '+' + L2.n2 + ' ≠ 昨涨停池 ' + sn.prem.n);
+      }
+      for (const k of ['red1', 'red2']) {
+        if (L2[k] != null && !(L2[k] >= 0 && L2[k] <= 100)) bad('/api/senti 分层红盘率越界 ' + L2[k]);
+      }
+    } else if (sn.mode === 'live') {
+      bad('/api/senti 盘中没返回板数分层（首板和高位板混在一起看，会把结论读反）');
+    }
+    if (sn.pct) {
+      for (const k of ['red', 'big', 'promo']) {
+        if (sn.pct[k] != null && !(sn.pct[k] >= 0 && sn.pct[k] <= 100)) {
+          bad('/api/senti ' + k + ' 分位越界 ' + sn.pct[k]);
+        }
+      }
+    }
+    if (sn.trail) {
+      if (!Array.isArray(sn.trail.red) || sn.trail.red.length !== sn.trail.d.length) {
+        bad('/api/senti 轨迹的日期数与数值数不一致');
+      }
+      for (const v of sn.trail.red) {
+        if (!(v >= 0 && v <= 100)) { bad('/api/senti 轨迹里有越界的红盘率 ' + v); break; }
+      }
+      /* 盘中最后一点必须是「此刻」，不是上一交易日收盘——接错了就会画出
+         「今天已经跌到 12%」而实际此刻是 38%。 */
+      if (sn.mode === 'live' && sn.prem) {
+        const lastRed = sn.trail.red[sn.trail.red.length - 1];
+        if (Math.abs(lastRed - sn.prem.red) > 0.2) {
+          bad('/api/senti 轨迹最后一点 ' + lastRed + ' ≠ 今日红盘率 ' + sn.prem.red);
+        }
+      }
+    } else bad('/api/senti 没返回近 20 日轨迹');
   } else bad('/api/senti 失败：' + r.text.slice(0, 160));
 
   // 三份名单：条数必须和卡片上的家数对得起来，否则「点开数不上」
@@ -907,7 +964,15 @@ async function runContracts(base, pass) {
   r = await rawRequest(base, '/', { cookie });
   (r.text.includes('id="sentiCard"') && r.text.includes('sentiOpen('))
     ? ok('首页已拼入情绪卡片与三份名单入口')
-    : bad('首页缺情绪卡片：id="sentiCard" / sentiOpen 没拼进 renderSectors');
+    : bad('首页缺情绪卡片：id="sentiCard" / sentiOpen 没拼进来');
+  /* 情绪必须是独立区块且进了锚点导航。它挂回板块地图的 A 股分组里也能跑，
+     但滚到那块才看得见、折叠 A 股就跟着消失——这属于功能性回退。 */
+  (r.text.includes('id="sentiSec"') && r.text.includes('data-t="sentiSec"'))
+    ? ok('情绪已独立成区，并排进锚点导航')
+    : bad('情绪没有独立区块或没进导航（id="sentiSec" / data-t="sentiSec"）');
+  if (!/data-t="onCard">[\s\S]{0,120}data-t="sentiSec"[\s\S]{0,120}data-t="secSec"/.test(r.text)) {
+    bad('导航顺序不对：情绪应夹在隔夜与板块地图之间');
+  }
 
   r = await rawRequest(base, '/api/mktprobe?t=senti', { cookie });
   const sp = r.json();
