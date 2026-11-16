@@ -240,6 +240,32 @@ async function runContracts(base, pass) {
   } else {
     ok('K 线涨跌以前收为基准（hChgPct），不是收 ÷ 开');
   }
+
+  /* ---- 国家队名单 ----
+     这份数据是定期报告的半年快照，不是行情。它最容易出三种错，三种都只在
+     用户点下去的那一刻才暴露：
+       ① 名单空 / 代码写错 → 筛选出空表，看着像「今天国家队没持仓」；
+       ② 同一只登记两次 → 表格里两行一模一样，看不出是脏数据还是真的买了两份；
+       ③ 忘了写报告期 → 半年前的持仓被当成实时数据。
+     报告期和「不做去重」这两件必须在源码里是显式的，不能靠渲染时兜。 */
+  const stateSrc = fs.readFileSync(path.join(SRC, 'state_data.js'), 'utf8');
+  const stCodes = [...stateSrc.matchAll(/\['(\d{6})',/g)].map((m) => m[1]);
+  const stUniq = new Set(stCodes);
+  if (stCodes.length < 10) {
+    bad('国家队名单只有 ' + stCodes.length + ' 只，像是被截断了');
+  } else if (stUniq.size !== stCodes.length) {
+    bad('国家队名单有重复代码：' + stCodes.length + ' 条里只有 ' + stUniq.size + ' 个不同');
+  } else if (!/asOf:\s*'\d{4}-\d{2}-\d{2}'/.test(stateSrc)) {
+    bad('国家队名单没有 asOf：报告期不写到页面上，半年前的持仓会被当成实时');
+  } else if (!pageSrc.includes('STATE_SET[x.c]')) {
+    bad('国家队筛选没有走 STATE_SET，点下去会筛出空表');
+  } else if (!pageSrc.includes("DEDUP && !kw && g !== 'state'")) {
+    bad('国家队模式下仍会做同指数去重：四只沪深300ETF 只会剩一只');
+  } else if (!pageSrc.includes('renderStateHint')) {
+    bad('国家队模式没有报告期说明条');
+  } else {
+    ok('国家队名单 ' + stUniq.size + ' 只（含报告期、无重复），筛选独立于分组与去重');
+  }
   let cookie = '';
 
   // 门禁：未登录

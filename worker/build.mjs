@@ -12,6 +12,7 @@ import { MKT_HIST, MKT_INDS } from './src/mkt_hist.js';
 import { MKT_IND_NAMES, MKT_IND_OF, MKT_IND_MEM, MKT_STK_NAME } from './src/mkt_ind.js';
 import { SENTI_HIST } from './src/senti_hist.js';
 import { SENTI_BASE } from './src/senti_base.js';
+import { STATE_HOLD } from './src/state_data.js';
 
 /* 两份文件各自生成，唯一会悄悄错位的地方就是行业名的顺序：mkt_hist 里存的是
    每天 TOP3 的**下标**，mkt_ind 里存的是「代码 → 下标」。顺序一错，盘中算出来的
@@ -174,19 +175,41 @@ if (!m[1].includes('${MKT_HIST_JS}')) {
   console.error('page.js 里找不到 ${MKT_HIST_JS} 占位符，集中度宽度四象限会空白');
   process.exit(1);
 }
+if (!m[1].includes('${STATE_JSON}')) {
+  console.error('page.js 里找不到 ${STATE_JSON} 占位符，国家队筛选会筛出空表');
+  process.exit(1);
+}
+/* 名单里出现重复代码 = 同一只 ETF 被登记两次，筛选结果里会出现两行一模一样的
+   东西。构建期拦住，不要等肉眼看表格才发现。 */
+{
+  const seen = new Set();
+  for (const [c] of STATE_HOLD.list) {
+    if (!/^\d{6}$/.test(c)) {
+      console.error('state_data.js 里的代码不合法：' + c);
+      process.exit(1);
+    }
+    if (seen.has(c)) {
+      console.error('state_data.js 里代码重复：' + c);
+      process.exit(1);
+    }
+    seen.add(c);
+  }
+}
 const idxJson = JSON.stringify(IDX_GROUPS);
 const rsJson = JSON.stringify(RESEARCH);
 const amJson = JSON.stringify(ALPHA_META);
 const labJson = JSON.stringify(LAB);
 const shJson = JSON.stringify(SEC_HIST);
 const mhJson = JSON.stringify(MKT_HIST);
+const stJson = JSON.stringify(STATE_HOLD);
 const filled = m[1]
   .replace(/\$\{IDX_JS\}/g, idxJson)
   .replace(/\$\{RESEARCH_JS\}/g, rsJson)
   .replace(/\$\{ALPHA_META_JS\}/g, amJson)
   .replace(/\$\{LAB_JS\}/g, labJson)
   .replace(/\$\{SEC_HIST_JS\}/g, shJson)
-  .replace(/\$\{MKT_HIST_JS\}/g, mhJson);
+  .replace(/\$\{MKT_HIST_JS\}/g, mhJson)
+  .replace(/\$\{STATE_JSON\}/g, stJson);
 
 // 模板字符串再嵌套一层，需要转义 \ 、` 和 ${
 const html = filled
@@ -207,4 +230,5 @@ console.log('已生成 dist/worker.js  ' + (out.length / 1024).toFixed(1) + ' KB
   + ' / 因子说明 ' + (amJson.length / 1024).toFixed(1) + ' KB'
   + ' / 第二批因子 ' + (labJson.length / 1024).toFixed(1) + ' KB'
   + ' / 板块占比史 ' + (shJson.length / 1024).toFixed(1) + ' KB'
-  + ' / 全A结构史 ' + (mhJson.length / 1024).toFixed(1) + ' KB）');
+  + ' / 全A结构史 ' + (mhJson.length / 1024).toFixed(1) + ' KB'
+  + ' / 国家队名单 ' + STATE_HOLD.list.length + ' 只）');

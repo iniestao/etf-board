@@ -4,6 +4,7 @@ import { ALPHA_META } from './alpha_meta.js';
 import { LAB } from './lab_data.js';
 import { SEC_HIST } from './sec_hist.js';
 import { MKT_HIST } from './mkt_hist.js';
+import { STATE_HOLD } from './state_data.js';
 
 // 注入到 HTML 里的紧凑映射：{ "沪深300": ["510300", ...], ... }
 // 18KB 一次随页面下发，比再开一个 /api 接口划算——省一次 RTT，也省 Worker 的 CPU 配额。
@@ -32,6 +33,10 @@ const SEC_HIST_JS = JSON.stringify(SEC_HIST);
 // 四象限用这份，不用 SEC_HIST——后者是 ETF 成交额口径，分母只有 18 个行业格，
 // TOP3 天然占一半以上（58.7%），测的是「ETF 资金分布」不是「市场结构」。
 const MKT_HIST_JS = JSON.stringify(MKT_HIST);
+
+// 「国家队」持有名单：17 只 ETF + 报告期，约 1KB。半年报才更新一次，所以连同
+// asOf 一起下发——页面上没有报告期，这个筛选就会被当成实时持仓。
+const STATE_JSON = JSON.stringify(STATE_HOLD);
 
 export const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1473,6 +1478,22 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
    这几条都写成 .sntcv .cvhov 两段，靠权重压过上面的 .sntcv text。 */
 .sntcv .cvhov text{fill:#e5e9f0;font-size:10px;letter-spacing:0}
 .sntcv .cvhov text.tl{fill:#98a2b3}
+
+/* ---------- 全市场清单：国家队名单的说明条 ----------
+   名单来自定期报告，行情是今天的，两者差着半年。这行字存在的唯一理由是
+   别让人把「17 只」当成实时持仓——所以报告期用正文色加粗，其余压成次级灰。
+   没有 [hidden] 兜底：display:flex 会盖掉 hidden 自带的 display:none。 */
+.statehint{display:flex;flex-wrap:wrap;gap:3px 12px;align-items:baseline;
+  margin:0 0 10px;padding:8px 11px;border:1px solid var(--cardline);
+  border-radius:var(--r-sm);background:var(--sunken);
+  font-size:11.5px;line-height:1.55;color:var(--txt2)}
+.statehint[hidden]{display:none}
+.statehint b{color:var(--txt);font-weight:600}
+.statehint span:last-child{margin-left:auto;color:var(--txt3);white-space:nowrap}
+@media (max-width:700px){
+  .statehint{gap:2px 8px;font-size:11px;padding:7px 9px}
+  .statehint span:last-child{margin-left:0;white-space:normal}
+}
 </style>
 </head>
 <body>
@@ -1657,6 +1678,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <span class="tag" data-g="money">货币<b id="n-money"></b></span>
     <span class="tag" data-g="commodity">商品<b id="n-commodity"></b></span>
     <span class="tag on" id="dedupTag" title="同一跟踪指数的多只 ETF 只保留成交额最大的一只。点击切换">同指数去重<b id="n-dedup"></b></span>
+    <span class="tag" data-g="state" id="stateTag" title="中央汇金投资 + 汇金资管的持仓名单（2025 中报披露）。点击只看这些 ETF">国家队<b id="n-state"></b></span>
     <input id="q" placeholder="搜索代码/名称">
     <select id="limitSel">
       <option value="50">前 50</option>
@@ -1667,6 +1689,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     </select>
     <button id="btnProbe">源自检</button>
   </div>
+  <div class="statehint" id="stateHint" hidden></div>
   <div class="tbl"><table>
     <thead><tr>
       <th class="l" data-sk="c" title="点击按代码排序">代码</th><th class="l" data-sk="n" title="点击按名称排序">名称</th>
@@ -1907,6 +1930,14 @@ var ALPHA_META = ${ALPHA_META_JS};
 var LAB = ${LAB_JS};
 var SEC_HIST = ${SEC_HIST_JS};
 var MKT_HIST = ${MKT_HIST_JS};
+var STATE_HOLD = ${STATE_JSON};
+/* 名单 → 集合。筛选在每次重排都会跑，17 条用对象查表比数组 filter 便宜，
+   也省得在渲染路径里再写一遍 indexOf。 */
+var STATE_SET = (function(){
+  var o = {};
+  for (var i = 0; i < STATE_HOLD.list.length; i++) o[STATE_HOLD.list[i][0]] = STATE_HOLD.list[i][1];
+  return o;
+})();
 var DEFAULT_WATCH = ['510300','159915','588000','513180','513120','513050','518880'];
 var LS = 'etf_watch_v3';
 var watch = loadWatch();
@@ -4551,6 +4582,14 @@ function renderCards(){
     : (DATA.length ? ('宽基'+gc.broad+' 跨境'+gc.cross+' 行业'+gc.industry) : '-');
   var nd = document.getElementById('n-dedup');
   if (nd) nd.textContent = (DATA.length && DEDUP) ? (' ' + dc) : '';
+  /* 国家队 chip 上的数字是「名单里有行情的只数」，不是名单总数。名单是半年前的
+     快照，拿 17 去标一个今天只有 15 只能点的筛选，会让人以为漏了两只。 */
+  var ns = document.getElementById('n-state');
+  if (ns){
+    var sc = 0;
+    for (var si = 0; si < DATA.length; si++) if (STATE_SET[DATA[si].c]) sc++;
+    ns.textContent = DATA.length ? (' ' + sc) : '';
+  }
   if (STATS){
     document.getElementById('cUD').innerHTML =
       '<span class="up">'+STATS.up+'</span> / <span class="down">'+STATS.down+'</span>';
@@ -5405,7 +5444,20 @@ function renderList(){
     stampN('listN', DATA_TS);
     return;
   }
-  if (g !== 'all') arr = arr.filter(function(x){ return x.g === g; });
+  /* 「国家队」是一个独立维度，不和宽基/跨境/行业主题叠加：名单里全是宽基，
+     两个条件一叠只剩宽基那部分，反而看不出名单本身有没有漏。
+     它也不参与同指数去重——汇金同时持有四只沪深300ETF，这四只是四个具体的
+     基金产品（规模、费率、跟踪误差都不同），去重成一只就把「国家队买了什么」
+     这件事抹掉了。 */
+  var stateLive = 0;
+  if (g === 'state'){
+    arr = arr.filter(function(x){ return STATE_SET[x.c]; });
+    /* 记在 kw 过滤之前：名单里「今天有行情」是 17 只还是 15 只，与用户搜了什么
+       无关。用过滤后的数量去算会得出「搜 510300 之后有 16 只没行情」。 */
+    stateLive = arr.length;
+  } else if (g !== 'all'){
+    arr = arr.filter(function(x){ return x.g === g; });
+  }
   if (kw){
     var k2 = kw.toLowerCase();
     arr = arr.filter(function(x){
@@ -5413,7 +5465,7 @@ function renderList(){
     });
   }
   // 搜索时不去重：用户搜"300"就是想看所有 300ETF，藏掉 28 只反而碍事
-  if (DEDUP && !kw){
+  if (DEDUP && !kw && g !== 'state'){
     arr = arr.filter(function(x){
       return !x.ix || !KEEP[x.ix] || KEEP[x.ix] === x.c;
     });
@@ -5431,9 +5483,29 @@ function renderList(){
       buf.push('<tr class="hr" data-c="'+arr[i].c+'">'+rowHtml(arr[i], false)+'</tr>');
     body.innerHTML = buf.join('');
   }
-  document.getElementById('listN').textContent =
-    '显示 ' + arr.length + ' / 可用 ' + matched + ' 只';
+  /* 名单是半年报的快照，而行情是今天的。两个数必须分开说：名单 17 只，今天
+     有行情的可能只有 15 只（停牌、清盘、代码合并），混成一个「可用 15 只」
+     会让人以为名单本身缺了两只。 */
+  document.getElementById('listN').textContent = (g === 'state')
+    ? ('名单 ' + STATE_HOLD.list.length + ' 只 · 有行情 ' + stateLive + ' 只'
+       + (matched < stateLive ? ' · 筛出 ' + matched + ' 只' : ''))
+    : ('显示 ' + arr.length + ' / 可用 ' + matched + ' 只');
   stampN('listN', DATA_TS);
+  renderStateHint(stateLive);
+}
+
+/* 选中国家队时，在筛选栏和表格之间插一行说明。名单是半年前的定期报告，
+   页面不写报告期就是在暗示「这是实时持仓」——那是这类数据最常见的误读。 */
+function renderStateHint(live){
+  var el = document.getElementById('stateHint');
+  if (!el) return;
+  if (g !== 'state'){ el.hidden = true; el.innerHTML = ''; return; }
+  var miss = STATE_HOLD.list.length - live;
+  el.hidden = false;
+  el.innerHTML = '<b>' + STATE_HOLD.src + '</b>'
+    + '<span>共 ' + STATE_HOLD.list.length + ' 只'
+    + (miss > 0 ? '，今天没行情 ' + miss + ' 只（停牌/合并/清盘）' : '') + '</span>'
+    + '<span>名单按产品列出，不做同指数去重</span>';
 }
 
 /* ================= 急涨急跌 =================
@@ -9827,13 +9899,38 @@ document.body.addEventListener('click', function(e){
   }
 });
 
+/* 去重开关的视觉同步。原本只有 dedupTag 自己 onclick 时改 class，选中国家队
+   会临时把它关掉，chip 却还亮着——「亮着但没生效」比不亮更难解释。 */
+function syncDedupTag(){
+  var t = document.getElementById('dedupTag');
+  if (!t) return;
+  t.classList.toggle('on', DEDUP);
+  t.title = DEDUP
+    ? '同一跟踪指数的多只 ETF 只保留成交额最大的一只。点击切换'
+    : '已显示全部 ETF。点击按同指数去重';
+}
+
+/* 进国家队模式时临时关掉去重：汇金同时持有四只沪深300ETF，这四只是四个具体
+   产品，去重成一只就等于把「国家队买了什么」删掉了四分之三。退出时恢复用户
+   原来的选择，不能把「我上次关了去重」这件事顺手改掉。 */
+var DEDUP_BACKUP = null;
+
 Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(t){
   if (t.id === 'dedupTag') return;      // 去重开关有自己的处理
   t.onclick = function(){
+    var wasState = (g === 'state');
     Array.prototype.forEach.call(document.querySelectorAll('.tag'), function(x){ x.classList.remove('on'); });
     t.classList.add('on');
     g = t.getAttribute('data-g');
     IXF = null;
+    if (g === 'state' && !wasState){
+      DEDUP_BACKUP = DEDUP;
+      DEDUP = false;
+    } else if (g !== 'state' && wasState){
+      if (DEDUP_BACKUP != null) DEDUP = DEDUP_BACKUP;
+      DEDUP_BACKUP = null;
+    }
+    syncDedupTag();
     renderList();
   };
 });
@@ -9871,11 +9968,14 @@ document.getElementById('limitSel').onchange = function(){ limit = parseInt(this
   var t = document.getElementById('dedupTag');
   if (!t) return;
   try{ if (localStorage.getItem('etf_dedup') === '0') DEDUP = false; }catch(e){}
-  t.classList.toggle('on', DEDUP);
+  syncDedupTag();
   t.onclick = function(){
+    /* 国家队模式下这个开关是被强制关掉的（见上面 DEDUP_BACKUP 那段）。
+       让它亮着但点了没反应，比点了给一句话更糟。 */
+    if (g === 'state'){ toast('国家队名单按产品列出，不做同指数去重'); return; }
     DEDUP = !DEDUP;
     IXF = null;
-    t.classList.toggle('on', DEDUP);
+    syncDedupTag();
     try{ localStorage.setItem('etf_dedup', DEDUP ? '1' : '0'); }catch(e){}
     renderCards(); renderList();
     toast(DEDUP ? '已按同指数去重，每组只留成交额最大的一只' : '已显示全部 ETF');
