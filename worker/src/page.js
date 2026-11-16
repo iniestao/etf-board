@@ -893,6 +893,7 @@ margin-left:3px;letter-spacing:0}
    「要看才看」的说明，和表头同重量就会在每个区块底部堆出一条灰带。 */
 .sntref{margin:6px 0 0;font-size:var(--fs-2xs);color:#7d8698;line-height:1.68}
 .sntref b{color:var(--txt2);font-variant-numeric:tabular-nums;font-weight:600}
+.snlb{color:var(--txt3);margin-right:9px}
 .sntline{display:flex;gap:12px;flex-wrap:wrap;align-items:baseline;
 margin-top:9px;padding-top:7px;border-top:1px solid var(--line);
 font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6}
@@ -927,7 +928,40 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 .sntcv .cvlb{font-size:var(--fs-cap);fill:var(--txt2);opacity:.8}
 .lbseg{display:inline}
 .lbsplit{color:#cdd2da;margin:0 2px}
-.sntsp{display:block;flex:none;overflow:visible}
+/* ---- 图表带 ----
+   卡片里的图必须有统一的宽度基线。改之前是三张各算各的：主曲线 1252px、
+   梯队竖柱约 100px、20 日走势 128px，并排放在同一张卡里，看着像贴了三张
+   不同尺寸的截图。现在主曲线通栏，下面两张对半分，每张都吃满自己那栏。 */
+.sntduo{display:grid;grid-template-columns:1fr;gap:11px;
+  margin-top:13px;padding-top:12px;border-top:1px solid var(--line)}
+.sntdc{min-width:0}
+.sntdl{display:flex;align-items:baseline;gap:10px;font-size:var(--fs-2xs);
+  color:var(--txt3);margin-bottom:7px;white-space:nowrap}
+.sntdlr{margin-left:auto;font-size:var(--fs-cap);color:var(--txt3)}
+.sntdlr b{color:var(--txt2);font-variant-numeric:tabular-nums;font-weight:600}
+/* 梯队分段横条：段宽按家数分配，首板占掉大半、右侧迅速收窄。
+   给一个最小宽度，否则「4板 1 家」只有 18px，字塞不下。 */
+/* 梯队条形：一档一行，左档位名、中条、右家数。条长按最大档归一，
+   宽屏只会让条更长，不会像分段条那样在中间留出一大片空白。 */
+.lbbars{display:grid;gap:5px}
+.lbr{display:grid;grid-template-columns:42px 1fr 30px;align-items:center;gap:10px}
+.lbn{font-size:11px;color:var(--txt3);white-space:nowrap}
+/* 条形用中性灰蓝，只有 4 板以上（高位）才用涨色：这张卡里已经有
+   主曲线、副图柱、走势线三处红，梯队再整排红，四条红挤在一起谁也读不出来。
+   高位板给红也不是装饰——它标的是「接力的高度」。 */
+.lbr>i{display:block;height:11px;min-width:3px;border-radius:3px;
+  background:#b3bdcc}
+.lbr.hi>i{background:var(--up)}
+.lbr>b{font-family:var(--mono);font-size:13px;font-weight:600;text-align:right;
+  color:var(--txt2);font-variant-numeric:tabular-nums}
+
+
+/* 走势条用百分比 viewBox，宽度交给容器；高度与梯队条一致，两栏底部齐平 */
+.sntsp{display:block;width:100%;height:42px;overflow:visible}
+@media(max-width:700px){
+  .lbr{grid-template-columns:38px 1fr 28px;gap:8px}
+  .lbr>i{height:10px}
+}
 .sntlmx{margin-left:2px;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;padding-bottom:1px}
 .sntlmx b{color:var(--txt2);font-variant-numeric:tabular-nums}
 @media(max-width:820px){
@@ -2460,20 +2494,13 @@ function sentiCard(){
      还是「高位票自己在走」。这两个结论对应的动作完全相反。 */
   var LB = P && P.lb;
   if (LB && (LB.n1 || LB.n2)){
-    h += '<p class="sntref">分层　<span class="lbseg">首板 <b>' + LB.n1 + '</b> 只 · 红盘 <b>'
+    h += '<p class="sntref"><span class="snlb">昨涨停分层</span><span class="lbseg">首板 <b>' + LB.n1 + '</b> 只 · 红盘 <b>'
       + (LB.red1 == null ? '—' : Math.round(LB.red1) + '%') + '</b> · 中位 <b>' + fpc(LB.mid1) + '</b>'
       + '</span><span class="lbsplit">｜</span><span class="lbseg">连板 <b>' + LB.n2 + '</b> 只 · 红盘 <b>'
       + (LB.red2 == null ? '—' : Math.round(LB.red2) + '%') + '</b> · 中位 <b>' + fpc(LB.mid2) + '</b>'
       + '</span></p>';
   }
 
-  var L = S.ladder;
-  if (L && L.t && L.mx > 0){
-    var bars = ladderBars(L);
-    h += '<div class="sntlrow">' + bars
-      + '<span class="sntlmx">最高 <b>' + L.mx + '</b> 板'
-      + (S.yMx ? '（昨日 ' + S.yMx + ' 板）' : '') + '</span></div>';
-  }
 
   /* 当日曲线：唯一的「形态」信息。别的格子都是此刻的一个数，只有这条线
      能看出今天是在加速堆板还是一路熄火——同样 31 家曾触板，从 8 家冲上来和
@@ -2498,19 +2525,33 @@ function sentiCard(){
     /* 副图第一根柱是顶到边的：它代表开盘 5 分钟（含集合竞价）那一下，被排除在
        定标之外，所以真实家数必须在这里说，否则读者会把满格当成最大值。 */
     cvs.push('<span class="nw">开盘 <b>+' + CV.today[0] + '</b> 家</span>');
-    h += '<p class="sntref" style="margin-top:1px">当日曾触板　' + cvs.join(' · ') + '</p>';
+    h += '<p class="sntref" style="margin-top:7px">当日曾触板　' + cvs.join(' · ') + '</p>';
   }
 
-  /* 近 20 日轨迹：单个数字只回答「今天多冷」，回答不了「冷到哪一步」。
-     连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。 */
+  /* 两张小图并排，宽度对半分、各自吃满自己那栏。之前它们是 100px 的竖柱和
+     128px 的折线，夹在 1252px 的主曲线旁边，卡片里像贴了三张不同尺寸的截图
+     ——这才是"有的图大有的图小"。现在两者同高、同宽基线，主曲线是通栏，
+     图表区从「三张图」变成「一大两小」这一种节奏。 */
+  var duo = [];
+  var L = S.ladder;
+  if (L && L.t && L.mx > 0){
+    duo.push('<div class="sntdc"><div class="sntdl">今日涨停梯队'
+      + '<span class="sntdlr">共 <b>' + S.zt + '</b> 家 · 最高 <b>' + L.mx + '</b> 板'
+      + (S.yMx ? '（昨 ' + S.yMx + ' 板）' : '') + '</span></div>'
+      + ladderBars(L) + '</div>');
+  }
   if (S.trail && S.trail.red && S.trail.red.length >= 5){
     var tr = S.trail.red, lo = 100, hi = 0, k;
     for (k = 0; k < tr.length; k++){ if (tr[k] < lo) lo = tr[k]; if (tr[k] > hi) hi = tr[k]; }
-    h += '<div class="sntlrow" style="align-items:center">'
-      + '<span class="sntrl">近 ' + tr.length + ' 日红盘率</span>'
-      + sentiSpark(S.trail)
-      + '<span class="sntlmx">区间 <b>' + Math.round(lo) + '%–' + Math.round(hi) + '%</b></span></div>';
+    duo.push('<div class="sntdc"><div class="sntdl">近 ' + tr.length + ' 日红盘率'
+      + '<span class="sntdlr">区间 ' + Math.round(lo) + '%–' + Math.round(hi) + '%</span></div>'
+      + sentiSpark(S.trail) + '</div>');
   }
+  if (duo.length) h += '<div class="sntduo' + (duo.length === 1 ? ' one' : '') + '">'
+    + duo.join('') + '</div>';
+
+  /* 近 20 日轨迹：单个数字只回答「今天多冷」，回答不了「冷到哪一步」。
+     连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。 */
 
   /* 行业集中度：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情。
      同样是「涨停 38 家」，对第二天的意义正好相反。 */
@@ -2850,43 +2891,47 @@ function curveChart(C, S){
    一条几乎水平的线，而「横住不动」和「正在往下掉」正是这条线要回答的问题。 */
 function sentiSpark(T){
   var a = T.red, n = a.length, i;
-  var W = 128, Hh = 26, pad = 3;
+  /* 坐标用 0–100 的百分比，宽度交给 CSS。原先写死 128×26，在 1252px 的
+     主曲线旁边就是一根小尾巴；现在横轴吃满容器，preserveAspectRatio=none
+     负责横向拉伸，线宽用 non-scaling-stroke 钉住，拉伸不会把线变粗。 */
+  var W = 100, Hh = 34, padX = 1.5, padY = 3;
   var mx = 0, mn = 100;
   for (i = 0; i < n; i++){ if (a[i] > mx) mx = a[i]; if (a[i] < mn) mn = a[i]; }
   if (mx - mn < 4){ mx = mn + 4; }          // 一段完全走平时别画成心电图
-  var sx = function(i2){ return pad + i2 / (n - 1) * (W - 2 * pad); };
-  var sy = function(v){ return Hh - pad - (v - mn) / (mx - mn) * (Hh - 2 * pad); };
+  var sx = function(i2){ return padX + i2 / (n - 1) * (W - 2 * padX); };
+  var sy = function(v){ return Hh - padY - (v - mn) / (mx - mn) * (Hh - 2 * padY); };
   var pts = [], area = [];
-  for (i = 0; i < n; i++) pts.push(sx(i).toFixed(1) + ',' + sy(a[i]).toFixed(1));
-  area.push(pad.toFixed(1) + ',' + (Hh - 1));
-  for (i = 0; i < n; i++) area.push(sx(i).toFixed(1) + ',' + sy(a[i]).toFixed(1));
-  area.push((W - pad).toFixed(1) + ',' + (Hh - 1));
-  return '<svg class="sntsp" viewBox="0 0 ' + W + ' ' + Hh + '" width="' + W + '" height="' + Hh + '"'
+  for (i = 0; i < n; i++) pts.push(sx(i).toFixed(2) + ',' + sy(a[i]).toFixed(2));
+  area.push(sx(0).toFixed(2) + ',' + (Hh - 0.5));
+  for (i = 0; i < n; i++) area.push(sx(i).toFixed(2) + ',' + sy(a[i]).toFixed(2));
+  area.push(sx(n - 1).toFixed(2) + ',' + (Hh - 0.5));
+  return '<svg class="sntsp" viewBox="0 0 ' + W + ' ' + Hh + '" preserveAspectRatio="none"'
     + ' aria-label="近 ' + n + ' 日红盘率轨迹">'
+    + '<line x1="0" y1="' + sy(50).toFixed(2) + '" x2="' + W + '" y2="' + sy(50).toFixed(2)
+    + '" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"'
+    + ' stroke-dasharray="3 3" opacity=".9"/>'
     + '<polygon points="' + area.join(' ') + '" fill="var(--up)" opacity=".10"/>'
-    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--up)" stroke-width="1.4"'
-    + ' stroke-linejoin="round" stroke-linecap="round"/>'
-    + '<circle cx="' + sx(n - 1).toFixed(1) + '" cy="' + sy(a[n - 1]).toFixed(1)
-    + '" r="2.4" fill="var(--up)"/></svg>';
+    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--up)"'
+    + ' stroke-width="1.6" vector-effect="non-scaling-stroke"'
+    + ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
 }
 
-/* 连板梯队的柱状图。原先是一行「首板 31 · 2板 4 · 3板 2 · 4板 1」，数字念得
-   出来但看不出形状——梯队是「厚底尖顶」还是「2 板断层直接接 5 板」，扫一眼
-   柱子就知道，读数字要在脑子里重建一遍。柱高按最大档归一，4 板以上换深色。 */
+/* 连板梯队的形状。满宽之下有两种画法：分段堆叠条（一段一家、段宽占比）和
+   横向条形（一档一行、条长按家数）。前者在 1252px 里会让首板那一段宽到
+   845px、中间孤零零一个「31」；后者每档都有自己的行，宽屏只会让条更长，
+   不会让留白变大。所以取横向条形。 */
 function ladderBars(L){
   var nm = ['首板', '2板', '3板', '4板', '5板', '6板', '7板', '8板+'];
-  var mx = 0, i;
+  var i, mx = 0;
   for (i = 0; i < L.t.length; i++) if (L.t[i] > mx) mx = L.t[i];
   if (!mx) return '';
-  var h = '<div class="sntbar">';
-  for (i = 0; i < L.t.length; i++) if (L.t[i] > 0){
-    // 平方根缩放：线性缩放下 31:4 会让 2 板和 3 板一起压成同高的矮条，
-    // 而梯队要看的恰恰是「中间有几档」——柱子一样高就等于没画。
-    var hh = Math.max(5, Math.round(Math.sqrt(L.t[i] / mx) * 28));
-    h += '<span class="sb' + (i >= 3 ? ' hi' : '') + '">'
-      + '<b>' + L.t[i] + '</b>'
-      + '<i style="height:' + hh + 'px"></i>'
-      + '<em>' + nm[i] + '</em></span>';
+  var h = '<div class="lbbars">';
+  for (i = 0; i < L.t.length; i++){
+    if (!L.t[i]) continue;
+    h += '<div class="lbr' + (i >= 3 ? ' hi' : '') + '">'
+      + '<span class="lbn">' + nm[i] + '</span>'
+      + '<i style="width:' + (L.t[i] / mx * 100).toFixed(1) + '%"></i>'
+      + '<b>' + L.t[i] + '</b></div>';
   }
   return h + '</div>';
 }
