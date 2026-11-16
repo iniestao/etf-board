@@ -1678,7 +1678,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <span class="tag" data-g="money">货币<b id="n-money"></b></span>
     <span class="tag" data-g="commodity">商品<b id="n-commodity"></b></span>
     <span class="tag on" id="dedupTag" title="同一跟踪指数的多只 ETF 只保留成交额最大的一只。点击切换">同指数去重<b id="n-dedup"></b></span>
-    <span class="tag" data-g="state" id="stateTag" title="中央汇金投资 + 汇金资管的持仓名单（2025 中报披露）。点击只看这些 ETF">国家队<b id="n-state"></b></span>
+    <span class="tag" data-g="state" id="stateTag" title="中央汇金 2025 年年报持仓（最后一份可核实披露，2026 中报起不再披露持有人）。点击只看这些 ETF">国家队<b id="n-state"></b></span>
     <input id="q" placeholder="搜索代码/名称">
     <select id="limitSel">
       <option value="50">前 50</option>
@@ -5502,10 +5502,12 @@ function renderStateHint(live){
   if (g !== 'state'){ el.hidden = true; el.innerHTML = ''; return; }
   var miss = STATE_HOLD.list.length - live;
   el.hidden = false;
+  /* 报告期 + 为什么停在那个报告期，两件事必须同时出现。只写「2025 年报」会被
+     当成偷懒没更新；写了新规，读者才知道是披露口径改了，不是我们没跟。 */
   el.innerHTML = '<b>' + STATE_HOLD.src + '</b>'
     + '<span>共 ' + STATE_HOLD.list.length + ' 只'
     + (miss > 0 ? '，今天没行情 ' + miss + ' 只（停牌/合并/清盘）' : '') + '</span>'
-    + '<span>名单按产品列出，不做同指数去重</span>';
+    + '<span>' + (STATE_HOLD.note || '') + '</span>';
 }
 
 /* ================= 急涨急跌 =================
