@@ -2958,7 +2958,10 @@ async function sentiCurve(day, touchNow, mins, isLive) {
     return lo;
   };
 
-  const nowT = isLive ? hhmmssOf(mins) : 150000;
+  /* 午休（11:31–12:59）没有成交，此刻的档就是上午收盘那一档。拿 11:35 当档位，
+     at 里就多出一个午休时间戳——横轴上那是一段空白，画出来是一根戳在 11:30 和
+     13:00 中间的竖线，看着像数据错位。 */
+  const nowT = isLive ? hhmmssOf(mins > 690 && mins < 780 ? 690 : mins) : 150000;
   /* 收盘态用 <=：15:00 那一档本身就是终点，用 < 会把它自己排掉，曲线少了尾巴。
      盘中用 < 则是为了不出现「此刻之后还有一个值」——那个值必然是 0 增长。 */
   const at = [];

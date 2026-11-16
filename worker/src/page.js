@@ -2730,6 +2730,11 @@ function curvePos(mins){
   if (mins < 570) return 0;
   if (mins > 900) return 1;
   if (mins <= 690) return (mins - 570) / 240;
+  /* 午休（11:30–13:00）必须停在上下午的分界线上。原来这里直接套下午的公式
+     (120+m-780)/240，11:35 算出 0.146——比 11:30 的 0.5 还靠左，末点被画回
+     10:05 的位置，曲线从 11:30 斜穿整张图回到左边。盘中每次午休都会画成
+     「下午崩了又拉回」，实际那段时间根本没有数据。 */
+  if (mins < 780) return 0.5;
   return (120 + (mins - 780)) / 240;
 }
 
@@ -2809,6 +2814,7 @@ function curveChart(C, S, W0){
     if (m < 570) return 0;
     if (m > 900) return 1;
     if (m <= 690) return (m - 570) / 240;
+    if (m < 780) return 0.5;   // 午休：停在分界线上，不往回走（见 curvePos）
     return (120 + (m - 780)) / 240;
   };
   var nx = function(j){ return pL + xp(C.at[j]) * iw; };
@@ -2822,24 +2828,34 @@ function curveChart(C, S, W0){
     + '" height="' + ih + '"/></clipPath></defs>';
 
   h += '<g clip-path="url(#' + clip + ')">';
-  /* 区间带是最底层的一片背景，不是一条线——越过它才算显著偏离。 */
-  var bp = [];
-  for (i = 0; i < n; i++) if (hi[i] != null) bp.push(f1(nx(i)) + ',' + f1(ny(hi[i])));
-  for (i = n - 1; i >= 0; i--) if (lo[i] != null) bp.push(f1(nx(i)) + ',' + f1(ny(lo[i])));
-  if (bp.length > 3) h += '<polygon points="' + bp.join(' ') + '" fill="var(--txt3)" opacity=".12"/>';
-
+  /* 这里原来铺着一片 lo–hi 的灰色区间多边形，是这张图最乱的东西：
+     近 14 天里有过 132 家的极值，hi 换算成 y 就是负数，clip 一裁，右半张图成了
+     「从顶到底一整片灰」，看着像底色漏了；左半张却是条窄带。同一条带子在一天里
+     从细变粗再撑满，读者没法判断哪块是数据哪块是背景。
+     而且 37–84 这样的区间本来也不构成可读的区域——「历史今天在 37 到 84 之间」
+     这句话不提供任何决策依据。区间挪进悬停气泡（那里写得出「65 家（37–54）」），
+     图上只留中位一条虚线当参照。腾出来的位置给今日曲线的面积填充：
+     谁是被看的对象，靠一层浅浅的填充就分明了，不必再加线。 */
   var mp = [];
   for (i = 0; i < n; i++) if (med[i] != null) mp.push(f1(nx(i)) + ',' + f1(ny(med[i])));
   if (mp.length > 1) {
     h += '<polyline points="' + mp.join(' ') + '" fill="none" stroke="var(--txt3)"'
-      + ' stroke-width="1.2" stroke-dasharray="3 3" opacity=".9"/>';
+      + ' stroke-width="1" stroke-dasharray="2 4" opacity=".55"/>';
   }
 
-  var tp = [], lastI = -1;
-  for (i = 0; i < n; i++) if (a[i] != null){ tp.push(f1(nx(i)) + ',' + f1(ny(a[i]))); lastI = i; }
+  var tp = [], ap = [], lastI = -1, firstI = -1;
+  for (i = 0; i < n; i++) if (a[i] != null){
+    var axs = f1(nx(i)) + ',' + f1(ny(a[i]));
+    tp.push(axs); ap.push(axs); lastI = i;
+    if (firstI < 0) firstI = i;
+  }
+  if (ap.length > 1) {
+    h += '<polygon points="' + f1(nx(firstI)) + ',' + y0 + ' ' + ap.join(' ') + ' '
+      + f1(nx(lastI)) + ',' + y0 + '" fill="var(--up)" opacity=".06"/>';
+  }
   if (tp.length > 1) {
     h += '<polyline points="' + tp.join(' ') + '" fill="none" stroke="var(--up)"'
-      + ' stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>';
+      + ' stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>';
   }
 
   /* ---- 「此刻封住」的当日轨迹 ----
@@ -2882,7 +2898,7 @@ function curveChart(C, S, W0){
      三种线型不给图例的话，最浅的那条只能被当成噪声，或者被当成上一条的阴影。 */
   var lgx = pL + 2, lgy = pT + 9;
   var lgs = tight ? [['s', '曾触板'], ['d', '历史'], ['f', '封住']]
-    : [['s', '曾触板累积'], ['d', '历史同刻中位'], ['f', '此刻封住']];
+    : [['s', '曾触板累积'], ['d', '历史中位'], ['f', '此刻封住']];
   if (!spEnd) lgs.length = 2;
   for (i = 0; i < lgs.length; i++){
     var lt = lgs[i][0];
@@ -2905,6 +2921,20 @@ function curveChart(C, S, W0){
     var xm = pL + 0.5 * iw;
     h += '<line x1="' + f1(xm) + '" y1="' + pT + '" x2="' + f1(xm) + '" y2="' + f1(ib)
       + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 4"/>';
+  }
+
+  /* 「此刻」竖线。横轴铺的是整个交易日（4 小时），盘中十点打开时右边 2/3 是
+     空的——那片空白没有标注，读起来像「数据没加载完」。钉一道竖线，右边立刻
+     变成「还没到」，而不是「丢了」。收盘后走到底，就不画了。 */
+  var xNow = pL + xp(C.at[n - 1]) * iw;
+  if (xp(C.at[n - 1]) < 0.995){
+    h += '<line x1="' + f1(xNow) + '" y1="' + pT + '" x2="' + f1(xNow) + '" y2="' + f1(ib)
+      + '" stroke="var(--txt3)" stroke-width="1" stroke-dasharray="2 3" opacity=".45"/>';
+    /* 竖线太靠左时不写字：左上角是图例的地盘，两三个字压上去比没有标注更糟。 */
+    if (xNow > 215){
+      h += '<text x="' + f1(xNow - 4) + '" y="' + (pT + 8) + '" text-anchor="end"'
+        + ' class="cvlb">此刻</text>';
+    }
   }
 
   if (lastI >= 0){
@@ -2962,7 +2992,11 @@ function curveChart(C, S, W0){
     h += '<text x="' + (pL + 2) + '" y="' + yT + '" class="cvlb">'
       + (tight ? '新增 / 15 分' : '新增（家 / 15 分钟）') + '</text>';
     h += '<text x="' + f1(pL + iw) + '" y="' + yT + '" text-anchor="end" class="cvlb">'
-      + (tight ? '灰横＝历史 · 深红＝快' : '灰横＝历史同期中位　深红＝快于历史') + '</text>';
+      + (tight ? '灰阶＝历史 · 深红＝快' : '灰阶＝历史同期中位　深红＝快于历史') + '</text>';
+    /* 历史同期原来是一档一根粗灰横（1.8px、85% 不透明），十几根排下来像一排
+       刻度尺压着柱子，柱子反而退成背景。改成一条连续浅灰阶梯：同样的信息，
+       只占一条线，柱子还是主角。 */
+    var hdp = '', hst = false;
     for (i = 0; i < n; i++){
       /* 末档与前一档只差几分钟时不画柱：它的窗口没走完，柱子会和前一档叠在
          一起，而且高度已经是按速率换算过的，与左边的柱子不同量纲。
@@ -2977,22 +3011,25 @@ function curveChart(C, S, W0){
         var bh = Math.max(2, Math.min(bmax, inc[i] / mxi * bmax));
         var fast = (incm[i] == null) || (inc[i] >= incm[i]);
         h += '<rect x="' + f1(bx) + '" y="' + f1(ib - bh) + '" width="' + f1(bw) + '" height="' + f1(bh)
-          + '" fill="var(--up)" opacity="' + (fast ? '.75' : '.34') + '" rx=".8"/>';
+          + '" fill="var(--up)" opacity="' + (fast ? '.78' : '.32') + '" rx=".8"/>';
         /* 不再挂 <title>：原生提示要悬停一秒才弹、样式跟着系统走，而且和下面
            自绘的气泡会同时出现两层。柱子的数值现在由悬停气泡统一给。 */
         /* 超出量程的柱顶到边，柱顶抹一道底色做出「被裁断」的缺口——不标一下的话，
            读者会把满格当成真实最大值，把「开盘 23 家」读成「开盘 6 家」。 */
         if (over){
           h += '<rect x="' + f1(bx) + '" y="' + f1(ib - bmax) + '" width="' + f1(bw)
-            + '" height="1.8" fill="var(--bg3)" opacity=".9"/>';
+            + '" height="1.6" fill="var(--bg3)" opacity=".95"/>';
         }
       }
       if (incm[i] != null && incm[i] > 0){
         var yh = ib - Math.min(bmax, incm[i] / mxi * bmax);
-        h += '<line x1="' + f1(bx) + '" y1="' + f1(yh) + '" x2="' + f1(bx + bw) + '" y2="' + f1(yh)
-          + '" stroke="var(--txt2)" stroke-width="1.8" opacity=".85"/>';
+        if (!hst){ hdp = 'M' + f1(bx) + ',' + f1(yh); hst = true; }
+        else hdp += 'H' + f1(bx) + 'V' + f1(yh);
+        hdp += 'H' + f1(bx + bw);
       }
     }
+    if (hst) h += '<path d="' + hdp + '" fill="none" stroke="var(--txt3)" stroke-width="1"'
+      + ' stroke-dasharray="2 3" opacity=".5" stroke-linejoin="round"/>';
     h += '<line x1="' + pL + '" y1="' + ib + '" x2="' + f1(pL + iw) + '" y2="' + ib
       + '" stroke="var(--line)" stroke-width="1"/>';
     /* 副图自己的刻度。不标的话读者不知道满格是几家，只能看相对高低——而
