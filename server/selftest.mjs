@@ -1050,6 +1050,24 @@ async function runContracts(base, pass) {
     && r.text.includes('开盘 <b>+'))
     ? ok('副图定标排除开盘首档，并在图例给出真实家数')
     : bad('副图定标把开盘首档算进满格：后面各档会被压平');
+  /* 「此刻封住」必须是线不是散点。以前它是一串半透明圆点（涨停红点、跌停绿点），
+     在这个尺寸上读不出趋势，而且没人知道那些点是什么——第一眼就是「这些点是啥」。
+     换成阶梯线之后，它和主曲线同一个读法：两条线的缝就是当天炸掉的量。 */
+  (r.text.includes('curvePos(sp[i][0])') && r.text.includes('此刻封住')
+    && !r.text.includes('r="1.7" fill="var(--up)"'))
+    ? ok('「此刻封住」画成阶梯线并带图例，不再是散点云')
+    : bad('「此刻封住」还是散点，或者图例里没说明它是哪条线');
+  /* 悬停必须挂在 document 上。挂 svg 上的话，卡片每 30 秒重建一次就断一次，
+     而断掉的样子就是「悬停没反应」——和「本来没有这个功能」长得一模一样。 */
+  (r.text.includes('function cvHovAt(') && r.text.includes("addEventListener('pointermove'")
+    && r.text.includes('cvHovRestore()'))
+    ? ok('曲线悬停读点已挂载，且重建后能把气泡接回来')
+    : bad('曲线悬停没挂上，或重建后气泡会闪掉');
+  /* 采样不能画到主图之外：曲线是几秒前取的那份，采样可能领先一格，
+     画出去就是一条尾巴甩到图右边界外面。 */
+  (r.text.includes('if (sp[i][0] > lastM) break;'))
+    ? ok('本地采样不越出主图终点')
+    : bad('采样可能画到主图终点之外');
 
   r = await rawRequest(base, '/api/mktprobe?t=senti', { cookie });
   const sp = r.json();

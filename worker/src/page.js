@@ -1459,6 +1459,20 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
    格子抬头时翻成白底，跟"选中/聚焦"的直觉一致。 */
 .dcard:hover{box-shadow:var(--sh-2);border-color:var(--line2)}
 .scell:hover{background:var(--surface);box-shadow:var(--sh-2);border-color:var(--line2)}
+
+/* ---------- 当日曲线：悬停读点 ----------
+   曲线是一条边走边抬的线，读不出「10:15 那一刻到底多少家」——横轴刻度一小时
+   才一格，盘中的弯折全落在格与格之间。悬停给的是同一时刻的四组数，加一条竖线
+   对齐上下两图（副图的柱属于同一档时间，没有竖线就对不上是哪根柱）。
+   十字光标提示这里能读点；touch-action:pan-y 让手机竖着滑还是滚页面。 */
+.sntcv{cursor:crosshair;touch-action:pan-y}
+.sntcv .cvhov{pointer-events:none}
+.sntcv .cvhov .gl{stroke:var(--txt3);opacity:.5;stroke-width:1;stroke-dasharray:3 3}
+.sntcv .cvhov .tipbg{fill:#15181d;opacity:.94}
+/* 气泡里的字要比刻度亮：底色是深的，再套 --txt3 那种给白底用的灰就糊了。
+   这几条都写成 .sntcv .cvhov 两段，靠权重压过上面的 .sntcv text。 */
+.sntcv .cvhov text{fill:#e5e9f0;font-size:10px;letter-spacing:0}
+.sntcv .cvhov text.tl{fill:#98a2b3}
 </style>
 </head>
 <body>
@@ -2387,6 +2401,9 @@ function repaintSenti(){
   body.innerHTML = sentiCard();
   var nw = body.querySelector('#sentiCard');
   if (nw && wasOpen) nw.classList.add('open');
+  /* 重建会把曲线那张 svg 换成新的，悬停中的气泡跟着一起没了。鼠标没动的时候
+     看起来就像「悬停坏了」，所以重建后按上次的坐标把气泡接回来。 */
+  cvHovRestore();
   var n = document.getElementById('sentiN');
   if (n){
     var S = SENTI;
@@ -2825,21 +2842,57 @@ function curveChart(C, S, W0){
       + ' stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>';
   }
 
-  /* 本地采样的涨停 / 跌停家数散点。同量纲能同轴，而涨停 ⊆ 曾触板，
-     所以散点永远落在实线下方——这是它们自带的校验。 */
+  /* ---- 「此刻封住」的当日轨迹 ----
+     这条线的数据只能来自本地采样，服务端算不出来：涨停池和炸板池里的 fbt 都是
+     「首次封板时间」，累积精确；而「t 时刻是否还封着」重建不了——炸板池只有炸板
+     次数、没有炸板时间。所以只能在页面开着的时候每分钟记一笔（见 sntRecord），
+     换设备、清缓存就没有。它是辅助线，主图仍然是曾触板。
+
+     以前这里画的是一串散点（涨停红点、跌停绿点），读者第一句就是「这些点是啥」。
+     散点在这个尺寸上读不出趋势，还和主曲线抢眼。现在换成阶梯线：和主曲线同一个
+     读法，两条线之间的缝就是当天炸掉的那部分——缝变宽＝封不住，缝收窄＝回封。
+     跌停那组不再画：数量本来就在个位到十几家，全贴在下边界上，除了脏没有信息，
+     它的数在左栏「跌停 N 只」里。 */
   var smp = sntSamples();
-  if (S && S.mode === 'live' && smp.d === S.d && smp.p.length >= 2){
-    for (i = 0; i < smp.p.length; i++){
-      var x1 = pL + curvePos(smp.p[i][0]) * iw;
-      if (smp.p[i][1] != null && smp.p[i][1] <= ymax){
-        h += '<circle cx="' + f1(x1) + '" cy="' + f1(ny(smp.p[i][1])) + '" r="1.7" fill="var(--up)" opacity=".5"/>';
-      }
-      if (smp.p[i][2] != null && smp.p[i][2] <= ymax){
-        h += '<circle cx="' + f1(x1) + '" cy="' + f1(ny(smp.p[i][2])) + '" r="1.7" fill="var(--down)" opacity=".5"/>';
-      }
+  var sp = (S && S.mode === 'live' && smp.d === S.d && smp.p.length >= 3) ? smp.p : null;
+  var spEnd = null;
+  if (sp){
+    var sdp = '', sst = false, scnt = 0;
+    var lastM = m2(C.at[n - 1]);
+    for (i = 0; i < sp.length; i++){
+      if (sp[i][1] == null) continue;
+      /* 采样可能比主图领先一格（曲线是几秒前取的那份），画出去就是一条尾巴甩到
+         图外面。主图走到哪，辅助线就画到哪。 */
+      if (sp[i][0] > lastM) break;
+      var sx = pL + curvePos(sp[i][0]) * iw;
+      var sy = ny(Math.min(sp[i][1], ymax));
+      if (!sst){ sdp = 'M' + f1(sx) + ',' + f1(sy); sst = true; }
+      else sdp += 'H' + f1(sx) + 'V' + f1(sy);   // 阶梯：先走平再抬，不画对角斜线
+      spEnd = [sx, sy]; scnt++;
     }
+    /* 只有一个点等于没画（path 只有 M，屏幕上什么都没有），但图例里会多出一条
+       指向空气的「此刻封住」。少于两个点就当它不存在。 */
+    if (scnt < 2) spEnd = null;
+    if (spEnd) h += '<path d="' + sdp + '" fill="none" stroke="var(--up)" stroke-width="1.3"'
+      + ' opacity=".5" stroke-linejoin="round" stroke-linecap="round"/>';
   }
   h += '</g>';
+
+  /* 图例。曲线从开盘那个位置往右上走，左上角是空的——图例放那儿才不压线。
+     三种线型不给图例的话，最浅的那条只能被当成噪声，或者被当成上一条的阴影。 */
+  var lgx = pL + 2, lgy = pT + 9;
+  var lgs = tight ? [['s', '曾触板'], ['d', '历史'], ['f', '封住']]
+    : [['s', '曾触板累积'], ['d', '历史同刻中位'], ['f', '此刻封住']];
+  if (!spEnd) lgs.length = 2;
+  for (i = 0; i < lgs.length; i++){
+    var lt = lgs[i][0];
+    h += '<line x1="' + f1(lgx) + '" y1="' + lgy + '" x2="' + f1(lgx + 11) + '" y2="' + lgy
+      + '" stroke="var(--' + (lt === 'd' ? 'txt3' : 'up') + ')"'
+      + ' stroke-width="' + (lt === 'd' ? 1.2 : (lt === 'f' ? 1.3 : 1.7)) + '"'
+      + (lt === 'd' ? ' stroke-dasharray="3 3"' : '') + (lt === 'f' ? ' opacity=".5"' : '') + '/>';
+    h += '<text x="' + f1(lgx + 15) + '" y="' + (lgy + 3) + '">' + lgs[i][1] + '</text>';
+    lgx += 15 + lgs[i][1].length * 10 + 13;
+  }
 
   /* 刻度与基线画在 clip 外面。放里面会被裁掉——pL 边上的「0」正好压在裁剪边界上，
      整张图会变成「有曲线但没有纵轴」的样子，看起来只是数据缺了，不容易发现。 */
@@ -2894,7 +2947,6 @@ function curveChart(C, S, W0){
     }
   }
   if (!(mxi > 0)) mxi = Math.max(a[0] || 1, 1);
-  var hm2 = function(t){ var s = ('000000' + String(t)).slice(-6); return s.slice(0, 2) + ':' + s.slice(2, 4); };
   if (mxi > 0){
     /* 柱宽按「15 分钟的时间槽」算，不按档数算。盘中只有 4 档时按档数算，
        每根柱会宽到 200px，四根叠在一起糊成一片。 */
@@ -2925,9 +2977,9 @@ function curveChart(C, S, W0){
         var bh = Math.max(2, Math.min(bmax, inc[i] / mxi * bmax));
         var fast = (incm[i] == null) || (inc[i] >= incm[i]);
         h += '<rect x="' + f1(bx) + '" y="' + f1(ib - bh) + '" width="' + f1(bw) + '" height="' + f1(bh)
-          + '" fill="var(--up)" opacity="' + (fast ? '.75' : '.34') + '" rx=".8">'
-          + '<title>' + hm2(C.at[i]) + '　新增 ' + inc[i].toFixed(1) + ' 家 / 15 分'
-          + (incm[i] == null ? '' : '，历史同期 ' + incm[i].toFixed(1) + ' 家') + '</title></rect>';
+          + '" fill="var(--up)" opacity="' + (fast ? '.75' : '.34') + '" rx=".8"/>';
+        /* 不再挂 <title>：原生提示要悬停一秒才弹、样式跟着系统走，而且和下面
+           自绘的气泡会同时出现两层。柱子的数值现在由悬停气泡统一给。 */
         /* 超出量程的柱顶到边，柱顶抹一道底色做出「被裁断」的缺口——不标一下的话，
            读者会把满格当成真实最大值，把「开盘 23 家」读成「开盘 6 家」。 */
         if (over){
@@ -2963,7 +3015,149 @@ function curveChart(C, S, W0){
     h += '<text x="' + f1(xm2) + '" y="' + (Hh - 2) + '" text-anchor="' + anc + '">'
       + marks[i][1] + '</text>';
   }
+
+  /* 悬停层：一条命中用的透明矩形 + 一个空壳 <g>。矩形要 fill="transparent"
+     而不是 none——none 不参与命中测试，鼠标落在空白处就收不到事件。
+     空壳放最后 = 画在最上层，竖线才不会被柱子和曲线盖住；内容由 cvHovAt 现填，
+     它只在鼠标移动时改一次，进不了这张每次都要重新生成的字符串。 */
+  h += '<rect x="' + pL + '" y="' + pT + '" width="' + iw + '" height="' + (ib - pT)
+    + '" fill="transparent"/>';
+  h += '<g class="cvhov" style="display:none"></g>';
+
+  /* 几何与数据挂在模块级变量上，悬停时按它反查下标。卡片每 30 秒重建一次，
+     重建会把这张 svg 换成新的，悬停状态由 repaintSenti 里的 cvHovRestore 接回来。 */
+  CVG = { W: W, H: Hh, pL: pL, iw: iw, pT: pT, ib: ib, ymax: ymax, n: n,
+    at: C.at, a: a, med: med, lo: lo, hi: hi, inc: inc, incm: incm,
+    tight: tight, smp: sp, nx: nx, ny: ny };
+  cvHovBind();
   return h + '</svg>';
+}
+
+/* ---- 当日曲线悬停 ----
+ *
+ * 曲线是一条边走边抬的线，回答不了「10:15 那一刻多少家」——横轴刻度一小时一格，
+ * 盘中的弯折全在格与格之间。所以悬停要同时给出四组数：累积、历史同刻中位（带
+ * 区间）、本档新增速率、以及本地采样到的「此刻封住」。四个数放在一个深色气泡里，
+ * 两三行字比在图上再加四条线便宜得多。
+ *
+ * 事件挂在 document 上，不挂在 svg 上：卡片 30 秒重建一次，挂在 svg 上的监听每次
+ * 都要重绑，漏一次就静默失效；而「没绑上」和「没悬停」在屏幕上长得一模一样。
+ */
+var CVG = null, _cvX = null, _cvY = null;
+
+function cvHovBind(){
+  if (window._cvBound) return;
+  window._cvBound = 1;
+  document.addEventListener('pointermove', cvHovMove, { passive: true });
+  document.addEventListener('pointerdown', cvHovMove, { passive: true });
+  window.addEventListener('scroll', cvHovOff, { passive: true });
+}
+
+function cvHovOff(){
+  _cvX = null; _cvY = null;
+  var g = document.querySelector('#sentiBody svg.sntcv .cvhov');
+  if (g){ g.style.display = 'none'; g.innerHTML = ''; }
+}
+
+function cvHovMove(e){
+  var t = e.target;
+  var svg = (t && t.closest) ? t.closest('svg.sntcv') : null;
+  if (!svg){ cvHovOff(); return; }
+  _cvX = e.clientX; _cvY = e.clientY;
+  cvHovAt(svg, e.clientX, e.clientY);
+}
+
+/* 重建后把气泡接回来。没有这一步的话，鼠标停在图上不动时，每 30 秒气泡会闪掉一次，
+   得动一下鼠标才回来——看着像悬停坏了。 */
+function cvHovRestore(){
+  if (_cvX == null) return;
+  var svg = document.querySelector('#sentiBody svg.sntcv');
+  if (svg) cvHovAt(svg, _cvX, _cvY);
+}
+
+function cvHovAt(svg, cx, cy){
+  var G = CVG, g = svg.querySelector('.cvhov');
+  if (!G || !g){ cvHovOff(); return; }
+  var q1 = function(v){ return v.toFixed(1); };
+  /* 用 CTM 反解，不自己按 rect 宽度折算：svg 有 width="W" 又有 CSS width:100%，
+     两者差几像素时手算的坐标会横着偏，越靠右边偏得越多。 */
+  var ctm = svg.getScreenCTM();
+  if (!ctm) return;
+  var p0 = svg.createSVGPoint();
+  p0.x = cx; p0.y = cy;
+  var v = p0.matrixTransform(ctm.inverse());
+  if (v.x < G.pL - 2 || v.x > G.pL + G.iw + 2 || v.y < G.pT - 2 || v.y > G.ib + 6){
+    cvHovOff(); return;
+  }
+  /* 按 x 找最近的一档，不按「第几格」：横轴是真实时间，格与格之间不等距。 */
+  var i = 0, k, best = 1e9;
+  for (k = 0; k < G.n; k++){
+    var dx = Math.abs(G.nx(k) - v.x);
+    if (dx < best){ best = dx; i = k; }
+  }
+  var t = G.at[i];
+  var mins = Math.floor(t / 10000) * 60 + Math.floor(t % 10000 / 100);
+  var hhmm = ('0' + Math.floor(mins / 60)).slice(-2) + ':' + ('0' + (mins % 60)).slice(-2);
+  var x = G.nx(i);
+
+  var rows = [];
+  /* 窄图（分栏右栏、手机）上气泡要缩：176 宽放在 366 的图上就是半张图，把要读的
+     那段线全盖住了。窄图只留「一个数」，横向对比在宽的图上再看。 */
+  var tT = !!G.tight;
+  if (G.a[i] != null) rows.push([tT ? '曾触板' : '曾触板累积', G.a[i] + ' 家']);
+  if (G.med[i] != null){
+    var rg = (G.lo[i] != null && G.hi[i] != null) ? '（' + G.lo[i] + '–' + G.hi[i] + '）' : '';
+    rows.push(['历史中位', G.med[i] + ' 家' + rg]);
+  }
+  if (G.inc[i] != null && G.inc[i] > 0){
+    var s2 = '+' + G.inc[i].toFixed(1);
+    if (G.incm[i] != null && !tT) s2 += '｜历史 ' + (G.incm[i] >= 0 ? '+' : '') + G.incm[i].toFixed(1);
+    rows.push([tT ? '新增/15分' : '新增 / 15 分', s2]);
+  }
+  var sv = cvSmpAt(G.smp, mins);
+  if (sv != null) rows.push([tT ? '封住' : '此刻封住', sv + ' 家']);
+
+  var w = tT ? 146 : 176, lh = 13, hgt = 12 + rows.length * lh + 7;
+  var tx = x + 12, ty = v.y - hgt - 12;
+  if (tx + w > G.W - 2) tx = x - w - 12;      // 贴右边就翻到左侧
+  if (tx < 2) tx = 2;
+  if (ty < 2) ty = v.y + 14;                  // 贴顶就翻到下方
+  if (ty + hgt > G.H - 2) ty = G.H - hgt - 2;
+
+  var s3 = '<line class="gl" x1="' + q1(x) + '" y1="' + G.pT + '" x2="' + q1(x) + '" y2="' + G.ib + '"/>';
+  s3 += '<rect class="tipbg" x="' + q1(tx) + '" y="' + q1(ty) + '" width="' + w + '" height="' + hgt
+    + '" rx="4"/>';
+  s3 += '<text class="tl" x="' + q1(tx + 8) + '" y="' + q1(ty + 13) + '">' + hhmm + '</text>';
+  for (k = 0; k < rows.length; k++){
+    var yy = ty + 13 + (k + 1) * lh;
+    s3 += '<text class="tl" x="' + q1(tx + 8) + '" y="' + q1(yy) + '">' + rows[k][0] + '</text>';
+    s3 += '<text x="' + q1(tx + w - 8) + '" y="' + q1(yy) + '" text-anchor="end">' + rows[k][1] + '</text>';
+  }
+  /* 点只标主曲线和「此刻封住」两处；副图的柱子不给点——柱高是「这一档 15 分钟
+     的流量」，点上去会被读成某一刻的瞬时值，和竖线对不上。 */
+  if (G.a[i] != null){
+    s3 += '<circle cx="' + q1(x) + '" cy="' + q1(G.ny(G.a[i])) + '" r="2.6"'
+      + ' fill="var(--up)" stroke="var(--surface)" stroke-width="1"/>';
+  }
+  if (sv != null){
+    s3 += '<circle cx="' + q1(x) + '" cy="' + q1(G.ny(Math.min(sv, G.ymax))) + '" r="2.2"'
+      + ' fill="var(--up)" opacity=".55"/>';
+  }
+  g.innerHTML = s3;
+  g.style.display = '';
+}
+
+/* 本地采样是 [距零点的分钟, 涨停家数, 跌停家数]。取「不晚于此刻的最后一次」，
+   不外推也不插值：10:20 悬停而手上只有 10:12 的采样时，显示 10:12 那个数比画一条
+   推出来的线诚实。 */
+function cvSmpAt(smp, mins){
+  if (!smp) return null;
+  var v = null;
+  for (var i = 0; i < smp.length; i++){
+    if (smp[i][0] > mins + 2) break;
+    if (smp[i][1] != null) v = smp[i][1];
+  }
+  return v;
 }
 
 /* 近 20 日红盘率迷你折线。只有 20 个点，一条 polyline 就够，不必上 canvas
