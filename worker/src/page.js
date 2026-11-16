@@ -218,6 +218,9 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
 /* 衍生品区块：五张卡，桌面两列、手机一列。
    「基差历史」占整行——曲线要横向空间，塞进半列会把 250 个点压成一团。 */
 .futgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+/* grid item 默认 min-width:auto，宽表的 min-content 会把列撑破，1320 视口下
+   右边缘溢出 3px、整页多出一条横向滚动条。放开收缩，表格自己在框内横滚。 */
+.futgrid>.mkbox{min-width:0}
 .futgrid .wide{grid-column:1 / -1}
 @media(max-width:1100px){.futgrid{grid-template-columns:1fr}.futgrid .wide{grid-column:auto}}
 .futttl{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:7px}
