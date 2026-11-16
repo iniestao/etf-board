@@ -251,10 +251,18 @@ async function runContracts(base, pass) {
   const stateSrc = fs.readFileSync(path.join(SRC, 'state_data.js'), 'utf8');
   const stCodes = [...stateSrc.matchAll(/\['(\d{6})',/g)].map((m) => m[1]);
   const stUniq = new Set(stCodes);
+  /* 每行第三列：要么是份额数字，要么是显式 null（＝披露口径查不到）。留空或写
+     undefined 会在页面上渲染成 0 或「NaN 亿份」，而 0 的意思是「汇金清仓了」——
+     和「看不到」是两件完全相反的事。588000 就属于后者，必须写成 null。 */
+  const stRows = [...stateSrc.matchAll(/\['(\d{6})',\s*'[^']*',\s*([^\]\s]+)\]/g)];
+  const stOdd = stRows.filter((m) => m[2] !== 'null' && !/^\d+(\.\d+)?$/.test(m[2]));
   if (stCodes.length < 10) {
     bad('国家队名单只有 ' + stCodes.length + ' 只，像是被截断了');
   } else if (stUniq.size !== stCodes.length) {
     bad('国家队名单有重复代码：' + stCodes.length + ' 条里只有 ' + stUniq.size + ' 个不同');
+  } else if (stRows.length !== stCodes.length || stOdd.length) {
+    bad('国家队名单有 ' + (stCodes.length - stRows.length + stOdd.length)
+      + ' 行的份额既不是数字也不是 null：查不到的持仓必须写 null，留空会被读成 0');
   } else if (!/asOf:\s*'\d{4}-\d{2}-\d{2}'/.test(stateSrc)) {
     bad('国家队名单没有 asOf：报告期不写到页面上，半年前的持仓会被当成实时');
   } else if (!pageSrc.includes('STATE_SET[x.c]')) {

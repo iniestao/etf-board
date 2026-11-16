@@ -1678,7 +1678,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
     <span class="tag" data-g="money">货币<b id="n-money"></b></span>
     <span class="tag" data-g="commodity">商品<b id="n-commodity"></b></span>
     <span class="tag on" id="dedupTag" title="同一跟踪指数的多只 ETF 只保留成交额最大的一只。点击切换">同指数去重<b id="n-dedup"></b></span>
-    <span class="tag" data-g="state" id="stateTag" title="中央汇金 2025 年年报持仓（最后一份可核实披露，2026 中报起不再披露持有人）。点击只看这些 ETF">国家队<b id="n-state"></b></span>
+    <span class="tag" data-g="state" id="stateTag" title="2025 年报前十大披露 + 2026 年科技方向增持指向的产品。点击只看这些 ETF">国家队<b id="n-state"></b></span>
     <input id="q" placeholder="搜索代码/名称">
     <select id="limitSel">
       <option value="50">前 50</option>
