@@ -28,7 +28,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/
 const ROOT = path.resolve(import.meta.dirname, '..');
 const OUT = path.join(ROOT, 'dist', 'etfopt_hist.json');
 const DRY = process.argv.includes('--dry');
-const CONC = 4;
+const CONC = 3;
 
 /* 和 gen_fut_daily.mjs 的 ETF_OPT、page.js 的 ETF_HP 三处必须同一份清单。
    早先这里只有 4 个（另 5 个当时判断「实时表够用」），结果基差历史那一栏的标签
@@ -47,7 +47,10 @@ const LIST = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function jget(url, tries = 3) {
+/* 重试 5 次、退避带随机：东财在并发稍高时会直接断连接（undici 报 fetch failed），
+   而这一处失败是会静默的——外层 catch 一吞，那天的点就没了。等 20 秒换 5 次，
+   比事后发现日期轴缺一格便宜得多。 */
+async function jget(url, tries = 5) {
   let last;
   for (let i = 0; i < tries; i++) {
     try {
@@ -59,7 +62,7 @@ async function jget(url, tries = 3) {
       return await r.json();
     } catch (e) {
       last = e;
-      await sleep(500 * (i + 1));
+      await sleep(400 * (i + 1) + Math.random() * 400);
     }
   }
   throw last;
@@ -71,7 +74,7 @@ async function chain(secid) {
   for (const spt of [9, 10]) {
     const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
       + '&fltt=2&invt=2&fields=f12,f13,f14,f161,f162&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
-    const j = await jget(u, 2).catch(() => null);
+    const j = await jget(u, 4).catch(() => null);
     const d = (j && j.data && j.data.diff) || {};
     const items = Array.isArray(d) ? d : Object.values(d);
     for (const x of items) {
@@ -154,7 +157,10 @@ async function one(secid, code, tag) {
   const ch = await chain(secid);
   if (!ch.length) { console.log('  ' + tag + ' 期权链为空'); return null; }
 
-  const spotK = await kline(secid);
+  /* 现货日线是整只 ETF 的锚（S），取不到就当这只失败——那是分母，不能瞎补。
+     但它是最常被限流打掉的一条，多试两次比整只丢掉划算。 */
+  let spotK = null;
+  for (let a = 0; a < 3 && !spotK; a++) spotK = await kline(secid).catch(() => null);
   if (!spotK) { console.log('  ' + tag + ' 现货日线取不到'); return null; }
 
   const mkOf = new Map(ch.map((x) => [x.code, x.mk]));
@@ -170,6 +176,25 @@ async function one(secid, code, tag) {
     await sleep(60);
   }
   console.log('    ' + tag + ' 日线 ' + kls.size + '/' + uniq.length + '   档');
+
+  /* 抓失败的合约必须补回来，不能就这么算了。
+     一条日线缺了，那个到期月在那几天就配不成 C/P，整段日期直接消失——2026-11-13
+     就是这样丢的：文件里日期轴有 13 号，9 只里 8 只那天的值是 null。不是源上没有
+     数据，是这一轮抓取被限流（116 条只回来 61 条），而失败被 .catch(()=>null) 吞了。
+     现在按原并发跑一遍，剩下的单线程再来两轮：慢一分钟，好过留一个静默的空档。 */
+  for (let pass = 1; pass <= 2; pass++) {
+    const miss = uniq.filter((c) => !kls.has(c));
+    if (!miss.length) break;
+    console.log('    ' + tag + ' 补抓第 ' + pass + ' 轮：' + miss.length + ' 条');
+    for (const c of miss) {
+      const s = await kline(mkOf.get(c) + '.' + c).catch(() => null);
+      if (s) kls.set(c, s);
+      await sleep(150);
+    }
+  }
+  if (kls.size < uniq.length) {
+    console.log('    ' + tag + ' 仍有 ' + (uniq.length - kls.size) + ' 条日线没抓到（两轮补抓后）');
+  }
 
   /* 按「到期月 + 行权价」配对 C/P，再把每个合约的日线铺到日期轴上 */
   const byKey = new Map();      // mth|k -> {C:{}, P:{}}
@@ -231,6 +256,9 @@ async function one(secid, code, tag) {
        当月该是哪个月」：2026-09-24 那天最短可用是 11 月合约，可当时的当月是
        10 月（10-28 到期）、它的价格已经消失，11 月其实是下月。这种天宁可不画。 */
     if (near.mth !== frontMonth(d)) continue;
+    /* 盘中跑（手动补数、调试）时今天的日线是「此刻」的价格，不是收盘价。
+       写成收盘值之后，合并规则是「老值优先」，这个错值会被永久钉住。 */
+    if (d === TODAY && !CLOSED) continue;
     rows.push({
       d,
       near: { mth: near.mth, dte: near.dte, n: near.n, bp: +near.bp.toFixed(3),
@@ -240,7 +268,14 @@ async function one(secid, code, tag) {
   return rows;
 }
 
-const TODAY = new Date().toISOString().slice(0, 10);
+/* 一律按北京时间取日期。以前用 toISOString()（UTC），凌晨跑的时候「今天」会退回
+   前一天，dte 跟着少一天——dte 是年化基差的分母，差一天就和实时表里的数对不上。 */
+const bjNow = () => new Date(Date.now() + 8 * 3600e3);
+const TODAY = bjNow().toISOString().slice(0, 10);
+const CLOSED = (function () {
+  const t = bjNow(), dow = t.getUTCDay();
+  return dow !== 0 && dow !== 6 && (t.getUTCHours() * 100 + t.getUTCMinutes()) >= 1505;
+})();
 
 async function main() {
   console.log('ETF 期权历史重建  today=' + TODAY);
