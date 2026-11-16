@@ -992,10 +992,11 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 /* 走势条用百分比 viewBox，宽度交给容器；高度与梯队条一致，两栏底部齐平 */
 .sntsp{display:block;width:100%;height:42px;overflow:visible}
 /* 曲线占位：撑住右栏高度，别让两栏在数据没到时一高一矮 */
-.sntcvph{display:flex;align-items:center;justify-content:center;height:184px;
-  border:1px dashed var(--line2);border-radius:8px;background:var(--bg);
-  color:var(--txt3);font-size:var(--fs-2xs);letter-spacing:.3px}
-@media(max-width:560px){.sntcvph{height:120px}}
+.sntcvph{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:5px;height:240px;border:1px dashed var(--line2);border-radius:8px;
+  background:var(--bg);color:var(--txt3);font-size:var(--fs-2xs);letter-spacing:.3px}
+.sntcvph>i{font-style:normal;font-size:var(--fs-cap);opacity:.72}
+@media(max-width:560px){.sntcvph{height:172px}}
 @media(max-width:700px){
   .lbr{grid-template-columns:38px 1fr 28px;gap:8px}
   .lbr>i{height:10px}
@@ -2605,7 +2606,8 @@ function sentiCard(){
   } else {
     /* 曲线是异步来的。通栏时它没到只是少一行；分栏后右栏会整块塌下去，
        左栏被拉到同样高度、下半截空着，看着像没加载完。占位框撑住高度。 */
-    h += '<div class="sntcvph">当日曲线读取中…</div>';
+    h += '<div class="sntcvph"><span>当日曲线读取中…</span>'
+      + '<i>非交易时段不会有当日数据</i></div>';
   }
 
   /* 两张小图并排，宽度对半分、各自吃满自己那栏。之前它们是 100px 的竖柱和
