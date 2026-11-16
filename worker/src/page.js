@@ -878,7 +878,38 @@ border:1px solid var(--line);border-radius:8px;position:relative}
 .sntb{font-style:normal;font-weight:700;font-size:var(--fs-xs);padding:1px 7px;border-radius:4px;
 background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:none}
 .snttag{margin-left:auto;font-size:var(--fs-2xs);color:var(--txt3);letter-spacing:.2px}
-.sntgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px 14px;margin-top:8px}
+/* 左右分栏：左「数」右「形」。通栏时一格宽 200px、曲线高 114px，宽高比
+   11:1——一条线被摊成一张薄纸，横向全是留白，纵向又堆了五层。分栏后格子
+   变 2 列 × 3 行、曲线接近 3:1，两者都回到正常阅读比例。 */
+.sntcols{display:grid;grid-template-columns:minmax(0,434px) minmax(0,1fr);
+  gap:0 26px;margin-top:11px;align-items:stretch}
+/* 左栏撑到与右栏等高，把「涨停/炸板/跌停 →」推到底：内容短一截时空白
+   堆在左下角，比两栏差一截还难看。 */
+.sntL{display:flex;flex-direction:column}
+.sntL>.sntline{margin-top:auto}
+.sntL,.sntR{min-width:0}
+.sntR{padding-left:26px;border-left:1px solid var(--line)}
+.sntgrp{margin-bottom:14px}
+.sntgrp:last-child{margin-bottom:0}
+/* 组标题：两行数字原来是「靠一条横线暗示分组」，读到第二行才知道换了口径。
+   写明白「昨日涨停池 / 今日过程量」，加一行灰注说明该怎么读。 */
+.sntgl{display:flex;align-items:baseline;gap:8px;margin:0 0 9px;padding-bottom:5px;
+  border-bottom:1px solid var(--grid);font-size:var(--fs-cap);color:var(--txt3);
+  letter-spacing:.4px;white-space:nowrap}
+.sntgl>em{font-style:normal;margin-left:auto;color:var(--txt3);opacity:.8;letter-spacing:0}
+.sntgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin-top:0}
+/* 900 以下退回单栏：曲线在 700px 以下本来就画不出细节，硬分两栏只会让
+   左栏数字挤成两行。单栏时数字改 3 列，横着排更省高度。 */
+@media(max-width:900px){
+  .sntcols{grid-template-columns:1fr}
+  .sntR{padding-left:0;border-left:0;margin-top:9px;padding-top:13px;
+    border-top:1px solid var(--line)}
+  .sntgrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:560px){
+  .sntgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .sntgl>em{display:none}
+}
 .sntk{min-width:0}
 .sntk>span{display:block;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;
 overflow:hidden;text-overflow:ellipsis}
@@ -906,8 +937,10 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 .sntwhy i{font-style:normal;color:var(--txt2)}
 /* 两组口径之间加一条竖线：左边是「昨天的池子今天怎么样」，右边是「今天的过程量」，
    横着加不起来。不加分隔会有人拿涨停 38 去减昨涨停 37。 */
-.sntk.sep{padding-left:14px;border-left:1px solid #d3d7de}
-.sntgrid.sntrowsplit{margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
+.sntk.sep{grid-column:1/-1;display:flex;align-items:baseline;gap:11px;
+  margin-top:3px;padding-top:10px;border-top:1px solid var(--grid)}
+.sntk.sep>span{display:inline;margin:0}
+.sntgrid.sntrowsplit{margin-top:0}
 /* 梯队柱：8 档固定列宽，柱子按最大档归一。底部对齐，柱高才可比。 */
 .sntlrow{display:flex;align-items:flex-end;gap:14px;margin-top:8px}
 .sntbar{display:flex;align-items:flex-end;gap:11px}
@@ -958,6 +991,11 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 
 /* 走势条用百分比 viewBox，宽度交给容器；高度与梯队条一致，两栏底部齐平 */
 .sntsp{display:block;width:100%;height:42px;overflow:visible}
+/* 曲线占位：撑住右栏高度，别让两栏在数据没到时一高一矮 */
+.sntcvph{display:flex;align-items:center;justify-content:center;height:184px;
+  border:1px dashed var(--line2);border-radius:8px;background:var(--bg);
+  color:var(--txt3);font-size:var(--fs-2xs);letter-spacing:.3px}
+@media(max-width:560px){.sntcvph{height:120px}}
 @media(max-width:700px){
   .lbr{grid-template-columns:38px 1fr 28px;gap:8px}
   .lbr>i{height:10px}
@@ -965,9 +1003,8 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 .sntlmx{margin-left:2px;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;padding-bottom:1px}
 .sntlmx b{color:var(--txt2);font-variant-numeric:tabular-nums}
 @media(max-width:820px){
-  .sntgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 12px}
+  .sntgrid{gap:9px 12px}
   .sntk>b{font-size:var(--fs-md)}
-  .sntk.sep{padding-left:0;border-left:0}
   .sntbar{gap:9px}
   .sntbar .sb>i{width:17px}
   .sntlmx{margin-left:0}
@@ -2459,10 +2496,11 @@ function sentiCard(){
     + '<span class="snttag">' + (brief.length
       ? '近 250 天：' + brief.join(' · ') : '点状态灯看判定依据') + '</span></div>';
 
-  /* 两行各六格，行内不分组就不留空格子：
-     第 1 行是「昨天的池子今天怎么样」（样本盘中固定，A 类）；
-     第 2 行是「今天到现在为止的过程量」（累积量，C 类 + 封板率 B 类）。
-     两行口径完全不同，中间用一条线断开，别让人以为可以横向加减。 */
+  /* 左栏放「数」，右栏放「形」。两组各六格：
+     第 1 组是「昨天的池子今天怎么样」（样本盘中固定，A 类）；
+     第 2 组是「今天到现在为止的过程量」（累积量，C 类 + 封板率 B 类）。
+     两组口径完全不同，所以各有各的组标题，别让人以为可以横向加减。 */
+  h += '<div class="sntcols"><div class="sntL">';
   var h1 = '';
   if (P){
     h1 += cell('昨涨停', P.n, '只')
@@ -2480,7 +2518,9 @@ function sentiCard(){
   h1 += Y
     ? cell('昨跌停', Y.n, '只 · 仍跌 ' + Math.round(Y.still) + '%', Y.still >= 30 ? 'down' : '', 'sep')
     : cell('昨跌停', 0, '只 · 昨日无跌停', '', 'sep');
-  h += '<div class="sntgrid">' + h1 + '</div>';
+  h += '<div class="sntgrp"><div class="sntgl">昨日涨停池'
+    + '<em>样本固定 · 看今天表现</em></div>'
+    + '<div class="sntgrid">' + h1 + '</div></div>';
 
   var h2 = cell('今日涨停', S.zt, '家')
     + cell('一字板', F ? F.yz : '—', F ? '· 买不到' : '· 盘中才有')
@@ -2488,7 +2528,9 @@ function sentiCard(){
     + cell('跌停', S.dt, '家')
     + cell('封板率', S.seal == null ? '—' : Math.round(S.seal * 100) + '%', '· 封住/触板')
     + cell('曾触板', S.touch, '家');
-  h += '<div class="sntgrid sntrowsplit">' + h2 + '</div>';
+  h += '<div class="sntgrp"><div class="sntgl">今日过程量'
+    + '<em>累积到此刻</em></div>'
+    + '<div class="sntgrid">' + h2 + '</div></div>';
 
   /* 分层：整体红盘率被池子结构加权，首板和连板分开看才知道是「接力资金撤了」
      还是「高位票自己在走」。这两个结论对应的动作完全相反。 */
@@ -2501,6 +2543,40 @@ function sentiCard(){
       + '</span></p>';
   }
 
+  /* 行业集中度：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情。
+     同样是「涨停 38 家」，对第二天的意义正好相反。 */
+  if (S.ind && S.ind.length){
+    var seg = [], i;
+    for (i = 0; i < S.ind.length; i++) seg.push(esc(S.ind[i].k) + ' <b>' + S.ind[i].c + '</b>');
+    h += '<p class="sntref">涨停行业　' + seg.join(' · ')
+      + (S.zt > 0 ? '　前 ' + S.ind.length + ' 占 <b>'
+        + Math.round(S.indTop3 / S.zt * 100) + '%</b>' : '') + '</p>';
+  }
+
+  h += '<div class="sntline">'
+    + '<span class="sntlk" data-snt="zt">涨停 ' + S.zt + ' 只 →</span>'
+    + '<span class="sntlk" data-snt="zb">炸板 ' + S.zb + ' 只 →</span>'
+    + '<span class="sntlk" data-snt="dt">跌停 ' + S.dt + ' 只 →</span>'
+    + '</div>';
+  h += '</div><div class="sntR">';
+
+
+  /* 曲线现在住在右栏里，宽度不再是卡片内宽。分栏布局是左栏 434 固定 +
+     26 间隙 + 右栏 26 左内边距，所以右栏 = 内宽 - 486。视口 900 以下退回
+     单栏（与 CSS 断点一致），此时曲线重新吃满整卡。 */
+  var wideL = (window.innerWidth || 999) >= 900;
+  var colR = (function(){
+    /* 优先量上一帧就已经在 DOM 里的右栏：估算式（内宽 − 434 − 间隙 − 内边距）
+       在 1024 这类中间宽度上会差二十几像素，SVG 于是被 CSS 再缩一次，
+       10px 的刻度字变成 9.5px。重量一次比推算准。 */
+    var r = document.querySelector('#sentiBody .sntR');
+    if (r && r.clientWidth > 200) return r.clientWidth - (wideL ? 26 : 0);
+    var b = document.getElementById('sentiBody');
+    var w = b ? b.clientWidth : 0;
+    if (!(w > 240)) w = Math.max(320, (window.innerWidth || 1200) - 96);
+    w = w - 22;
+    return wideL ? Math.max(320, w - 486) : w;
+  })();
 
   /* 当日曲线：唯一的「形态」信息。别的格子都是此刻的一个数，只有这条线
      能看出今天是在加速堆板还是一路熄火——同样 31 家曾触板，从 8 家冲上来和
@@ -2511,7 +2587,7 @@ function sentiCard(){
     var vd = curveVerdict(CV);
     var cvLast = CV.today[CV.today.length - 1], cvMed = null, q;
     for (q = CV.med.length - 1; q >= 0; q--){ if (CV.med[q] != null){ cvMed = CV.med[q]; break; } }
-    h += curveChart(CV, S);
+    h += curveChart(CV, S, colR);
     /* 每段包一个 nowrap：中文会在任意字之间折行，手机上一个「全程弱于历史」
        被拆成「全程弱于历」+「史」比换行本身更难看。 */
     var cvs = [];
@@ -2526,6 +2602,10 @@ function sentiCard(){
        定标之外，所以真实家数必须在这里说，否则读者会把满格当成最大值。 */
     cvs.push('<span class="nw">开盘 <b>+' + CV.today[0] + '</b> 家</span>');
     h += '<p class="sntref" style="margin-top:7px">当日曾触板　' + cvs.join(' · ') + '</p>';
+  } else {
+    /* 曲线是异步来的。通栏时它没到只是少一行；分栏后右栏会整块塌下去，
+       左栏被拉到同样高度、下半截空着，看着像没加载完。占位框撑住高度。 */
+    h += '<div class="sntcvph">当日曲线读取中…</div>';
   }
 
   /* 两张小图并排，宽度对半分、各自吃满自己那栏。之前它们是 100px 的竖柱和
@@ -2553,16 +2633,6 @@ function sentiCard(){
   /* 近 20 日轨迹：单个数字只回答「今天多冷」，回答不了「冷到哪一步」。
      连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。 */
 
-  /* 行业集中度：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情。
-     同样是「涨停 38 家」，对第二天的意义正好相反。 */
-  if (S.ind && S.ind.length){
-    var seg = [], i;
-    for (i = 0; i < S.ind.length; i++) seg.push(esc(S.ind[i].k) + ' <b>' + S.ind[i].c + '</b>');
-    h += '<p class="sntref">涨停行业　' + seg.join(' · ')
-      + (S.zt > 0 ? '　前 ' + S.ind.length + ' 占 <b>'
-        + Math.round(S.indTop3 / S.zt * 100) + '%</b>' : '') + '</p>';
-  }
-
   var bits = [];
   if (S.ref && S.ref.med != null){
     var a6 = ('00000' + S.ref.at).slice(-6);
@@ -2575,11 +2645,7 @@ function sentiCard(){
   }
   if (bits.length) h += '<p class="sntref">' + bits.join(' · ') + '</p>';
 
-  h += '<div class="sntline">'
-    + '<span class="sntlk" data-snt="zt">涨停 ' + S.zt + ' 只 →</span>'
-    + '<span class="sntlk" data-snt="zb">炸板 ' + S.zb + ' 只 →</span>'
-    + '<span class="sntlk" data-snt="dt">跌停 ' + S.dt + ' 只 →</span>'
-    + '</div>';
+  h += '</div></div>';
 
   if (S.why && S.why.length){
     h += '<div class="sntwhy">判定依据：' + S.why.map(function(x){ return esc(x); }).join(' · ')
@@ -2662,7 +2728,7 @@ function curveVerdict(C){
   return { k: '全程弱于历史', c: 'down' };
 }
 
-function curveChart(C, S){
+function curveChart(C, S, W0){
   if (!C || !C.today || C.today.length < 3) return '';
   var a = C.today, med = C.med || [], lo = C.lo || [], hi = C.hi || [];
   var n = a.length, i;
@@ -2675,6 +2741,7 @@ function curveChart(C, S){
      DOM 里（旧内容，宽度不变），可以直接量。 */
   var mob = (window.innerWidth || 999) < 700;
   var W = (function(){
+    if (W0 > 0) return Math.max(320, Math.min(1240, W0));
     var b = document.getElementById('sentiBody');
     var w = b ? b.clientWidth : 0;
     if (!(w > 240)) w = Math.max(320, (window.innerWidth || 1200) - 96);
@@ -2682,7 +2749,16 @@ function curveChart(C, S){
   })();
   var pL = 26, pR = mob ? 30 : 38, pT = 8;
   var iw = W - pL - pR;
-  var ih = mob ? 80 : 114;          // 累积线绘图区
+  /* 「图窄」和「屏窄」是两件事：分栏之后 960 视口下右栏只有 405px，但
+     innerWidth 还是 960，刻度照 9 个画，09:30 和 10:00 会叠在一起。
+     一切与密度有关的降级都按图本身的宽度判断。 */
+  var tight = W < 580;
+  /* 高度跟着宽度走。分栏后曲线只剩 780 宽，再用固定的 114 高，宽高比还是
+     6:1——和通栏时一样扁，等于白分。给到宽度的 0.30（上限 210），曲线的
+     弯曲才看得出形状；再高右栏会顶出左栏的数字区。 */
+  var ih = Math.round(mob
+    ? Math.min(150, Math.max(96, iw * 0.26))
+    : Math.min(210, Math.max(126, iw * 0.30)));   // 累积线绘图区
   var HB = mob ? 32 : 40;           // 增量柱区高度
   var Hh = pT + ih + 14 + 5 + HB + 16;   // 总高
   var y0 = pT + ih;                 // 累积线 0 基线
@@ -2827,9 +2903,9 @@ function curveChart(C, S){
     h += '<rect x="' + pL + '" y="' + yR + '" width="' + f1(xR - pL) + '" height="' + HB
       + '" fill="var(--bg3)" opacity=".85" rx="2"/>';
     h += '<text x="' + (pL + 2) + '" y="' + yT + '" class="cvlb">'
-      + (mob ? '新增 / 15 分' : '新增（家 / 15 分钟）') + '</text>';
+      + (tight ? '新增 / 15 分' : '新增（家 / 15 分钟）') + '</text>';
     h += '<text x="' + f1(pL + iw) + '" y="' + yT + '" text-anchor="end" class="cvlb">'
-      + (mob ? '灰横＝历史 · 深红＝快' : '灰横＝历史同期中位　深红＝快于历史') + '</text>';
+      + (tight ? '灰横＝历史 · 深红＝快' : '灰横＝历史同期中位　深红＝快于历史') + '</text>';
     for (i = 0; i < n; i++){
       /* 末档与前一档只差几分钟时不画柱：它的窗口没走完，柱子会和前一档叠在
          一起，而且高度已经是按速率换算过的，与左边的柱子不同量纲。
@@ -2876,7 +2952,7 @@ function curveChart(C, S){
   var mEnd = m2(C.at[n - 1]);
   for (i = 0; i < marks.length; i++){
     if (marks[i][0] > mEnd) break;
-    if (mob && marks[i][0] !== 570 && marks[i][0] !== 690 && marks[i][0] !== 900) continue;
+    if (tight && marks[i][0] !== 570 && marks[i][0] !== 690 && marks[i][0] !== 900) continue;
     var xm2 = pL + curvePos(marks[i][0]) * iw;
     var anc = (marks[i][0] === 570) ? 'start' : (marks[i][0] === 900 ? 'end' : 'middle');
     h += '<text x="' + f1(xm2) + '" y="' + (Hh - 2) + '" text-anchor="' + anc + '">'
