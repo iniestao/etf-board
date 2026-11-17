@@ -25,6 +25,10 @@ import fs from 'fs';
 import path from 'path';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36';
+/* 东财 kline 的 ut 令牌。2026-11-17 起不带它直接回 rc:100 / data:null（不是限流，
+   是参数校验），带了才给 klines。硬编码不算优雅，但这个值十几年没变过，而且没有
+   任何文档会告诉你它是必填的——先写死，坏了会在日志里立刻显形。 */
+const UT = 'fa5fd1943c7b386f172d6893dbfba10b';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const OUT = path.join(ROOT, 'dist', 'etfopt_hist.json');
 const DRY = process.argv.includes('--dry');
@@ -99,7 +103,8 @@ async function chain(secid) {
 
 /** 日线收盘价 map：{'2026-11-10': 2.891} */
 async function kline(secid) {
-  const u = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=' + secid
+  const u = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?ut=' + UT
+    + '&secid=' + secid
     + '&klt=101&fqt=0&beg=0&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57';
   const j = await jget(u);
   const dd = j && j.data;
@@ -110,6 +115,49 @@ async function kline(secid) {
     out[p[0]] = +p[2];
   }
   return out;
+}
+
+/* ---------------- 现货日线：腾讯优先 ----------------
+ * 2026-11-17 起东财 push2his 的 kline 不带 ut 就回 `rc:100 / data:null`，带上也
+ * 时好时坏。11-16 那晚 9 只 ETF 的现货日线全灭，脚本逐只打「现货日线取不到」，
+ * 合并规则「老值优先」把整份文件原样留下——日期轴停在 13 号，而流水线是 success。
+ * 现货是基差的分母（S），缺它整只 ETF 就没有任何一天能算。
+ *
+ * 腾讯 newfqkline 是 gen_mkt_hist 已经在用的源（那份注释里写过同一件事）。这里要
+ * 不复权：期权合约价本身不复权，ETF 分红除息日拿前复权价当 S，基差会凭空跳一格。
+ */
+const txSym = (code) => (/^[56]/.test(code) ? 'sh' : 'sz') + code;
+async function txKline(code) {
+  const sym = txSym(code);
+  const url = 'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param='
+    + sym + ',day,,,400,';
+  const r = await fetch(url, {
+    headers: { 'User-Agent': UA, Referer: 'https://gu.qq.com/' },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  const node = j && j.data && j.data[sym];
+  const rows = (node && (node.qfqday || node.day)) || [];
+  const out = {};
+  for (const x of rows) if (x && x[0]) out[x[0]] = +x[2];
+  return Object.keys(out).length ? out : null;
+}
+
+async function spotKline(secid, code) {
+  for (let a = 0; a < 2; a++) {
+    const s = await txKline(code).catch(() => null);
+    if (s) return s;
+    await sleep(400);
+  }
+  /* 腾讯也挂时退回东财。留这条不是因为还指望它，而是多一个源就多一次机会，
+     失败路径上再没有别的东西可以兜了。 */
+  for (let a = 0; a < 2; a++) {
+    const s = await kline(secid).catch(() => null);
+    if (s) return s;
+    await sleep(600);
+  }
+  return null;
 }
 
 function median(a) {
@@ -158,10 +206,9 @@ async function one(secid, code, tag) {
   if (!ch.length) { console.log('  ' + tag + ' 期权链为空'); return null; }
 
   /* 现货日线是整只 ETF 的锚（S），取不到就当这只失败——那是分母，不能瞎补。
-     但它是最常被限流打掉的一条，多试两次比整只丢掉划算。 */
-  let spotK = null;
-  for (let a = 0; a < 3 && !spotK; a++) spotK = await kline(secid).catch(() => null);
-  if (!spotK) { console.log('  ' + tag + ' 现货日线取不到'); return null; }
+     腾讯优先、东财兜底（见 spotKline 上面的注释）。 */
+  const spotK = await spotKline(secid, code);
+  if (!spotK) { console.log('  ' + tag + ' 现货日线取不到（腾讯+东财都失败）'); return null; }
 
   const mkOf = new Map(ch.map((x) => [x.code, x.mk]));
   const uniq = [...new Set(ch.map((x) => x.code))];
