@@ -91,8 +91,22 @@ for (let t = d0.getTime(); t <= bj.getTime(); t += 86400e3) {
 }
 console.log(`扫 ${days.length} 个工作日（${days[0]} → ${days[days.length - 1]}）…`);
 
+/* 今天没收盘就不收今天。
+   上游对「今天」的池子不会返回空，而是把最近一个交易日的原样给你——凌晨 3 点
+   跑的时候，20261117 那条就是 20261116 的完整副本（touch 逐格相同，末值都是
+   48）。写进去有两个后果：历史同刻中位多算一条昨天的数据（等于给昨天双倍权重），
+   以及页面上「今天」的曲线在开盘前就画成了一条昨天的线。
+   15:05 之前不写，宁可少一天——和 etfopt_backfill 里那条判据同一个道理。 */
+const bjHm = bj.getUTCHours() * 100 + bj.getUTCMinutes();
+const CLOSED = bj.getUTCDay() !== 0 && bj.getUTCDay() !== 6 && bjHm >= 1505;
+const todayStr = bj.toISOString().slice(0, 10).replace(/-/g, '');
+
 const rows = [];
 for (const day of days) {
+  if (day === todayStr && !CLOSED) {
+    console.log(`  ${day} 今天还没收盘，跳过（上游会拿上一交易日的池子顶替）`);
+    continue;
+  }
   const [zt, zb] = await Promise.all([pool('ZT', day), pool('ZB', day)]);
   if (!zt.length && !zb.length) { process.stdout.write(`  ${day} 无数据（超出回溯窗口）\n`); continue; }
   /* 合并去重：一只票不可能同时在两个池里（一个收盘封着、一个收盘炸了），
