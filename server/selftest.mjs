@@ -648,8 +648,11 @@ async function runContracts(base, pass) {
       if (!(x.px > 0)) { basisBad++; continue; }
       const sp = (fu.spot || {})[x.u];
       if (sp && x.basis != null && Math.abs(x.basis - (x.px - sp.p)) > 0.05) basisBad++;
+      /* 容差不能按 0.05 卡：bp 落盘只留 3 位，dte=3 时半位舍入 0.0005 会被
+         365/3 放大成 0.06。IH2611 就是这么被判红的（ann=-18.55，按 -0.152 回算
+         -18.49）。真正口径错了是几十个百分点，0.2 足够区分。 */
       if (sp && x.ann != null && x.bp != null && x.dte >= 3
-          && Math.abs(x.ann - x.bp * 365 / x.dte) > 0.05) annBad++;
+          && Math.abs(x.ann - x.bp * 365 / x.dte) > 0.2) annBad++;
       if (x.bp != null && Math.abs(x.bp) > 15) rangeBad++;
     }
     if (basisBad) bad('/api/fut 有 ' + basisBad + ' 行「基差点数 ≠ 期货 − 现货」，口径串了');
@@ -994,7 +997,19 @@ async function runContracts(base, pass) {
         && cv.today.every((v, i) => v === cv.med[i]);
       if (sameDay) bad('/api/senti 历史中位与今日曲线逐点相同（基准里含了今天）');
     } else {
-      bad('/api/senti 没返回当日曲线（senti_base 里没有这一天，或池子拿不到）');
+      /* 主接口不背曲线（几十个点 × 三个数组，盘中每次刷新都重算划不来），
+         前端单独打 /api/senti/curve。所以这里不能直接判红——去问那条独立接口，
+         它也没数据才是真故障。底稿从 11-17 起不再写「今天」，主接口的空曲线
+         是设计，不是缺数据。 */
+      const rc = await rawRequest(base, '/api/senti/curve', { cookie });
+      let okc = null;
+      try { const cj = JSON.parse(rc.body); okc = (cj && cj.ok && cj.curve) || null; } catch (e) {}
+      if (okc && Array.isArray(okc.today) && okc.today.length >= 2) {
+        ok('/api/senti/curve 独立可取：' + okc.today.length + ' 档 · 末点 '
+          + okc.today[okc.today.length - 1] + ' · 基准 ' + okc.n + ' 天 · 来源 ' + okc.src);
+      } else {
+        bad('/api/senti 主接口与 /api/senti/curve 都没有当日曲线（池子拿不到）');
+      }
     }
 
     /* 曲线那条链是单独的一个端点，慢（两次 push2ex，CF 出口实测 3.5 秒），
