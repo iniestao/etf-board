@@ -6060,42 +6060,66 @@ async function emJson(u, ms) {
   }));
 }
 
-/** 新浪批量期权快照。一批 100 个代码（再长 URL 会超），返回 Map<code, 行>。
+/** 新浪批量期权快照。返回 Map<code, 行>。
  *  新浪这一条是 GBK，而 Workers 的 TextDecoder 只有 utf-8——中文字节会解成替换字符，
  *  但价格/行权价/到期日全是 ASCII，按逗号切分的下标不受影响，名称本来也不用（用东财的）。
- *  字段位：1 最新价 5 成交量 7 行权价 10 IV 41 持仓量 45 购沽 46 到期日 47 剩余自然日 */
+ *  字段位：1 最新价 5 成交量 7 行权价 10 IV 41 持仓量 45 购沽 46 到期日 47 剩余自然日
+ *
+ *  批大小和节奏是实测调出来的，不是拍的。2026-11-18 盘中复现：
+ *  hq.sinajs.cn 对「短时间内的连续批量请求」回 403，判据既不是 URL 长度也不是
+ *  合约个数——同样 20 个，连发三次都 200，第四次开始 403，隔一会儿又恢复。
+ *  原来 BATCH=100、五批 Promise.all 并发，几乎每次都撞上；而只要有一批 403，
+ *  Promise.all 整组 reject，quotes 变成空 Map，整个接口退回东财老链路
+ *  （surce 变成 'em'、td 为空、只有昨收）。页面上一切正常，只是数据源悄悄换了。
+ *  所以：批降到 25、串行、批间让 120ms、403 退避重试两次；
+ *  单批最终失败只丢那一批合约，不连累其它批——一只 ETF 的链 40~60 个合约，
+ *  丢一批通常还配得出 ATM 窗口，比整组降级强得多。 */
 async function fetchSinaOpts(codes) {
   const out = new Map();
   if (!codes.length) return out;
-  const BATCH = 100;
-  const jobs = [];
-  for (let i = 0; i < codes.length; i += BATCH) jobs.push(codes.slice(i, i + BATCH));
-  await Promise.all(jobs.map(async (seg) => {
+  const nap = (ms) => new Promise((s) => setTimeout(s, ms));
+  const BATCH = 25;
+  for (let i = 0; i < codes.length; i += BATCH) {
+    const seg = codes.slice(i, i + BATCH);
     const u = 'https://hq.sinajs.cn/list=' + seg.map((c) => 'CON_OP_' + c).join(',');
-    const r = await fetch(u, {
-      headers: { 'User-Agent': UA, Referer: 'https://stock.finance.sina.com.cn/' },
-      signal: AbortSignal.timeout(9000),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const txt = await r.text();
-    for (const line of txt.split('\n')) {
-      const m = line.match(/hq_str_CON_OP_(\d+)="([^"]*)"/);
-      if (!m || !m[2]) continue;
-      const f = m[2].split(',');
-      const px = +f[1];
-      const k = +f[7];
-      const dte = +f[47];
-      if (!(px > 0) || !(k > 0) || !(dte >= 0)) continue;
-      out.set(m[1], {
-        px, k, dte,
-        side: f[45] === 'P' ? 'P' : 'C',
-        exp: f[46] || '',
-        vol: +f[5] || 0,
-        oi: +f[41] || 0,
-        iv: +f[10] || 0,
-      });
+    let txt = null;
+    for (let t = 0; t < 3; t++) {
+      try {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': UA, Referer: 'https://stock.finance.sina.com.cn/' },
+          signal: AbortSignal.timeout(9000),
+        });
+        // 403/456 是限流不是坏请求，退一步再试；其它非 2xx 直接当这批失败
+        if (r.status === 403 || r.status === 456) { await nap(400 * (t + 1)); continue; }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        txt = await r.text();
+        break;
+      } catch (e) {
+        if (t === 2) { txt = null; break; }
+        await nap(250 * (t + 1));
+      }
     }
-  }));
+    if (txt) {
+      for (const line of txt.split('\n')) {
+        const m = line.match(/hq_str_CON_OP_(\d+)="([^"]*)"/);
+        if (!m || !m[2]) continue;
+        const f = m[2].split(',');
+        const px = +f[1];
+        const k = +f[7];
+        const dte = +f[47];
+        if (!(px > 0) || !(k > 0) || !(dte >= 0)) continue;
+        out.set(m[1], {
+          px, k, dte,
+          side: f[45] === 'P' ? 'P' : 'C',
+          exp: f[46] || '',
+          vol: +f[5] || 0,
+          oi: +f[41] || 0,
+          iv: +f[10] || 0,
+        });
+      }
+    }
+    if (i + BATCH < codes.length) await nap(120);
+  }
   return out;
 }
 
@@ -6379,7 +6403,21 @@ async function serveFutOpt(url, env, ctx) {
   }
 
   // 新浪那边一个价都没拿到（整批 4xx/超时），退老链路；东财好歹给昨收
-  if (!quotes.size) return serveFutOptEm(url, env, ctx);
+  if (!quotes.size) {
+    const r2 = await serveFutOptEm(url, env, ctx);
+    /* 降级原因必须能被看见。原来 diag 跟着函数 return 一起丢了，页面只显示
+       src=em，既不知道是新浪 403、超时，还是合约清单本身没拿到——排查时全靠猜。
+       ?dbg=1 时把新浪这一侧的原始诊断并进去。 */
+    if (DBG) {
+      try {
+        const j = await r2.clone().json();
+        j.fallback = 'sina-quotes-empty';
+        j.diagSina = diag;
+        return json(j, ttl);
+      } catch (e) { /* 不是 json 就原样返回 */ }
+    }
+    return r2;
+  }
 
   if (!spot) partial.push('spot');
   const items = [];
