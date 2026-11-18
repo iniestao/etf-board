@@ -115,12 +115,27 @@ async function writeState(obj) {
   await fsp.writeFile(f, JSON.stringify(obj, null, 2));
 }
 
-/** 顶层小文件（几 MB 以内）：每次同步都刷，和 hist 那 1719 个分开走 */
+/** 顶层小文件（几 MB 以内）：每次同步都刷，和 hist 那 1719 个分开走
+ *
+ * 这张清单同时是「本地缺哪份就必须同步」的判据（见 syncData 里的 allTops）。
+ * 以前这里是逐份手加的：期指日档漏过一次、ETF 期权历史又漏过一次，每漏一次的
+ * 表现都一样——**沙箱版页面看着正常，只是某一块停在上次手动跑管线的那天**，
+ * 因为沙箱的 readAsset 读的就是本地 dist（env.BUCKET = fileBucket(dist)）。
+ *
+ * 2026-11-18 又发现漏了 sentiment 那两份：senti_hist.json 停在 11-13，
+ * 而 worker/src/senti_hist.js 已经到 11-17。页面走 readAsset 先读 json，
+ * 读到了就用它——于是内联那份新、运行时那份旧，谁也没报错。
+ */
+const TOP_FILES = [
+  'manifest.json', 'research.json', 'hist/events.json',
+  'sec_daily.json', 'mkt_hist.json',
+  'senti_hist.json', 'senti_base.json',
+  'fut_last.json', 'fut_daily.json', 'etfopt_hist.json',
+  'shares/last.json', 'shares/ix.json',
+];
+
 async function pullTops(cdn, dist) {
-  for (const f of ['manifest.json', 'research.json', 'hist/events.json',
-                   'sec_daily.json', 'mkt_hist.json',
-                   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json',
-                   'shares/last.json', 'shares/ix.json']) {
+  for (const f of TOP_FILES) {
     try {
       const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
       if (r.ok) {
@@ -214,23 +229,31 @@ export async function syncData(opts = {}) {
   const local = await readState();
   const histDir = path.join(dist, 'hist');
   const haveHist = fs.existsSync(histDir);
-  // 期指日档单独判一次存在性：它曾经不在下面那份清单里，沙箱就永远停在
-  // 部署那天的快照上。缺文件时即便 mark 相同也要走一遍，否则补不回来。
-  const haveFut = fs.existsSync(path.join(dist, 'fut_last.json'));
-  // ETF 期权历史同样单独判：它是后加的，先部署过沙箱的话本地就没有这份文件，
-  // 而当天 mark 又没变，不这么判就永远补不上。
-  const haveEh = fs.existsSync(path.join(dist, 'etfopt_hist.json'));
+  /* 顶层清单里任何一份本地没有，就必须走一遍——哪怕 mark 一模一样。
+     这条以前是手写的两个特判（fut_last、etfopt_hist），每次新加产物都要记得
+     再补一行，而「记得」正是这套东西最靠不住的地方：11-18 发现 senti_hist.json
+     从没被同步过，沙箱的情绪卡片停在 11-13，内联的源码却已经是 11-17。
+     现在统一从 TOP_FILES 推：往清单里加一份，存在性判断自动跟上。 */
+  const missingTops = TOP_FILES.filter((f) => !fs.existsSync(path.join(dist, f)));
 
   const codes = (man.items || []).map((x) => x.code).filter(Boolean);
   if (!codes.length) throw new Error('远端 manifest 里没有 items，无法确定要拉哪些文件');
 
   const [cdn, raw] = bases(repo, branch, man.pin);
 
-  if (!opts.force && haveHist && haveFut && haveEh && local
+  if (!opts.force && haveHist && !missingTops.length && local
       && (local.mark === man.mark || local.sha === man.mark)) {
-    log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），跳过');
+    /* mark 相同只说明「这一天没有新数据」，不等于「本地那几份顶层是对的」。
+       senti_hist.json 就曾经**存在**、内容却停在 4 天前，而 state 里的 mark 一直是
+       最新的——「已是最新，跳过」把这件事盖了整整四天：页面看着正常，只是情绪
+       卡片比行情少几天，没有任何地方会报错。
+       顶层 12 份一共几百 KB，无条件刷一遍最省心：判断写错一次就再也不会自愈，
+       而重复下载是幂等的。hist 那 45MB 仍然按 mark 跳过。 */
+    await pullTops(cdn, dist);
+    log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），只刷顶层文件');
     return { changed: false, mark: man.mark, skipped: 'up-to-date' };
   }
+  if (missingTops.length) log('本地缺 ' + missingTops.length + ' 份顶层文件，强制同步：' + missingTops.join(' '));
 
   /* 同一天重跑（手动触发、失败重试、cron 补跑）会拿到新 commit sha，但交易日没变。
      这时候把 1719 个 hist 再下一遍（45MB / 三分钟）纯属白费：hist 是「一天一根」，
@@ -253,7 +276,7 @@ export async function syncData(opts = {}) {
 
   const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
 
-  if (!opts.force && !opts.hist && haveHist && haveFut && haveEh && sameDay) {
+  if (!opts.force && !opts.hist && haveHist && !missingTops.length && sameDay) {
     await pullTops(cdn, dist);
     await pullShares(cdn, raw, dist, codes, conc, log).catch(() => 0);
     const files = (await fsp.readdir(histDir)).length;
