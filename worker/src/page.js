@@ -10607,18 +10607,7 @@ function renderFutHistEtf(box){
       + ' · p10 ' + fPct(p10, 2) + ' / 中位 ' + fPct(p50, 2) + ' / p90 ' + fPct(p90, 2);
   }
   box.innerHTML = futHistSvg(vals, dates, { p10: p10, p50: p50, p90: p90, cur: cur });
-
-  /* 只画真近月（当月合约）。历史上的当月合约一到期就从所有免费源消失，
-     那天宁可空着，也不拿隔季顶替——隔季贴水天然更深，跟股指期权近月不可比。 */
-  box.insertAdjacentHTML('beforeend', '<div class="futfoot">'
-    + '只画<b>当月合约</b>：和上面七个品种的「主力近月」同一口径，可以横向比。'
-    + '当月合约一到期就从所有免费源消失，所以只能从「今天仍在市」的合约里倒推，'
-    + '能还原的起点是 ' + dates[0]
-    + ((o.nm && o.nm[i0] != null) ? '（那天 ' + o.nm[i0] + ' 月合约刚好成为当月）' : '') + '。'
-    + '更早的日子没有当月合约的价格，空着而不是拿隔季顶上。'
-    + '</div>');
 }
-
 
 var FH_GEO = null;   // 当前这张图的几何与数据，hover 时按它反查下标
 
