@@ -51,8 +51,28 @@ async function cffexHasXml(d) {
 export async function probeTradingDay(nowUtc = new Date()) {
   // 北京时间「今天」，往后取不能往前推
   const bj = new Date(nowUtc.getTime() + 8 * 3600e3);
-  let d = new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate()));
+  const day0 = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate());
   const tried = [];
+
+  /* 从最近的工作日往前找，但别一天一天串着问：中金所那个 XML 一次要 5~10 秒，
+     串行找「今天没有 → 昨天有」就是白等一轮。先并行问最近 5 个工作日，
+     取其中最新的那个；5 天都空（长假）才继续往前串。 */
+  const cands = [];
+  for (let i = 0; cands.length < 5 && i < 20; i++) {
+    const d = new Date(day0 - i * 86400e3);
+    if (d.getUTCDay() === 0 || d.getUTCDay() === 6) continue;
+    cands.push(d);
+  }
+  let res = await Promise.all(cands.map((d) => cffexHasXml(d)));
+  for (let i = 0; i < cands.length; i++) {
+    tried.push(`${cands[i].toISOString().slice(0, 10)}=${res[i] === null ? '?' : res[i] ? '有' : '无'}`);
+  }
+  if (res.some((x) => x === null)) return { day: null, tried, unknown: true };
+  const hit = cands.find((d, i) => res[i]);
+  if (hit) return { day: hit.toISOString().slice(0, 10), tried, unknown: false };
+
+  // 连着 5 个工作日都没归档，只可能是长假——继续往前串着问，最多再看 10 天
+  let d = new Date(cands[cands.length - 1].getTime() - 86400e3);
   for (let i = 0; i < 10; i++) {
     if (d.getUTCDay() === 0 || d.getUTCDay() === 6) { d = new Date(d.getTime() - 86400e3); continue; }
     const got = await cffexHasXml(d);
@@ -74,14 +94,28 @@ function makeReader(dir) {
     };
   }
   return async (rel) => {
-    // raw.githubusercontent 边缘缓存 5 分钟，加个时间戳绕过——否则刚推上去的
-    // 那一版读回来还是上一版，「明明发了却说没发」。
-    const r = await fetch(`${RAW}/${rel}?t=${Date.now()}`, {
-      headers: { 'User-Agent': UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(25000),
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status} ${rel}`);
-    return r.json();
+    /* raw.githubusercontent 偶发连不上（实测同一批里 8 份文件，别的都 200，
+       只有 258KB 的 manifest 报 fetch failed，隔几秒再问又正常）。单次失败就
+       判「这份没数据」会让体检自己误报，所以重试两次；404 不重试——那是真的没有。 */
+    let last;
+    for (let i = 0; i < 3; i++) {
+      try {
+        // 加时间戳绕过 5 分钟边缘缓存——否则刚推上去的那一版读回来还是上一版，
+        // 「明明发了却说没发」。
+        const r = await fetch(`${RAW}/${rel}?t=${Date.now()}`, {
+          headers: { 'User-Agent': UA, Accept: 'application/json' },
+          signal: AbortSignal.timeout(25000),
+        });
+        if (r.status === 404) throw new Error(`HTTP 404 ${rel}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status} ${rel}`);
+        return await r.json();
+      } catch (e) {
+        last = e;
+        if (/HTTP 404/.test(e.message) || i === 2) break;
+        await new Promise((s) => setTimeout(s, 600 * (i + 1)));
+      }
+    }
+    throw last;
   };
 }
 
@@ -118,22 +152,32 @@ export async function collect({ dir = null, ref = null, nowUtc = new Date() } = 
   }
 
   const rows = [];
-  for (const it of ITEMS) {
-    let last = null, err = null, extra = null;
-    try {
-      const o = await read(it.file);
-      last = it.pick(o) || null;
-      if (it.key === 'mkt') extra = { up: (o.u || []).at(-1), down: (o.w || []).at(-1) };
-      if (it.key === 'senti') {
-        const i = (o.d || []).length - 1;
-        extra = { n: (o.d || []).length, zt: (o.zt || [])[i], touch: (o.touch || [])[i] };
+  /* 10 次回源，串行最坏要等 4 分钟（每次都有 3 次重试）。并发 3 够快，也不至于
+     让 raw.githubusercontent 觉得在扫站。 */
+  const queue = ITEMS.slice();
+  const lane = async () => {
+    while (queue.length) {
+      const it = queue.shift();
+      let last = null, err = null, extra = null;
+      try {
+        const o = await read(it.file);
+        last = it.pick(o) || null;
+        if (it.key === 'mkt') extra = { up: (o.u || []).at(-1), down: (o.w || []).at(-1) };
+        if (it.key === 'senti') {
+          const i = (o.d || []).length - 1;
+          extra = { n: (o.d || []).length, zt: (o.zt || [])[i], touch: (o.touch || [])[i] };
+        }
+        if (it.key === 'etfopt') extra = { n: (o.d || []).length };
+      } catch (e) {
+        err = e.message;
       }
-      if (it.key === 'etfopt') extra = { n: (o.d || []).length };
-    } catch (e) {
-      err = e.message;
+      rows.push({ ...it, pick: undefined, last, err, extra });
     }
-    rows.push({ ...it, pick: undefined, last, err, extra });
-  }
+  };
+  await Promise.all([lane(), lane(), lane()]);
+  // 并发跑完顺序是乱的，按清单原序排回来，输出才稳定（不然日志天天换顺序）
+  const rank = new Map(ITEMS.map((x, i) => [x.key, i]));
+  rows.sort((a, b) => rank.get(a.key) - rank.get(b.key));
 
   /* 一致性：两份情绪/结构表的日期必须逐项相同，否则盘中「今天」会跟历史的
    * 另一天对齐——那种错在页面上完全看不出来，数字还挺像回事。 */
