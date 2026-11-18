@@ -4,14 +4,20 @@
  *
  * 判定顺序（任一不成立就 need=false，让整条流水线别白跑 39 分钟）：
  *   1. 今天开市了吗 —— 问东财快照的时间戳，比查节假日表可靠
- *   2. data 分支的 manifest.last_trade_date 到最新交易日了吗
- *   3. data 分支的 shares/last.json 的 d 到同一天了吗（份额断一天补不回来）
+ *   2. 8 份产物是不是都到最新交易日了（含行情、期指、期权、情绪、板块、份额…）
+ *
+ * 第 2 步为什么不能只看 manifest：这条流水线真正缺过的从来不是 ETF 行情。
+ *   11-13 缺的是 ETF 期权近月（现货日线被东财整段挡掉）；
+ *   11-06 缺的是板块散点云（回算失败后静默沿用旧文件）。
+ * 只要 manifest 到了就不再重跑，等于把「补漏」这件事交给运气。
+ * 现在统一走 tools/check_fresh.mjs 的那张总表，缺任何一项都重跑一遍——
+ * 那几个回算脚本本来就是全量重算，跑一次顺带把漏掉的历史天一起补齐。
  */
 import { appendFileSync } from 'node:fs';
+import { collect } from './check_fresh.mjs';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-const RAW = 'https://raw.githubusercontent.com/iniestao/etf-board/data';
 const log = (m) => console.log(m);
 
 function bjNow() {
@@ -94,29 +100,22 @@ if (NOW_MIN < 15 * 60 + 10) {
   done(false, '还没收盘，等主批次');
 }
 
-// 2) 行情到最新了吗
-let manLast = null;
+// 2) 8 份产物都到最新了吗。基准用东财快照日期（已经确认今天开市且已收盘）。
+//    任何一项硬指标落后就重跑：回算脚本都是全量重算，一次能把漏掉的天一起补回。
+//    份额是软指标（沪市报表常 18:00 后才出、深市 T+1），它落后也重跑，
+//    因为份额断一天就再也补不回来，多跑一轮的代价远小于丢一天。
+let r;
 try {
-  const m = await get(RAW + '/manifest.json');
-  manLast = m.last_trade_date || (m.hist && m.hist.last) || null;
+  r = await collect({ ref: TODAY });
 } catch (e) {
-  done(true, `manifest 读不到（${e.message}），保守起见跑一轮`);
+  done(true, `时效体检跑不起来（${e.message}），保守起见跑一轮`);
 }
-if (!manLast || manLast < TODAY) {
-  done(true, `行情停在 ${manLast || '无'}，缺 ${TODAY}`);
+if (!r.ok || r.softBad.length) {
+  const bad = [...r.hardBad, ...r.softBad];
+  done(true, `产物落后：${bad.map((x) => `${x.name}=${x.last || '空'}`).join(' ')}（基准 ${TODAY}）`);
+}
+if (r.issues.length) {
+  done(true, `产物之间对不齐：${r.issues.join('；')}`);
 }
 
-// 3) 份额到同一天了吗
-let shLast = null;
-try {
-  const s = await get(RAW + '/shares/last.json');
-  shLast = s.d || null;
-} catch (e) {
-  // 份额读不到不算"缺"，但要在日志里说清楚：主批次可能还没发布份额
-  log(`份额 last.json 读不到（${e.message}）`);
-}
-if (!shLast || shLast < TODAY) {
-  done(true, `行情已到 ${manLast}，但份额停在 ${shLast || '无'}`);
-}
-
-done(false, `行情 ${manLast} / 份额 ${shLast} 都是 ${TODAY}，无需重跑`);
+done(false, `${r.rows.length} 份产物都追到 ${TODAY}，无需重跑`);

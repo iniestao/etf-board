@@ -225,6 +225,57 @@ console.log('\n[内联快照] worker.js 里的常量与 data 分支 json 是否�
   }
 }
 
+/* ---- 时效门禁的覆盖度 ----
+ * 缺数据这件事真正难的不是"发现"，是"发现得全"：
+ *   11-13 缺 ETF 期权、11-06 缺板块散点、还有几次情绪历史停在周五——
+ *   每一次都是"某一份产物落后，其余全齐"，于是任何单一检查都会说"没事"。
+ * 所以现在统一收到 tools/check_fresh.mjs 一张表里。这里锁住两件事：
+ *   ① 流水线往线上发布的每一份日更 json，都必须登记进那张表；
+ *   ② 兜底批次（probe）必须走那张表，不许退回"只看 manifest 到了没"。
+ * 一旦有人新增产物却忘了登记，或者把 probe 改回只看行情，这里当场红。
+ */
+console.log('\n[时效门禁] 每份日更产物都进了 check_fresh 的清单，probe 也走它');
+{
+  const wfPath = path.join(ROOT, '.github/workflows/update-data.yml');
+  const cfPath = path.join(ROOT, 'tools/check_fresh.mjs');
+  const pbPath = path.join(ROOT, 'tools/probe_fresh.mjs');
+  if (!fs.existsSync(cfPath) || !fs.existsSync(pbPath)) {
+    bad('tools/check_fresh.mjs 或 tools/probe_fresh.mjs 不见了，时效门禁就断了');
+  } else {
+    const cf = fs.readFileSync(cfPath, 'utf8');
+    const pb = fs.readFileSync(pbPath, 'utf8');
+    const listed = new Set([...cf.matchAll(/\bfile:\s*'([^']+)'/g)].map((x) => x[1]));
+
+    /* 从「发布到 data 分支」那步里取出真正会发到线上的 json 名单。
+       只认这一段（带 cp "dist/$f" 的循环），别把「取回上一版」那个循环也算进来。 */
+    let pub = [];
+    if (fs.existsSync(wfPath)) {
+      const wf = fs.readFileSync(wfPath, 'utf8');
+      const m = /for f in ([^\n;]+); do[\s\S]{0,200}?cp "dist\/\$f"/.exec(wf);
+      if (m) pub = m[1].trim().split(/\s+/).filter((x) => x.endsWith('.json'));
+    }
+    if (!pub.length) {
+      bad('读不出 workflow 的发布名单，这条断言失效了（发布列表的写法改了？）');
+    } else {
+      /* 这两份不进时效表，理由要写清楚，不然下一个人不知道该不该加 */
+      const SKIP = {
+        'fut_last.json': '与 fut_daily 同一次生成、同一天',
+        'research.json': '因子回测窗口（252 天），不是日更时效指标',
+      };
+      const missing = pub.filter((f) => !SKIP[f] && !listed.has(f));
+      missing.length
+        ? bad('这些产物会发布到线上，却没进 check_fresh 的清单：' + missing.join('、')
+            + '——它们落后时不会有任何人知道')
+        : ok('发布名单 ' + pub.length + ' 份，日更的 ' + (pub.length - Object.keys(SKIP).filter((k) => pub.includes(k)).length)
+            + ' 份全部在时效表里');
+    }
+
+    /from\s+'\.\/check_fresh\.mjs'/.test(pb) && /\bcollect\(/.test(pb)
+      ? ok('probe 走统一时效表判断要不要重跑（不是只看 manifest）')
+      : bad('probe 又退回单看行情了——manifest 到了就判"齐"，缺的偏偏是别的产物');
+  }
+}
+
 async function runContracts(base, pass) {
   console.log('\n[2/2] 接口契约（' + base + '）');
 
