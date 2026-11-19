@@ -224,20 +224,23 @@ async function one(secid, code, tag) {
   const spotK = await spotKline(secid, code);
   if (!spotK) { console.log('  ' + tag + ' 现货日线取不到（腾讯+东财都失败）'); return null; }
 
-  /* 只抓近 3 个到期月。
+  /* 只抓最近的 2 个到期月（当月 + 次月）。
    *
-   * 原来把在市合约全拉一遍：300ETF 有 124 个（含 2027 年的远月），而最后只用到
-   * `frontMonth(d)` 那一个月——其余 100 多个日线拉回来就扔，白占配额、白挨限流。
+   * 原来把在市合约全拉一遍：300ETF 124 档、科创50 178 档，而最终只用
+   * `frontMonth(d)` 那一个月，剩下的（12 月、次年 3 月、6 月）拉回来就扔。
    * 18 号那轮就是死在这上面：48/124 之后剩下 76 条怎么补都补不完。
-   * 一个月按行权价铺开大约 10~14 档 C/P，3 个月 ≈ 30 条，够覆盖「当月 + 次月 +
-   * 上月月末」，历史回溯窗口再长也越不过去。 */
+   *
+   * 实测按到期月拆（2026-11-19）：300ETF = 11月30 + 12月38 + 3月34 + 6月22；
+   * 只留 2 个月就砍掉一半请求。为什么不只留当月：11-26 是 11 月合约的最后
+   * 交易日，那天之后当月变成 12 月，只抓一个月会在换月那天断掉。
+   * 再多就没必要了——第 3 个月（次年 3 月）永远是「隔季」，`frontMonth` 直接否掉。 */
   const mthDte = new Map();
   for (const x of ch) {
     const v = mthDte.get(x.mth);
     if (v == null || x.dte < v) mthDte.set(x.mth, x.dte);
   }
   const keepMth = new Set([...mthDte.entries()]
-    .sort((a, b) => a[1] - b[1]).slice(0, 3).map((e) => e[0]));
+    .sort((a, b) => a[1] - b[1]).slice(0, 2).map((e) => e[0]));
   const nearCh = ch.filter((x) => keepMth.has(x.mth));
 
   const mkOf = new Map(nearCh.map((x) => [x.code, x.mk]));
