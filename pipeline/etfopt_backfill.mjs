@@ -241,7 +241,26 @@ async function one(secid, code, tag) {
   }
   const keepMth = new Set([...mthDte.entries()]
     .sort((a, b) => a[1] - b[1]).slice(0, 2).map((e) => e[0]));
-  const nearCh = ch.filter((x) => keepMth.has(x.mth));
+
+  /* 再按行权价砍一道：只留「近 20 个交易日里可能落在平值附近」的档位。
+   *
+   * 2026-11-19 那轮补 11-18 时印证了限流的粒度：510050、510300 拿到 18 号，
+   * 之后 7 只一条都抓不到——不是随机失败，是累计请求数过了阈值（前两只共约
+   * 166 条），后面全被拒。所以问题不是「重试不够」，是**总数太大**。
+   * 2 个月仍要 68 档/只，9 只 600 多条，必然撞墙。
+   *
+   * 实际用到的只有平值上下几档（atmWindow 最宽放到 12%）。按近 20 日现货
+   * 区间再放 4% 余量筛一遍，每只降到 20~30 档，9 只总量落在 200 出头。
+   * 筛完为空（数据异常）就退回整月，宁可慢也不能算出空结果。 */
+  const sDays = Object.keys(spotK).filter((d) => spotK[d] > 0).sort().slice(-20);
+  const sVals = sDays.map((d) => spotK[d]);
+  const kLo = Math.min(...sVals) * 0.96;
+  const kHi = Math.max(...sVals) * 1.04;
+  let nearCh = ch.filter((x) => keepMth.has(x.mth) && x.k >= kLo && x.k <= kHi);
+  if (!nearCh.length) {
+    console.log('    ' + tag + ' 平值窗口筛完为空，退回整月');
+    nearCh = ch.filter((x) => keepMth.has(x.mth));
+  }
 
   const mkOf = new Map(nearCh.map((x) => [x.code, x.mk]));
   const uniq = [...new Set(nearCh.map((x) => x.code))];
@@ -262,7 +281,9 @@ async function one(secid, code, tag) {
     }
     done += seg.length;
     if (done % 20 === 0) process.stdout.write('    ' + tag + ' ' + done + '/' + uniq.length + '\r');
-    await sleep(60);
+    /* 批间隔 60ms 时 3 并发等于每秒 50 个请求，东财那边连续拒了 7 只。
+       250ms 把速率压到每秒 12 个——慢 3 秒，换整只 ETF 的数据。 */
+    await sleep(250);
   }
   console.log('    ' + tag + ' 日线 ' + kls.size + '/' + uniq.length + '   档');
 
