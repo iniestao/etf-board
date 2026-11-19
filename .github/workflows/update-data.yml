@@ -61,6 +61,31 @@ jobs:
         with:
           node-version: '22'
 
+      # ---------- 0. ETF 期权历史（放在最前，见下） ----------
+      # 东财对同一 IP 不是随机丢包，是「跑一会儿就开始全拒」：2026-11-18、11-19
+      # 两轮都只成了 2~3 只，之后 6 只一条都抓不回来。它原来排在第 17 步，前面
+      # 的日线补齐、期指、份额已经把配额吃掉了。挪到第一个数据步骤，配额是新的。
+      - name: 取回上一版 ETF 期权历史
+        continue-on-error: true
+        run: |
+          mkdir -p dist
+          if git fetch -q --depth=1 origin data 2>/dev/null \
+             && git show FETCH_HEAD:etfopt_hist.json > dist/etfopt_hist.json 2>/dev/null \
+             && [ -s dist/etfopt_hist.json ]; then
+            echo "上一版 etfopt_hist.json $(wc -c < dist/etfopt_hist.json) 字节"
+          else
+            # 取不到就别跑。合并规则靠这份老值保住「已到期合约」贡献的那几天，
+            # 从空白重建等于把它们删掉——宁可今天缺一格，不能越跑越少。
+            rm -f dist/etfopt_hist.json
+            echo "SKIP_ETFOPT=1" >> "$GITHUB_ENV"
+            echo "::warning::上一版 etfopt_hist.json 取不到，本轮跳过期权历史"
+          fi
+
+      - name: 重建 ETF 期权历史
+        if: env.SKIP_ETFOPT != '1'
+        continue-on-error: true
+        run: node pipeline/etfopt_backfill.mjs --only-missing
+
       - name: 拉取日线（1717 只，约 9 分钟）
         working-directory: data
         run: node import_etf.mjs --out etf.db --delay 60
@@ -237,7 +262,7 @@ jobs:
         continue-on-error: true
         run: |
           if git fetch -q --depth=1 origin data 2>/dev/null; then
-            for f in fut_daily.json fut_last.json etfopt_hist.json; do
+            for f in fut_daily.json fut_last.json; do
               if git show FETCH_HEAD:$f > /tmp/$f 2>/dev/null; then
                 mv /tmp/$f dist/$f
                 echo "取回 $f（$(wc -c < dist/$f) 字节）"
@@ -262,10 +287,6 @@ jobs:
       # 「按日期取历史」，而是「用今天仍在市的合约倒推」——上市早的合约自己活得很久。
       # 上面那步已经把上一版取回来了，脚本会做合并：老日期用老值，新日期才写新的。
       # 不合并的话，11 月合约到期消失后它贡献的那 28 天会被削掉，越跑越少。
-      - name: 重建 ETF 期权历史
-        continue-on-error: true
-        run: node pipeline/etfopt_backfill.mjs
-
       - name: 期指日档校验
         run: |
           python3 - <<'PY'

@@ -390,11 +390,41 @@ const CLOSED = (function () {
   return dow !== 0 && dow !== 6 && (t.getUTCHours() * 100 + t.getUTCMinutes()) >= 1505;
 })();
 
+/* 只补缺的：最近那个交易日已经有值的品种直接跳过。
+ *
+ * 东财对同一 IP 是「跑到某个点开始全拒」，不是随机丢包（2026-11-19 两轮：
+ * 一轮前 2 只成功、一轮前 3 只成功，之后 6 只一条都抓不到）。所以第二轮不能
+ * 把已经拿到的再抓一遍——那正好把配额烧在不需要的地方，剩下的照样轮不到。 */
+const ONLY_MISSING = process.argv.includes('--only-missing');
+
 async function main() {
   console.log('ETF 期权历史重建  today=' + TODAY
-    + '  预算 ' + Math.round(BUDGET_MS / 1000) + 's');
+    + '  预算 ' + Math.round(BUDGET_MS / 1000) + 's'
+    + (ONLY_MISSING ? '  只补缺的' : ''));
+
+  const raw = (() => { try { return JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch (e) { return null; } })();
+  const old = raw && raw.v === 2 ? raw : null;
+  if (raw && !old) console.log('  旧文件口径是隔季（v≠2），整份丢弃，按真近月重新开始');
+  const oldDays = (old && old.d) || [];
+  const lastOld = oldDays[oldDays.length - 1];
+
+  /* 判「要补的那一格有没有值」。目标日分两种：
+   *   收盘后 → 今天（正常跑的方式）
+   *   盘中/盘前 → 老文件最后一天（那是手动补昨天，比如 11-19 早上补 11-18）
+   * 只写「最后一天」会在收盘后永远跳过今天，只写「今天」在补昨天时永远不跳过。 */
+  const targetDay = CLOSED ? TODAY : (lastOld || null);
+  const iT = targetDay ? oldDays.indexOf(targetDay) : -1;
+  const already = new Set();
+  if (ONLY_MISSING && old && iT >= 0) {
+    for (const [code, o] of Object.entries(old.s || {})) {
+      if ((o.nb || [])[iT] != null) already.add(code);
+    }
+    console.log('  ' + targetDay + ' 已有 ' + already.size + ' 只，跳过它们');
+  }
+
   const res = {};
   for (const [secid, code, tag] of LIST) {
+    if (already.has(code)) { console.log('  ' + tag + ' ' + targetDay + ' 已有值，跳过'); continue; }
     if (overBudget()) {
       console.log('  ' + tag + ' 起（' + code + '）：时间预算已用完，剩余品种本轮跳过');
       break;
@@ -420,14 +450,11 @@ async function main() {
    * 万一老值是错的，加 --recalc 可强制用新值重算。
    *
    * v:2 —— 2026-11-10 晚改过口径（隔季 → 真近月），旧文件里的 nb/na 装的其实是
-   * 远月，不能混进来当老值。读到没有 v:2 的旧文件整份丢弃，从现在重新攒。 */
-  const raw = (() => { try { return JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch (e) { return null; } })();
-  const old = raw && raw.v === 2 ? raw : null;
-  if (raw && !old) console.log('  旧文件口径是隔季（v≠2），整份丢弃，按真近月重新开始');
+   * 远月，不能混进来当老值。读到没有 v:2 的旧文件整份丢弃，从现在重新攒。
+   * （raw / old / oldDays 在 main 开头读过了，这里直接用。） */
   const recalc = process.argv.includes('--recalc');
 
   const newDays = [...new Set(Object.values(res).flatMap((r) => r.map((x) => x.d)))];
-  const oldDays = (old && old.d) || [];
   const allD = [...new Set([...oldDays, ...newDays])].sort();
   const idx = new Map(allD.map((d, i) => [d, i]));
 
