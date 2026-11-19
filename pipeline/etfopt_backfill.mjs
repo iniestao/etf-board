@@ -51,16 +51,30 @@ const LIST = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* 重试 5 次、退避带随机：东财在并发稍高时会直接断连接（undici 报 fetch failed），
-   而这一处失败是会静默的——外层 catch 一吞，那天的点就没了。等 20 秒换 5 次，
-   比事后发现日期轴缺一格便宜得多。 */
-async function jget(url, tries = 5) {
+/* ---------------- 时间预算 ----------------
+ * 2026-11-18 那一轮死在「重建 ETF 期权历史」上：东财对 300ETF 的 124 个合约
+ * 集体超时（只回来 48 条），脚本按「失败就一条条补」往下走，76 条单线程 × 每条
+ * 最多 5 次 × 20 秒超时，两轮下来 28 分钟没出过一行日志，最后撞上 job 的 60 分钟
+ * 上限被取消——后面的「发布到 data 分支」全是 skipped，11-18 一整天数据全丢。
+ *
+ * 教训不是「重试要更多」，而是这个脚本没有给自己设上限。它只是个辅助产物，
+ * 拖死整轮等于用一份期权历史换掉行情、期指、情绪、板块、份额五份。
+ * 现在：整脚本 8 分钟内必须收尾，到点就把已经拿到的写出去（老值照旧保留），
+ * 剩下的品种明天再来——合并规则本来就是每天只加不删，缺一轮不会变少。
+ */
+const BUDGET_MS = Number(process.env.ETFOPT_BUDGET_MS || 8 * 60e3);
+const T0 = Date.now();
+const overBudget = () => Date.now() - T0 > BUDGET_MS;
+
+/* 重试 3 次、10 秒超时。原来 5 次 × 20 秒：一次限流要花 100 秒才认输，
+   而 100 个合约的失败叠起来就是半小时——重试次数买不到数据，只买到等待。 */
+async function jget(url, tries = 3) {
   let last;
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(url, {
         headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(10000),
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return await r.json();
@@ -210,14 +224,39 @@ async function one(secid, code, tag) {
   const spotK = await spotKline(secid, code);
   if (!spotK) { console.log('  ' + tag + ' 现货日线取不到（腾讯+东财都失败）'); return null; }
 
-  const mkOf = new Map(ch.map((x) => [x.code, x.mk]));
-  const uniq = [...new Set(ch.map((x) => x.code))];
+  /* 只抓近 3 个到期月。
+   *
+   * 原来把在市合约全拉一遍：300ETF 有 124 个（含 2027 年的远月），而最后只用到
+   * `frontMonth(d)` 那一个月——其余 100 多个日线拉回来就扔，白占配额、白挨限流。
+   * 18 号那轮就是死在这上面：48/124 之后剩下 76 条怎么补都补不完。
+   * 一个月按行权价铺开大约 10~14 档 C/P，3 个月 ≈ 30 条，够覆盖「当月 + 次月 +
+   * 上月月末」，历史回溯窗口再长也越不过去。 */
+  const mthDte = new Map();
+  for (const x of ch) {
+    const v = mthDte.get(x.mth);
+    if (v == null || x.dte < v) mthDte.set(x.mth, x.dte);
+  }
+  const keepMth = new Set([...mthDte.entries()]
+    .sort((a, b) => a[1] - b[1]).slice(0, 3).map((e) => e[0]));
+  const nearCh = ch.filter((x) => keepMth.has(x.mth));
+
+  const mkOf = new Map(nearCh.map((x) => [x.code, x.mk]));
+  const uniq = [...new Set(nearCh.map((x) => x.code))];
   const kls = new Map();
-  let done = 0;
+  let done = 0, streak = 0;
   for (let i = 0; i < uniq.length; i += CONC) {
+    if (overBudget()) { console.log('    ' + tag + ' 时间预算到了，停在这里'); break; }
     const seg = uniq.slice(i, i + CONC);
     const res = await Promise.all(seg.map((c) => kline(mkOf.get(c) + '.' + c).catch(() => null)));
-    seg.forEach((c, k) => { if (res[k]) kls.set(c, res[k]); });
+    seg.forEach((c, k) => {
+      if (res[k]) { kls.set(c, res[k]); streak = 0; } else streak++;
+    });
+    /* 连着 10 条一条都没回来，就不是「偶发失败」了，是这个源在限流/断连。
+       继续往下打只会把预算烧在同一处——2026-11-18 的 28 分钟无声等待就是这么来的。 */
+    if (streak >= 10) {
+      console.log('    ' + tag + ' 连续 10 条抓不到，判定被限流，停止剩余合约');
+      break;
+    }
     done += seg.length;
     if (done % 20 === 0) process.stdout.write('    ' + tag + ' ' + done + '/' + uniq.length + '\r');
     await sleep(60);
@@ -228,19 +267,22 @@ async function one(secid, code, tag) {
      一条日线缺了，那个到期月在那几天就配不成 C/P，整段日期直接消失——2026-11-13
      就是这样丢的：文件里日期轴有 13 号，9 只里 8 只那天的值是 null。不是源上没有
      数据，是这一轮抓取被限流（116 条只回来 61 条），而失败被 .catch(()=>null) 吞了。
-     现在按原并发跑一遍，剩下的单线程再来两轮：慢一分钟，好过留一个静默的空档。 */
+     现在补一轮、3 条并发、受预算约束：慢一分钟好过留一个静默空档，但不能慢到
+     把整条流水线拖死——这两件事的优先级不一样。 */
   for (let pass = 1; pass <= 2; pass++) {
     const miss = uniq.filter((c) => !kls.has(c));
-    if (!miss.length) break;
+    if (!miss.length || overBudget()) break;
     console.log('    ' + tag + ' 补抓第 ' + pass + ' 轮：' + miss.length + ' 条');
-    for (const c of miss) {
-      const s = await kline(mkOf.get(c) + '.' + c).catch(() => null);
-      if (s) kls.set(c, s);
+    for (let i = 0; i < miss.length; i += CONC) {
+      if (overBudget()) { console.log('    ' + tag + ' 补抓超预算，先收尾'); break; }
+      const seg = miss.slice(i, i + CONC);
+      const res = await Promise.all(seg.map((c) => kline(mkOf.get(c) + '.' + c).catch(() => null)));
+      seg.forEach((c, k) => { if (res[k]) kls.set(c, res[k]); });
       await sleep(150);
     }
   }
   if (kls.size < uniq.length) {
-    console.log('    ' + tag + ' 仍有 ' + (uniq.length - kls.size) + ' 条日线没抓到（两轮补抓后）');
+    console.log('    ' + tag + ' 仍有 ' + (uniq.length - kls.size) + ' 条日线没抓到（补抓后）');
   }
 
   /* 按「到期月 + 行权价」配对 C/P，再把每个合约的日线铺到日期轴上 */
@@ -325,9 +367,14 @@ const CLOSED = (function () {
 })();
 
 async function main() {
-  console.log('ETF 期权历史重建  today=' + TODAY);
+  console.log('ETF 期权历史重建  today=' + TODAY
+    + '  预算 ' + Math.round(BUDGET_MS / 1000) + 's');
   const res = {};
   for (const [secid, code, tag] of LIST) {
+    if (overBudget()) {
+      console.log('  ' + tag + ' 起（' + code + '）：时间预算已用完，剩余品种本轮跳过');
+      break;
+    }
     console.log('  ' + tag + ' (' + code + ')');
     try {
       const rows = await one(secid, code, tag);
