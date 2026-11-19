@@ -93,29 +93,38 @@ log(`北京 ${TODAY} ${String(Math.floor(NOW_MIN / 60)).padStart(2, '0')}:${Stri
 if (!stampDay) {
   done(true, '两个源都没给出日期，保守起见跑一轮');
 }
-if (stampDay !== TODAY) {
-  done(false, `今天没开市（快照停在 ${stampDay}），非交易日不跑`);
-}
-if (NOW_MIN < 15 * 60 + 10) {
-  done(false, '还没收盘，等主批次');
-}
 
-// 2) 8 份产物都到最新了吗。基准用东财快照日期（已经确认今天开市且已收盘）。
+/* 目标日是「快照里最新那个交易日」，不是日历上的今天。
+ *
+ * 原来这里写的是 `stampDay !== TODAY → 今天没开市，不跑`。在 16:35 / 21:00 看着
+ * 没问题，但兜底批次被 GitHub 排队拖到凌晨才起跑时（2026-11-18 那轮 04:56 才开），
+ * 「今天」是 11-19，而 19 号还没开盘，快照当然停在 11-18 —— 于是每一次凌晨兜底
+ * 都被判成「非交易日」，第 2 步（产物齐不齐）根本没机会执行。11-18 缺一整天、
+ * 11-18 20:56 那轮 14 秒就 success，就是这么来的。
+ *
+ * 真正的判断是：最近这个已收盘的交易日，产物跟上没有。周末靠这一条自然免疫
+ * （快照=周五、产物已齐 → 不跑），不需要单独查节假日。 */
+if (stampDay === TODAY && NOW_MIN < 15 * 60 + 10) {
+  done(false, '今天还没收盘，等主批次');
+}
+const TARGET = stampDay;
+
+// 2) 8 份产物都到最新了吗。基准用快照日期（已经确认它已收盘）。
 //    任何一项硬指标落后就重跑：回算脚本都是全量重算，一次能把漏掉的天一起补回。
 //    份额是软指标（沪市报表常 18:00 后才出、深市 T+1），它落后也重跑，
 //    因为份额断一天就再也补不回来，多跑一轮的代价远小于丢一天。
 let r;
 try {
-  r = await collect({ ref: TODAY });
+  r = await collect({ ref: TARGET });
 } catch (e) {
   done(true, `时效体检跑不起来（${e.message}），保守起见跑一轮`);
 }
 if (!r.ok || r.softBad.length) {
   const bad = [...r.hardBad, ...r.softBad];
-  done(true, `产物落后：${bad.map((x) => `${x.name}=${x.last || '空'}`).join(' ')}（基准 ${TODAY}）`);
+  done(true, `产物落后：${bad.map((x) => `${x.name}=${x.last || '空'}`).join(' ')}（基准 ${TARGET}）`);
 }
 if (r.issues.length) {
   done(true, `产物之间对不齐：${r.issues.join('；')}`);
 }
 
-done(false, `${r.rows.length} 份产物都追到 ${TODAY}，无需重跑`);
+done(false, `${r.rows.length} 份产物都追到 ${TARGET}，无需重跑`);
