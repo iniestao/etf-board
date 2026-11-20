@@ -273,6 +273,15 @@ console.log('\n[时效门禁] 每份日更产物都进了 check_fresh 的清单�
     /from\s+'\.\/check_fresh\.mjs'/.test(pb) && /\bcollect\(/.test(pb)
       ? ok('probe 走统一时效表判断要不要重跑（不是只看 manifest）')
       : bad('probe 又退回单看行情了——manifest 到了就判"齐"，缺的偏偏是别的产物');
+
+    /* data 分支每次 force push 重建，所以「某个产物这轮没生成 → 跳过不发布」
+       实际等于把它从线上删掉。2026-11-20 就这么丢过 senti_hist.json 和
+       mkt_hist.json（新浪清单返回 0 只，两份都没生成），页面空白 40 分钟。
+       锁住"缺了就先用上一版顶上"这一段。 */
+    const wfTxt = fs.existsSync(wfPath) ? fs.readFileSync(wfPath, 'utf8') : '';
+    /git show "\$PREV:\$f"/.test(wfTxt) && /data:refs\/remotes\/origin\/data/.test(wfTxt)
+      ? ok('发布缺产物时先从上一版 data 取回，不会把它从线上删掉')
+      : bad('发布又变回"缺了就跳过"——这个分支是 force push 重建的，跳过等于删除');
   }
 }
 

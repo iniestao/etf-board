@@ -167,7 +167,15 @@ export async function collect({ dir = null, ref = null, nowUtc = new Date() } = 
           const i = (o.d || []).length - 1;
           extra = { n: (o.d || []).length, zt: (o.zt || [])[i], touch: (o.touch || [])[i] };
         }
-        if (it.key === 'etfopt') extra = { n: (o.d || []).length };
+        if (it.key === 'etfopt') {
+          /* 只看日期轴末端会漏东西：11-19 那轮日期轴到了 19 号，9 只里却有 3 只
+             是 null（东财按 IP 限流，抓到第 6 只开始全拒）。体检显示「最新 16 天」
+             但那条曲线实际上只有 6 只是新的。这里把缺的只数一起报出来。 */
+          const i = (o.d || []).length - 1;
+          const miss = Object.entries(o.s || {})
+            .filter(([, v]) => (v.nb || [])[i] == null).map(([c]) => c);
+          extra = { n: (o.d || []).length, miss };
+        }
       } catch (e) {
         err = e.message;
       }
@@ -211,7 +219,9 @@ function fmt(rows, refDay) {
     const ex = r.extra
       ? '  ' + (r.key === 'mkt' ? `涨${r.extra.up}/跌${r.extra.down}`
         : r.key === 'senti' ? `涨停${r.extra.zt}/曾触${r.extra.touch}`
-          : r.key === 'etfopt' ? `${r.extra.n}天` : '')
+          : r.key === 'etfopt' ? `${r.extra.n}天`
+            + (r.extra.miss && r.extra.miss.length
+              ? `，缺 ${r.extra.miss.length} 只（${r.extra.miss.join(' ')}）` : '') : '')
       : '';
     lines.push(`  ${st}${r.name.padEnd(w)}${String(r.last || '—').padEnd(12)}`
       + `${gap === null ? '' : gap > 0 ? `落后 ${gap} 天` : '最新'}${ex}`
