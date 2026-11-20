@@ -614,7 +614,25 @@ async function runContracts(base, pass) {
     const sox = (on.us || {}).ussox;
     if (sox && sox.p > 0 && isFinite(sox.chg)) {
       ok('/api/overnight 费城半导体 ' + sox.p.toFixed(2) + ' · ' + sox.chg.toFixed(2) + '%');
-    } else bad('/api/overnight 缺费城半导体（东财 251.SOX 没取到）');
+    } else {
+      /* 失败得先分清是「东财此刻不可达」还是「代码没接上」。沙箱出口撞东财限流
+         很常见，那时候这条会天天红，红久了就没人看了——而它本来是用来抓
+         「跨厂商补的那一格悄悄丢了」的。 */
+      let alive = false;
+      for (const host of ['push2delay.eastmoney.com', 'push2.eastmoney.com']) {
+        try {
+          const u = 'https://' + host + '/api/qt/stock/get?fltt=2&invt=2&secid=251.SOX&fields=f43,f58,f170';
+          const rr = await fetch(u, {
+            headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://quote.eastmoney.com/' },
+            signal: AbortSignal.timeout(8000),
+          });
+          const tt = await rr.json().catch(() => null);
+          if (tt && tt.data && tt.data.f43 > 0) { alive = true; break; }
+        } catch { /* 换下一个站点 */ }
+      }
+      if (alive) bad('/api/overnight 缺费城半导体：东财此刻有数据，是接口没取到');
+      else ok('/api/overnight 费城半导体的源此刻不可达（沙箱出口撞限流，跳过判定）');
+    }
     if (nFut === 0) bad('/api/overnight 期货全空（东财+新浪两条都挂了，只影响期货行不影响主数据）');
     /* 亚太 6 只里只有 KOSPI 是单源：腾讯对新浪那套外盘代码一律 pv_none_match，
        新浪 int_kospi 是空壳，能在东财之外给韩国指数报价的源没找到。所以判据拆开：
