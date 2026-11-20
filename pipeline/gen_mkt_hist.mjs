@@ -76,9 +76,9 @@ async function sinaList() {
     try {
       const r = await fetch(`${SINA_LIST}?page=${p}&num=100&sort=symbol&asc=1&node=hs_a`,
         { headers: { ...UA, Referer: 'https://finance.sina.com.cn/' }, signal: AbortSignal.timeout(12000) });
-      if (!r.ok) break;
+      if (!r.ok) { console.log(`  新浪清单第 ${p} 页 HTTP ${r.status}，停止翻页`); break; }
       arr = JSON.parse(await r.text());
-    } catch (e) { break; }
+    } catch (e) { console.log(`  新浪清单第 ${p} 页失败：${e.message}`); break; }
     if (!Array.isArray(arr) || !arr.length) break;
     for (const x of arr) {
       const s = String(x.symbol || '');
@@ -87,6 +87,21 @@ async function sinaList() {
       seen.add(s);
       out.push(s);
     }
+  }
+  return out;
+}
+
+/* 新浪清单被挡时的兜底：行业映射表本身就是一张全 A 名单（5000+ 只带名称），
+   只是新股要等映射刷新才进表——比整天不出数强。
+   2026-11-20 那轮新浪返回 0 只，gen_mkt_hist 和 gen_senti_base 一起抛错，
+   两份文件没生成，发布时又被当成"这轮不发布"，直接从 data 分支上消失了。 */
+function mapList() {
+  const f = JSON.parse(readFileSync(IND_MAP, 'utf8'));
+  const out = [];
+  for (const code of Object.keys(f.items || {})) {
+    const c = code[0];
+    if (c !== '6' && c !== '0' && c !== '3') continue;   // 剔北交所、B 股
+    out.push((c === '6' ? 'sh' : 'sz') + code);
   }
   return out;
 }
@@ -118,8 +133,14 @@ async function txKline(sym, n) {
 }
 
 console.log('拉全 A 清单…');
-const list = await sinaList();
-if (list.length < 4000) throw new Error(`新浪清单只有 ${list.length} 只，上游不正常`);
+let list = await sinaList();
+if (list.length < 4000) {
+  const alt = mapList();
+  console.log(`  新浪只给了 ${list.length} 只，改用行业映射表的 ${alt.length} 只兜底`
+    + '（新股可能晚几天才进表，其余口径不变）');
+  if (alt.length > list.length) list = alt;
+}
+if (list.length < 4000) throw new Error(`清单只有 ${list.length} 只，新浪和映射表都不正常`);
 const noMap = list.filter((s) => !indOf(s)).length;
 console.log(`  ${list.length} 只（hs_a，已剔北交所）· 行业表 ${mapAge.toFixed(1)} 天前`
   + ` · ${noMap} 只无行业归属`);

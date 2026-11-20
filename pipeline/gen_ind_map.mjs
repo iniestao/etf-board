@@ -47,9 +47,9 @@ async function sinaList() {
     try {
       const r = await fetch(`${SINA_LIST}?page=${p}&num=100&sort=symbol&asc=1&node=hs_a`,
         { headers: UA_SINA, signal: AbortSignal.timeout(12000) });
-      if (!r.ok) break;
+      if (!r.ok) { console.log(`  新浪清单第 ${p} 页 HTTP ${r.status}，停止翻页`); break; }
       arr = JSON.parse(await r.text());
-    } catch (e) { break; }
+    } catch (e) { console.log(`  新浪清单第 ${p} 页失败：${e.message}`); break; }
     if (!Array.isArray(arr) || !arr.length) break;
     for (const x of arr) {
       const s = String(x.symbol || '');
