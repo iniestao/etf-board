@@ -5233,14 +5233,19 @@ async function serveResearch(env) {
 /* 构建指纹：部署流水线拿它证明线上跑的就是这次构建。
  *
  * 两条来源，因为线上那份代码不是 dist/worker.js：
- *   env.BUILD  wrangler.toml 的 main 是 src/index.js，wrangler 自己 esbuild 打包，
- *              dist 只给人手动粘贴用。所以由部署命令 `--var BUILD:<sha>` 注进来，
- *              这条是线上唯一可靠的来源。
- *   INLINE_BUILD  build.mjs 拼单文件时替成「时间 + sha」，给粘贴部署兜底；
- *              直接跑 src（沙箱版）时它是占位符，一眼看出不是构建产物。
+ *   INLINE_BUILD  部署前由 CI 直接 sed 进源码（也由 build.mjs 换成「时间 + sha」
+ *                 给粘贴部署用）。写进代码里的东西，Dashboard 上的旧变量盖不住。
+ *   env.BUILD     部署命令 `--var BUILD:<sha>` 注进来，给不经过 CI 的部署兜底。
+ *
+ * 为什么改成代码优先：2026-11-20 那次 `--var BUILD:a75a339` 命令行确认收到了
+ * （wrangler 打印 `- BUILD: "(hidden)"`），版本也挂到 100% 了，但 /api/status
+ * 返回的还是上一版的 sha。同名的 var 在 Cloudflare 上被更早设置过之后就再也
+ * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
+ * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
 const INLINE_BUILD = '__BUILD_V__';
 function buildOf(env) {
+  if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
   return (v && String(v)) || INLINE_BUILD;
 }

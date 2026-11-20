@@ -58,6 +58,29 @@ jobs:
           fi
           echo "两个 secret 都在。"
 
+      # 指纹写进源码。2026-11-20 实测：`--var BUILD:<sha>` 命令行确实收到了
+      # （wrangler 打印 `- BUILD: "(hidden)"`）、版本次日也 100% 挂上了，但
+      # /api/status 返回的还是上一版的 sha——同名配置项一旦在 Cloudflare 上
+      # 被设过（成了 secret），之后传什么都覆盖不动，而且是静默的：不报错、
+      # 不告警，只有端到端去打那一发才看得出来。
+      # 写进源码就没这个问题：代码变了，跑的一定是新代码。
+      - name: 注入构建指纹
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+          sha = os.environ['GH_SHA']
+          p = pathlib.Path('worker/src/index.js')
+          s = p.read_text(encoding='utf-8')
+          s2, n = re.subn(r"^const INLINE_BUILD = .*$",
+                          "const INLINE_BUILD = '%s';" % sha, s, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit('INLINE_BUILD 占位符没找到，不能默默部署一份没有指纹的代码')
+          p.write_text(s2, encoding='utf-8')
+          print('INLINE_BUILD =', sha)
+          PY
+
       # 构建有三件事：把 page.js 的占位符换成实际 JSON、产出可手动粘贴的单文件、
       # 以及检查占位符有没有被误删（删了页面会白屏，但不会报错，最难查）。
       - name: 构建并校验
@@ -67,10 +90,8 @@ jobs:
           node --check dist/worker.js
           ls -l dist/worker.js
 
-      # --var BUILD 是「线上到底跑哪一版」的唯一可靠来源：
-      # wrangler.toml 的 main 指向 src/index.js，wrangler 自己用 esbuild 打包，
-      # dist/worker.js 只服务「手动粘贴部署」那条路，不会被上传。所以构建指纹
-      # 必须从部署参数注进去，不能指望 build.mjs 替换出来的那份。
+      # --var BUILD 保留但不再是唯一来源：index.js 的 buildOf 优先读代码里
+      # 那份，env.BUILD 只在没经过 CI 的部署里兜底。
       - name: 部署到 Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
@@ -124,23 +145,25 @@ jobs:
           [ "$PCT" = "100" ] || fail "最新部署没到 100%（max=${PCT}）：灰度没切完，线上还是旧代码"
 
           echo "== 2/2 线上构建指纹 =="
-          ST=""
+          SHA7="${GH_SHA:0:7}"
+          ST=""; B=""
+          # 拿到 ≠ 拿对：workers.dev 切流量后边缘节点有几百毫秒到一两秒的收敛期，
+          # 第一次打到旧节点会看到上一版。所以按「值对不对」重试，而不是按「通不通」。
           for i in 1 2 3 4; do
             ST=$(curl -sS --max-time 15 "$SITE/api/status" 2>/dev/null || true)
-            [ -n "$ST" ] && break
-            echo "  第 ${i} 次没拿到，等 6 秒重试"
-            sleep 6
+            B=$(echo "$ST" | jq -r '.build // empty' 2>/dev/null || true)
+            echo "第 ${i} 次：线上 build = ${B:-（空）}    本次 commit = $SHA7"
+            case "$B" in
+              *"$SHA7"*) break ;;
+            esac
+            [ "$i" -lt 4 ] && sleep 6
           done
           [ -n "$ST" ] || fail "线上 /api/status 拿不到：workers.dev 挂了，或路由没开"
-          echo "$ST" | head -c 400; echo
-          B=$(echo "$ST" | jq -r '.build // empty')
-          SHA7="${GH_SHA:0:7}"
-          echo "线上 build = ${B:-（空）}    本次 commit = $SHA7"
           [ -n "$B" ] || fail "线上 /api/status 没有 build 字段——跑的还是没指纹的旧代码"
           case "$B" in
             *"$SHA7"*) echo "✓ 线上跑的就是本次构建" ;;
-            *__BUILD_V__*) fail "线上 build 还是占位符：deploy 的 --var BUILD 没生效" ;;
-            *) fail "线上不是本次代码：build=$B，期望包含 $SHA7" ;;
+            *__BUILD_V__*) fail "线上 build 还是占位符：注入指纹那一步没生效" ;;
+            *) fail "线上不是本次代码：build=$B，期望包含 $SHA7（命令行收到 --var、版本也 100% 了、值却没变 = 配置层旧值盖住了代码，见 buildOf 注释）" ;;
           esac
 
       # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
