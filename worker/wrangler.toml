@@ -20,6 +20,11 @@ compatibility_date = "2024-11-01"
 
 [vars]
 HIST_BASE = "https://raw.githubusercontent.com/iniestao/etf-board/data"
+# 构建指纹的兜底值。部署命令会带 --var BUILD:<commit sha> 覆盖它，
+# 所以线上正常应该是 sha；看到 "dev" 就说明 --var 没进去（部署流水线会判红）。
+# 留这个默认值而不是留空：wrangler 的 --var 是逐个合并的，配置里先有一个键，
+# 覆盖失败时至少能读出「没注入」，而不是整块 vars 变成 undefined。
+BUILD = "dev"
 
 # ---------------------------------------------------------------- 访问口令（必填）
 # 站点默认是「公开可访问」的，任何拿到 workers.dev 地址的人都能打开。

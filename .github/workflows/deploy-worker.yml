@@ -67,13 +67,17 @@ jobs:
           node --check dist/worker.js
           ls -l dist/worker.js
 
+      # --var BUILD 是「线上到底跑哪一版」的唯一可靠来源：
+      # wrangler.toml 的 main 指向 src/index.js，wrangler 自己用 esbuild 打包，
+      # dist/worker.js 只服务「手动粘贴部署」那条路，不会被上传。所以构建指纹
+      # 必须从部署参数注进去，不能指望 build.mjs 替换出来的那份。
       - name: 部署到 Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: worker
-          command: deploy
+          command: deploy --var BUILD:${{ github.sha }}
 
       # 2026-11-09 踩到的：wrangler 报 success、deployments 接口也显示最新版本
       # 100%，但 workers.dev 别名返回的还是上一个版本的代码（版本预览域名是新的）。
@@ -135,6 +139,7 @@ jobs:
           [ -n "$B" ] || fail "线上 /api/status 没有 build 字段——跑的还是没指纹的旧代码"
           case "$B" in
             *"$SHA7"*) echo "✓ 线上跑的就是本次构建" ;;
+            *__BUILD_V__*) fail "线上 build 还是占位符：deploy 的 --var BUILD 没生效" ;;
             *) fail "线上不是本次代码：build=$B，期望包含 $SHA7" ;;
           esac
 

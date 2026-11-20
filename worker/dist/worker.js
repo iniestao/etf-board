@@ -5090,17 +5090,26 @@ async function serveResearch(env) {
  * 部署完第一件事就是访问 /api/status：它把「R2 绑没绑、KV 绑没绑、
  * 历史数据是哪天的」一次说清，省得去翻日志猜。
  */
-/* 构建指纹：build.mjs 打包时把这里替换成「ISO 时间 + commit 短 sha」。
-   部署流水线拿它证明线上跑的就是这次构建——比去 API 拉脚本内容数关键词可靠，
-   那个端点要 Workers Scripts:Read，没这项权限时回来的是一段错误 JSON。
-   直接跑 src（沙箱版）时留占位符，一眼看出这不是构建产物。 */
-const BUILD = '2026-11-20T08:57:35Z 284aa06';
+/* 构建指纹：部署流水线拿它证明线上跑的就是这次构建。
+ *
+ * 两条来源，因为线上那份代码不是 dist/worker.js：
+ *   env.BUILD  wrangler.toml 的 main 是 src/index.js，wrangler 自己 esbuild 打包，
+ *              dist 只给人手动粘贴用。所以由部署命令 `--var BUILD:<sha>` 注进来，
+ *              这条是线上唯一可靠的来源。
+ *   INLINE_BUILD  build.mjs 拼单文件时替成「时间 + sha」，给粘贴部署兜底；
+ *              直接跑 src（沙箱版）时它是占位符，一眼看出不是构建产物。
+ */
+const INLINE_BUILD = '2026-11-20T08:59:16Z c0c1ab0-dirty';
+function buildOf(env) {
+  const v = env && env.BUILD;
+  return (v && String(v)) || INLINE_BUILD;
+}
 
 async function serveStatus(env) {
   const src = histSource(env);
   const out = {
     ok: true,
-    build: BUILD,
+    build: buildOf(env),
     bindings: { r2: src === 'r2', kv: !!(env && env.WATCH), gh: src === 'gh' },
     hist: null,
     watch_n: null,
@@ -5372,7 +5381,7 @@ async function gateCheck(request, env, url) {
     // 顺带带上 build：部署流水线没口令，只能走这条路确认线上是不是刚推的那版；
     // 它只是「构建时间 + commit」，不含任何行情或用户数据。
     if (p === '/api/status') {
-      return new Response(JSON.stringify({ ok: true, locked: true, build: BUILD }), { status: 200, headers: h });
+      return new Response(JSON.stringify({ ok: true, locked: true, build: buildOf(env) }), { status: 200, headers: h });
     }
     return new Response(JSON.stringify({ ok: false, error: 'unauthorized', locked: true }),
       { status: 401, headers: h });
