@@ -457,16 +457,39 @@ jobs:
           set -e
           PUB=/tmp/pub
           mkdir -p "$PUB"
+
+          # 先把上一版 data 取到本地 ref：这个分支每次 force push 重建，
+          # "某个产物这轮没生成" 就等于把它从线上删掉，页面那整块直接空白。
+          # 2026-11-20 那轮就是：新浪清单接口返回 0 只，gen_mkt_hist / gen_senti_base
+          # 双双抛错被 continue-on-error 吞掉，senti_hist.json 和 mkt_hist.json
+          # 从 data 分支上消失了——而日志只有一行不起眼的 ::warning::。
+          # 现在缺了就拿上一版顶，保证"发不出去"永远不等于"被删掉"。
+          PREV=''
+          if git fetch -q --depth 1 origin +data:refs/remotes/origin/data 2>/dev/null \
+             && git rev-parse --verify -q origin/data >/dev/null; then
+            PREV=origin/data
+          else
+            echo "::warning::取不到上一版 data 分支，本轮所有产物都必须自己生成"
+          fi
+
           cp -r dist/hist "$PUB/"
           cp dist/manifest.json "$PUB/"
           cp dist/research.json "$PUB/"
-          # 首次跑或回算失败时这几个文件可能不存在，别让 cp 把发布带崩。
-          # etfopt_hist.json 千万别漏：这个分支是每次 force push 重建的，
-          # 少拷一个文件等于把它从线上删掉，页面 ETF 组会直接退回「还没发布」。
+          # etfopt_hist.json 千万别漏：少拷一个文件，页面 ETF 组会退回「还没发布」。
           for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json; do
-            if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; else echo "::warning::dist/$f 不存在，这轮不发布它"; fi
+            if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; continue; fi
+            if [ -n "$PREV" ] && git show "$PREV:$f" > "$PUB/$f" 2>/dev/null; then
+              echo "::warning::dist/$f 这轮没生成，沿用上一版（$(du -h "$PUB/$f" | cut -f1)）"
+              continue
+            fi
+            rm -f "$PUB/$f"   # git show 失败会留下一个空文件，比没有更糟
+            echo "::warning::dist/$f 不存在，上一版也没有，这轮不发布它"
           done
-          if [ -d dist/shares ]; then cp -r dist/shares "$PUB/"; else echo "::warning::dist/shares 不存在，这轮不发布份额"; fi
+          if [ -d dist/shares ]; then cp -r dist/shares "$PUB/";
+          elif [ -n "$PREV" ] && git cat-file -e "$PREV:shares/last.json" 2>/dev/null; then
+            git archive "$PREV" shares | tar -x -C "$PUB"
+            echo "::warning::dist/shares 这轮没生成，沿用上一版"
+          else echo "::warning::dist/shares 不存在，这轮不发布份额"; fi
           cd "$PUB"
           git init -q
           git config user.name "etf-board-bot"
