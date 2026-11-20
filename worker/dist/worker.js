@@ -5094,7 +5094,7 @@ async function serveResearch(env) {
    部署流水线拿它证明线上跑的就是这次构建——比去 API 拉脚本内容数关键词可靠，
    那个端点要 Workers Scripts:Read，没这项权限时回来的是一段错误 JSON。
    直接跑 src（沙箱版）时留占位符，一眼看出这不是构建产物。 */
-const BUILD = '2026-11-20T08:56:11Z a87daca-dirty';
+const BUILD = '2026-11-20T08:57:35Z 284aa06';
 
 async function serveStatus(env) {
   const src = histSource(env);
