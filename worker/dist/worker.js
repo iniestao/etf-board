@@ -11182,6 +11182,7 @@ var SH_S = {};                  // code -> 最新份额（亿份）
 var SH_IXOF = {};               // code -> 跟踪指数名
 var SH_IX = null;               // 指数名 -> {v:[250 天], n:成员数}
 var SH_AX = [];                 // 250 天日期轴
+var SH_IXD = '';                // 指数汇总那份 ix.json 的末日（可能比 last.json 早一天）
 var SH_ST = 0;                  // 0 未请求 / 1 请求中 / 2 就绪 / -1 失败
 var SH_VIEW = null;             // 弹窗当前在看的序列
 var SH_GEO = null;              // 柱状图的几何，hover 时按它反查下标
@@ -11198,7 +11199,7 @@ function loadShares(){
     SH_IXOF = j.ix || {};
     return fetch('/api/shares?ix=1').then(function(r){ return r.json(); });
   }).then(function(k){
-    if (k && k.ok) SH_IX = k.ix || {};
+    if (k && k.ok){ SH_IX = k.ix || {}; SH_IXD = k.d || ''; }
     SH_ST = 2;
     shStampHead();
     shRepaint();
@@ -11280,7 +11281,7 @@ function shOpen(key, agg, nm, retry){
 
   if (agg){
     var g = SH_IX && SH_IX[key];
-    if (g && g.v){ SH_VIEW.v = g.v; SH_VIEW.n = g.n || SH_VIEW.n; shRender(); return; }
+    if (g && g.v){ SH_VIEW.v = g.v; SH_VIEW.n = g.n || SH_VIEW.n; SH_VIEW.dt = SH_IXD || SH_D; shRender(); return; }
     // ix.json 还没回来（首屏刚打开就点）：单独再拉一次，别让用户盯着「读取中」
     if (SH_ST === 2){ shFail('这组指数没有份额数据'); return; }
     var tries = retry || 0;
@@ -11298,6 +11299,7 @@ function shOpen(key, agg, nm, retry){
     SH_VIEW.v = j.v || [];
     SH_VIEW.cv = j.cv || null;
     SH_VIEW.s = j.s;
+    SH_VIEW.dt = j.dt || '';
     shRender();
   }).catch(function(e){
     if (!SH_VIEW || SH_VIEW.key !== key) return;
@@ -11312,19 +11314,49 @@ function shFail(msg){
 function shRender(){
   var d = SH_VIEW;
   if (!d) return;
-  var v = d.v || [];
+  var raw = d.v || [];
   var ax = SH_AX || [];
-  // 单只/汇总的序列都是同一根 250 天轴生成的，长度对不上时按尾部对齐
-  var dates = (ax.length === v.length) ? ax : ax.slice(Math.max(0, ax.length - v.length));
+  /* 份额文件是逐只写的，某一只写晚了就停在旧日期。这里不能拿「长度和轴一样长」
+     当同一天的证据：旧文件的长度也是 250（轴长固定），这条判据一个都发现不了，
+     最后就是日期标 11-19、柱高是 11-12 的，还和左边那一列对不上。
+     文件自带 dt（末日）就按它定位，对不上的日子在右侧留空——空着比错着强。 */
+  var vals = raw, dates = ax, off = 0;
+  if (ax.length){
+    var at = d.dt ? ax.indexOf(d.dt) : -1;
+    if (at >= 0) off = at - raw.length + 1;
+    else if (ax.length !== raw.length) off = ax.length - raw.length;
+    if (off !== 0 || raw.length !== ax.length){
+      var arr = new Array(ax.length), i, t;
+      for (i = 0; i < ax.length; i++) arr[i] = null;
+      for (i = 0; i < raw.length; i++){
+        t = off + i;
+        if (t >= 0 && t < ax.length) arr[t] = raw[i];
+      }
+      vals = arr;
+    }
+    dates = ax;
+  }
+  var cv = d.cv || null;
+  if (cv && off){
+    var cv2 = {};
+    for (var k in cv) cv2[String(parseInt(k, 10) + off)] = cv[k];
+    cv = cv2;
+  }
+  var lag = 0;
+  if (d.dt && SH_D && ax.length){
+    var i1 = ax.indexOf(d.dt), i2 = ax.indexOf(SH_D);
+    if (i1 >= 0 && i2 > i1) lag = i2 - i1;
+  }
   document.getElementById('shSub').textContent =
-    (d.agg ? '同指数合计 · ' : '') + '截至 ' + (SH_D || '-') + ' · ' + v.length + ' 个交易日'
+    (d.agg ? '同指数合计 · ' : '') + '截至 ' + (d.dt || SH_D || '-') + ' · ' + raw.length + ' 个交易日'
+    + (lag ? ' · 落后 ' + lag + ' 天' : '')
     + (d.agg && d.n ? ' · ' + d.n + ' 只合计' : '')
     + (d.s ? ' · 最新份额 ' + d.s.toFixed(2) + ' 亿份' : '');
-  document.getElementById('shBody').innerHTML = shSvg(v, dates, d.cv) + shFoot(v, d);
+  document.getElementById('shBody').innerHTML = shSvg(vals, dates, cv) + shFoot(vals, d, lag);
   shBindHover();
 }
 
-function shFoot(v, d){
+function shFoot(v, d, lag){
   var last = null, s20 = 0, sAll = 0, pos = 0, neg = 0, nn = 0;
   for (var i = 0; i < v.length; i++){
     var x = v[i];
@@ -11339,7 +11371,8 @@ function shFoot(v, d){
   var nCv = 0;
   if (d.cv) for (var k in d.cv) nCv++;
   return '<div class="shfoot">'
-    + '<span>最新一日 <b style="color:' + col(last) + '">' + shNum(last) + '</b> 亿</span>'
+    + '<span>' + (lag ? '最新一日（' + esc(String(d.dt || '').slice(5)) + '）' : '最新一日')
+    + ' <b style="color:' + col(last) + '">' + shNum(last) + '</b> 亿</span>'
     + '<span>近 20 日 <b style="color:' + col(s20) + '">' + shNum(s20) + '</b> 亿</span>'
     + '<span>近 ' + nn + ' 日累计 <b style="color:' + col(sAll) + '">' + shNum(sAll) + '</b> 亿</span>'
     + '<span>申购 <b style="color:var(--up)">' + pos + '</b> 天 / 赎回 <b style="color:var(--down)">' + neg + '</b> 天</span>'
@@ -11347,6 +11380,7 @@ function shFoot(v, d){
     + '</div>'
     + '<div class="shnote">柱子 = 当日净申购金额（份额变化 × 收盘价），红申购绿赎回；折算日已按份额乘子对齐。'
     + (d.agg ? '合计按当前成员回溯，历史不重算。' : '')
+    + (lag ? '这只的份额只到 ' + esc(String(d.dt || '')) + '，右边的空白是还没披露，不是零申赎。' : '')
     + '</div>';
 }
 
@@ -11385,6 +11419,11 @@ function shSvg(vals, dates, cv){
   g += '<text x="' + (ml - 6) + '" y="' + (yOf(lo) - 2).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">' + ax2 + '</text>';
   g += '<text x="' + (ml - 6) + '" y="' + (y0 + 4).toFixed(1) + '" font-size="10" fill="var(--txt3)" text-anchor="end">0</text>';
 
+  /* 最后一根不透明，用来标「这根是末日」。不能直接取 n-1：数据滞后时尾巴是空的，
+     高亮会落在空白上，看着像那天申赎为零。 */
+  var lastIdx = -1;
+  for (i = 0; i < n; i++) if (vals[i] != null && isFinite(vals[i])) lastIdx = i;
+
   for (i = 0; i < n; i++){
     var v = vals[i];
     if (v == null || !isFinite(v)) continue;
@@ -11393,7 +11432,7 @@ function shSvg(vals, dates, cv){
     var h = Math.max(1, Math.abs(y - y0));   // 0.00 那种也给 1px，不然那天像没数据
     g += '<rect x="' + (xOf(i) - bw / 2).toFixed(1) + '" y="' + top.toFixed(1)
       + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1)
-      + '" fill="' + (v >= 0 ? '#d93a3a' : '#0e9a61') + '" opacity="' + (i === n - 1 ? '1' : '0.8') + '"/>';
+      + '" fill="' + (v >= 0 ? '#d93a3a' : '#0e9a61') + '" opacity="' + (i === lastIdx ? '1' : '0.8') + '"/>';
   }
   // 折算标记：份额乘子不为 1 的那天顶上点一个小圆点
   if (cv){

@@ -572,7 +572,11 @@ async function main() {
       if (i >= 0) cv[i] = k;
     }
     const s = shares.get(code)?.[t];
-    const obj = { ok: 1, c: code, n: names.get(code) || '', s: s ? r2(s / 1e8) : null, v: axV };
+    /* dt 是这份序列的末日，前端拿它把 v 对回日期轴。
+       没有它，页面只能靠「长度和轴一样长」猜同一天——份额文件是逐只写的，
+       某一只写晚了会停在旧日期，而旧文件长度也是 250（轴长固定），
+       这条判据一个都发现不了，最后是「日期标 11-19、数字是 11-12」地错。 */
+    const obj = { ok: 1, c: code, n: names.get(code) || '', s: s ? r2(s / 1e8) : null, dt: dates[t], v: axV };
     if (Object.keys(cv).length) obj.cv = cv;
     await fs.writeFile(path.join(OUT, `${code}.json`), JSON.stringify(obj));
     if (s) lastC[code] = r2(s / 1e8);

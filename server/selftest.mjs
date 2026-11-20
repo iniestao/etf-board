@@ -282,6 +282,16 @@ console.log('\n[时效门禁] 每份日更产物都进了 check_fresh 的清单�
     /git show "\$PREV:\$f"/.test(wfTxt) && /data:refs\/remotes\/origin\/data/.test(wfTxt)
       ? ok('发布缺产物时先从上一版 data 取回，不会把它从线上删掉')
       : bad('发布又变回"缺了就跳过"——这个分支是 force push 重建的，跳过等于删除');
+
+    /* 沙箱那 1700 个份额单只文件曾经停在 11-12，而 last.json 天天刷到 11-19：
+       清单那列 +84.58、点开柱状图 -6.08，同一个页面两个日期。根因是
+       pullShares 拿「本地有这个文件」当跳过判据——份额是逐只发布的，哪只写晚了
+       那个文件就永远不动。现在按 last.json 的 d 打戳，日期一变整批重下。 */
+    const sdPath = path.join(ROOT, 'server', 'sync-data.mjs');
+    const sd = fs.existsSync(sdPath) ? fs.readFileSync(sdPath, 'utf8') : '';
+    /async function pullShares[\s\S]{0,1400}?last\.json[\s\S]{0,800}?stamp/.test(sd)
+      ? ok('份额单只按 last.json 的日期打戳，不会「存在就跳过」')
+      : bad('sync-data 又退回「本地有就不下」——份额文件会停在旧日期，和清单那列对不上');
   }
 }
 
@@ -389,9 +399,17 @@ async function runContracts(base, pass) {
 
     r = await rawRequest(base, '/api/shares?code=510300', { cookie });
     const jone = r.json();
-    (jone && jone.ok && Array.isArray(jone.v) && jone.v.length === ax.length)
+    const axOk = jone && Array.isArray(jone.v) && jone.v.length === ax.length;
+    axOk
       ? ok('单只份额 510300 → ' + jone.v.length + ' 天')
       : bad('/api/shares?code=510300 异常：' + r.status + ' ' + r.body.slice(0, 60));
+    /* dt 是这份序列的末日，页面靠它把柱子对回日期轴。没有 dt 时前端只能按
+       「长度等于轴长」猜同一天，而旧文件长度也是 250，猜错也看不出来。 */
+    if (axOk && jone.dt) {
+      ax.indexOf(jone.dt) >= 0
+        ? ok('510300 末日 ' + jone.dt + ' 在日期轴上')
+        : bad('510300 的 dt=' + jone.dt + ' 不在日期轴上，柱子会错位');
+    }
 
     r = await rawRequest(base, '/api/shares?code=abc', { cookie });
     const jbad = r.json();
@@ -747,7 +765,12 @@ async function runContracts(base, pass) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fo.td || ''))) bad('/api/futopt 缺行情日期 td');
     for (const x of it) {
       const m = (x.months || [])[0];
-      if (!m || !(m.n >= 2)) bad('/api/futopt ' + x.c + ' 近月配对档数不足');
+      /* 到期前一周，当月合约只剩一两档还有双边报价：这不是取数坏了，是流动性真的
+         枯了（11-20 的 159919 只剩 11-25 那一个档）。拿它判红，换月那几天每天红一次，
+         红久了就没人看了。dte 还远却只有一档，那才是配错。 */
+      const nearExp = m && Number(m.dte) <= 7;
+      if ((!m || !(m.n >= 2)) && !(nearExp && m.n >= 1)) bad('/api/futopt ' + x.c + ' 近月配对档数不足');
+      else if (nearExp && m.n < 2) ok('/api/futopt ' + x.c + ' 近月 ' + m.exp + ' 只剩 ' + m.n + ' 档（' + m.dte + ' 天到期，正常）');
       if (!(x.S > 0)) bad('/api/futopt ' + x.c + ' 缺标的现价');
       // 一档行权价在低价标的上就占 2~4%，配错档会算出这个量级的假贴水
       if (m && Math.abs(m.bp) > 5) bad('/api/futopt ' + x.c + ' 近月基差率 ' + m.bp + '% 离群');

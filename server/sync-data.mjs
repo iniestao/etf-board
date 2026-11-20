@@ -150,20 +150,32 @@ async function pullTops(cdn, dist) {
 /**
  * 份额单只文件（~1700 个，每个 1.5KB）。
  *
- * 只补本地缺的：同一天重跑时它们不会变，全下是白费；但新上市的 ETF 会出现
- * 新文件，所以要逐只 existsSync 判——和 hist 那边同一个坑（目录文件数会被
- * events.json 干扰）。失败不影响主流程：清单里那一列显示「-」而已。
+ * 不能再用「本地有这个文件就跳过」当判据：份额是逐只发布的，那天哪只写晚了
+ * 那个文件就一直不动，而 last.json 在 TOP_FILES 里天天刷到最新。结果就是清单
+ * 那一列用 11-19 的 84.58，点开柱状图拿到 11-12 的 -6.08 —— 同一个页面两个
+ * 日期，用户只能问「为什么不一样」。
+ *
+ * 改成按 last.json 的 d 打戳：日期一变整批重下（1700×1.5KB ≈ 2.5MB，几秒），
+ * 日期没变才只补新上市的。失败不影响主流程：清单里那一列显示「-」而已。
  */
 async function pullShares(cdn, raw, dist, codes, conc, log) {
   const dir = path.join(dist, 'shares');
   await fsp.mkdir(dir, { recursive: true });
-  const need = codes.filter((c) => !fs.existsSync(path.join(dir, c + '.json')));
+  let day = '';
+  try { day = JSON.parse(await fsp.readFile(path.join(dir, 'last.json'), 'utf8')).d || ''; } catch { /* 没拉下来 */ }
+  const stampF = path.join(dir, '.stamp');
+  let stamp = '';
+  try { stamp = (await fsp.readFile(stampF, 'utf8')).trim(); } catch { /* 首次 */ }
+  const full = !day || stamp !== day;
+  const need = full ? codes : codes.filter((c) => !fs.existsSync(path.join(dir, c + '.json')));
   if (!need.length) return 0;
-  log('  补 ' + need.length + ' 个份额文件');
-  await pool(need, conc, (code) => fetchOne(
+  log('  ' + (full ? '全量刷新' : '补') + ' ' + need.length + ' 个份额文件（截至 ' + (day || '?') + '）');
+  const r = await pool(need, conc, (code) => fetchOne(
     [cdn + '/shares/' + code + '.json', raw + '/shares/' + code + '.json'],
     path.join(dir, code + '.json'),
   ), () => {});
+  if (full && !r.fail.length) await fsp.writeFile(stampF, day).catch(() => {});
+  if (r.fail.length) log('  ! ' + r.fail.length + ' 个份额文件没拉到（保留本地旧的）');
   return need.length;
 }
 
@@ -250,6 +262,9 @@ export async function syncData(opts = {}) {
        顶层 12 份一共几百 KB，无条件刷一遍最省心：判断写错一次就再也不会自愈，
        而重复下载是幂等的。hist 那 45MB 仍然按 mark 跳过。 */
     await pullTops(cdn, dist);
+    /* 顶层刷完还要看份额单只：mark 相同＝交易日没变，但那批文件可能从没跟上过
+       （沙箱里曾经停在 11-12）。pullShares 自己按 last.json 的 d 判，不额外花时间。 */
+    await pullShares(cdn, raw, dist, codes, 16, log).catch(() => 0);
     log('已是最新：' + label(man.mark) + '（' + (man.last_trade_date || '') + '），只刷顶层文件');
     return { changed: false, mark: man.mark, skipped: 'up-to-date' };
   }
