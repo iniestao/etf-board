@@ -1038,6 +1038,34 @@ async function asiaSnapFromKV(env) {
   } catch (e) { return null; }
 }
 
+/* 费城半导体（.SOX）走东财，不进上面那批腾讯代码——腾讯这一档没有它：
+   usSOX / usPHLX 都回 pv_none_match，只有 usSOXX（iShares 半导体 ETF）和
+   usSMH（VanEck 半导体 ETF）。不拿 ETF 顶替是指数口径问题：ETF 有跟踪误差和
+   折溢价，昨夜 SOX −2.41%、SOXX −2.75%，差 0.34 个百分点，摆在道指旁边会被
+   读成「半导体比大盘惨得多」，而这个差值本身只是产品溢价。同一时刻新浪
+   gb_sox 也是 9419.72 / −2.41%，两家对得上。
+   市场号 251 = 纳斯达克国际指数，费半、SOXQ 这类都挂在这一档。 */
+const SOX_SECID = '251.SOX';
+
+async function fetchSox() {
+  const r = await fetch('https://push2delay.eastmoney.com/api/qt/stock/get?fltt=2&invt=2'
+    + '&secid=' + SOX_SECID + '&fields=f43,f58,f60,f170,f86', {
+    headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!r.ok) throw new Error('SOX HTTP ' + r.status);
+  const j = await r.json();
+  const d = j && j.data;
+  if (!d || !(+d.f43 > 0) || !isFinite(+d.f170)) throw new Error('SOX empty');
+  /* d 只留日期：前端从 a[30]（腾讯的 "2026-11-19 16:59:13"）里 slice(5,10)
+     取「美东哪天收盘」，给 "2026-11-19" 取出来一样是 "11-19"。
+     f86 是 UTC 秒，而美东 16:00 收盘对应 UTC 20:00~21:00，仍在同一日期，
+     所以直接用 UTC 日期不会跨天。 */
+  const t = d.f86 ? new Date(d.f86 * 1000) : null;
+  const day = t && !isNaN(t) ? t.toISOString().slice(0, 10) : '';
+  return { s: 'SOX', n: '费城半导体', p: +d.f43, chg: +d.f170, d: day };
+}
+
 async function serveOvernight(env, ctx) {
   const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -1061,6 +1089,10 @@ async function serveOvernight(env, ctx) {
     if (!Object.keys(out).length) throw new Error('US empty');
     return out;
   });
+
+  /* 和上面那批腾讯代码并行发，但走另一个域：东财挂了只丢这一格，
+     不连累三大指数；反过来腾讯整批空壳时它照样出数。 */
+  const soxP = fetchSox().catch(() => null);
 
   const futP = emRetry(fetchFutEm)
     .catch(() => fetchFutSina())
@@ -1128,7 +1160,11 @@ async function serveOvernight(env, ctx) {
     return { a: rows, stale: false, ts: Date.now() };
   })();
 
-  const [us, fut, asiaR] = await Promise.all([usP, futP, asiaP]);
+  const [us, fut, asiaR, sox] = await Promise.all([usP, futP, asiaP, soxP]);
+  /* 费半只塞进 us 这一层，key 写成 'ussox'：前端是按 'us' + 大写代码的小写
+     去取的（ON.us['us' + 'SOX'.toLowerCase()]），这样它和三大指数走同一套
+     渲染与点击分时，不用给前端加特例。取不到就不塞，卡片少一格而已。 */
+  if (sox) us.ussox = sox;
   /* 55 秒，不是 600。原先按「美股收盘后一整天都不动」设的 10 分钟，可亚太那张卡
      和它共用这份响应：日经、KOSPI、恒生在盘中每分钟都在动，10 分钟才换一次，
      跟旁边 60 秒一刷的板块地图差着两个数量级，看着就像卡死了。
@@ -1203,7 +1239,10 @@ async function serveBond() {
    白名单粒度——和上面 100~104 放行「任一代码」是同一个口径，域固定为东财
    行情接口，不存在任意转发。市场号不能靠规则猜：45 只实测 25 只在 105、
    20 只在 106，同名代码换个前缀就查不到，所以前端带的是逐只探测过的全码。 */
-const OV_SID_RE = /^(100|101|102|103|104|105|106|107|124)\.[A-Za-z0-9]{1,12}$/;
+/* 251 单列：东财的「纳斯达克国际指数」市场号，费城半导体 251.SOX 挂在这里。
+   它和 100 号段（全球指数）不是一套服务，但同样是「不止一个代码」的一档，
+   按前缀放行任一代码，和 100~104 的口径一致。 */
+const OV_SID_RE = /^(100|101|102|103|104|105|106|107|124|251)\.[A-Za-z0-9]{1,12}$/;
 function isOvSid(sid) {
   return OV_SID_RE.test(sid) || ON_ASIA_SECIDS.some((x) => x[0] === sid);
 }

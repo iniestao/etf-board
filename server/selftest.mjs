@@ -590,6 +590,13 @@ async function runContracts(base, pass) {
     if (nUs < 40) bad('/api/overnight 美股少于 40 只，赛道均涨跌会失真');
     const nv = (on.us || {}).usnvda;
     if (!nv || !isFinite(nv.chg)) bad('/api/overnight 缺英伟达或涨跌幅非法');
+    /* 费半不在腾讯那批里（usSOX / usPHLX 都回 pv_none_match），单独走东财
+       251.SOX。它是唯一一条跨厂商补进来的指数，取不到只丢卡片上一格，不该
+       抬高整体阈值；但「偶尔丢」和「从来没接上」在日志里长得一样，钉一条断言。 */
+    const sox = (on.us || {}).ussox;
+    if (sox && sox.p > 0 && isFinite(sox.chg)) {
+      ok('/api/overnight 费城半导体 ' + sox.p.toFixed(2) + ' · ' + sox.chg.toFixed(2) + '%');
+    } else bad('/api/overnight 缺费城半导体（东财 251.SOX 没取到）');
     if (nFut === 0) bad('/api/overnight 期货全空（东财+新浪两条都挂了，只影响期货行不影响主数据）');
     /* 亚太 6 只里只有 KOSPI 是单源：腾讯对新浪那套外盘代码一律 pv_none_match，
        新浪 int_kospi 是空壳，能在东财之外给韩国指数报价的源没找到。所以判据拆开：

@@ -8757,8 +8757,11 @@ function needsBjTag(sid){
   if (dot < 1) return false;
   var pre = s.slice(0, dot);
   if (pre === '0' || pre === '1' || pre === '124') return false;   // 深市、沪市、港股
+  /* 251 是费城半导体那一档（东财的纳斯达克国际指数号段），分时同样打北京时间
+     标签，漏了它副标题就不标「分时（北京时间）」，22:30 会被读成早盘。 */
   return pre === '100' || pre === '101' || pre === '102' || pre === '103'
-    || pre === '104' || pre === '105' || pre === '106' || pre === '107';
+    || pre === '104' || pre === '105' || pre === '106' || pre === '107'
+    || pre === '251';
 }
 
 var ON_TRACKS = [
@@ -8783,14 +8786,14 @@ var ON_TRACKS = [
   { k:'ph',    n:'全球创新药',  us:['LLY','MRK','AZN','NVO','PFE'],
     ix:['中证香港创新药','国证港股通创新药','中证港股通创新药','中证创新药产业','恒生创新药'] }
 ];
-var ON_HEAD = ['NDX', 'INX', 'DJI'];     // 美股三大指数，摆在前排不当赛道
+var ON_HEAD = ['NDX', 'INX', 'DJI', 'SOX'];   // 美股三大指数 + 费半，摆在前排不当赛道
 var ON_FUT_ORDER = ['hf_NQ', 'hf_CHA50CFD', 'hf_GC', 'hf_CL'];
 /* 点条目看分时：东财 trends2 的 secid。美股三大指数在腾讯叫 usNDX/usINX/usDJI，
    到东财那边是另一套代码：标普 100.SPX、道指 100.DJIA（报价与腾讯逐个对得上），
    但纳指要的是 100.NDX100——100.NDX 是「纳斯达克综合」（24579），不是
    纳斯达克100（26990），两者差 10%，点「纳斯达克100」弹出综合指的走势，
    图上的涨跌幅也就跟着对不上卡片。 */
-var ON_SECID = { NDX:'100.NDX100', INX:'100.SPX', DJI:'100.DJIA',
+var ON_SECID = { NDX:'100.NDX100', INX:'100.SPX', DJI:'100.DJIA', SOX:'251.SOX',
   'hf_NQ':'103.NQ00Y', 'hf_CHA50CFD':'104.CN00Y', 'hf_GC':'101.GC00Y', 'hf_CL':'102.CL00Y' };
 
 /* 十年美债收益率：隔夜那一行的最后一条。单独一个 300 秒缓存的接口，不并进
