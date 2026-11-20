@@ -5090,10 +5090,17 @@ async function serveResearch(env) {
  * 部署完第一件事就是访问 /api/status：它把「R2 绑没绑、KV 绑没绑、
  * 历史数据是哪天的」一次说清，省得去翻日志猜。
  */
+/* 构建指纹：build.mjs 打包时把这里替换成「ISO 时间 + commit 短 sha」。
+   部署流水线拿它证明线上跑的就是这次构建——比去 API 拉脚本内容数关键词可靠，
+   那个端点要 Workers Scripts:Read，没这项权限时回来的是一段错误 JSON。
+   直接跑 src（沙箱版）时留占位符，一眼看出这不是构建产物。 */
+const BUILD = '2026-11-20T08:56:11Z a87daca-dirty';
+
 async function serveStatus(env) {
   const src = histSource(env);
   const out = {
     ok: true,
+    build: BUILD,
     bindings: { r2: src === 'r2', kv: !!(env && env.WATCH), gh: src === 'gh' },
     hist: null,
     watch_n: null,
@@ -5361,9 +5368,11 @@ async function gateCheck(request, env, url) {
   // 未登录：接口给 JSON，页面给登录框
   if (p.startsWith('/api/')) {
     const h = { ...CORS, 'Cache-Control': 'no-store' };
-    // 状态探针留一个不含数据的存活回执，方便外部监控判断「服务活着但在锁着」
+    // 状态探针留一个不含数据的存活回执，方便外部监控判断「服务活着但在锁着」。
+    // 顺带带上 build：部署流水线没口令，只能走这条路确认线上是不是刚推的那版；
+    // 它只是「构建时间 + commit」，不含任何行情或用户数据。
     if (p === '/api/status') {
-      return new Response(JSON.stringify({ ok: true, locked: true }), { status: 200, headers: h });
+      return new Response(JSON.stringify({ ok: true, locked: true, build: BUILD }), { status: 200, headers: h });
     }
     return new Response(JSON.stringify({ ok: false, error: 'unauthorized', locked: true }),
       { status: 401, headers: h });

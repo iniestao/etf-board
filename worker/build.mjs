@@ -3,6 +3,8 @@
  * Cloudflare Dashboard 的单文件 dist/worker.js
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import path from 'node:path';
 import { IDX_GROUPS } from './src/idx_data.js';
 import { RESEARCH } from './src/research_data.js';
 import { ALPHA_META } from './src/alpha_meta.js';
@@ -217,7 +219,29 @@ const html = filled
   .replace(/`/g, '\\`')
   .replace(/\$\{/g, '\\${');
 
+/* 构建指纹：部署流水线要证明「线上跑的就是这次构建」，只能靠一个只有这份产物
+   才有的标记。之前那套是去 API 拉 /content 再数关键词，而那个端点要
+   Workers Scripts:Read —— token 没这项，回来的是 52 字节的错误 JSON，脚本却把
+   「数到 0 次」当结论打印，看着在把关，其实什么都没验。 */
+let sha = 'nogit';
+try {
+  sha = execSync('git rev-parse --short HEAD', {
+    cwd: path.resolve(import.meta.dirname, '..'),
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).toString().trim();
+  /* 工作区有未提交改动时标 -dirty：这份产物不对应任何一个纯净提交，
+     不标的话仓库里的 dist 会声称自己是 HEAD，而它其实多了几行没提交的改动。
+     排除 dist 自身，否则「构建产物变了」又会让下一次构建继续 dirty。 */
+  const st = execSync('git status --porcelain -- . ":!dist"', {
+    cwd: path.resolve(import.meta.dirname, '..'),
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).toString().trim();
+  if (st) sha += '-dirty';
+} catch { /* 不在 git 仓库里（解压的源码包）就留 nogit */ }
+const BUILD = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') + ' ' + sha;
+
 const out = core
+  .replace("'__BUILD_V__'", "'" + BUILD + "'")
   .replace(/^import \{ HTML \} from '\.\/page\.js';\n\n?/m, '')
   + '\n// ---- 内联的前端页面（由 build.mjs 生成，勿手改）----\n'
   + 'const HTML = `' + html + '`;\n';

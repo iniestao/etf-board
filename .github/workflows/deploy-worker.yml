@@ -75,42 +75,10 @@ jobs:
           workingDirectory: worker
           command: deploy
 
-      # 部署后核对「线上跑的到底是哪个版本」。
-      # 之前踩过：wrangler 报 success、也给了新的 Version ID，但 workers.dev 上
-      # 返回的还是旧代码（/api/fut 一直 404）。这条把 Cloudflare 侧的部署记录打出来，
-      # 是 100% 还是被切成了灰度，一眼能看到。
-      - name: 核对线上版本
-        continue-on-error: true
-        run: |
-          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/deployments?per_page=5" \
-            | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          if not d.get('success'):
-              print('查询失败：', json.dumps(d.get('errors'))[:300]); raise SystemExit(0)
-          for x in (d.get('result') or {}).get('deployments', [])[:3]:
-              ver=x.get('versions') or []
-              print(x.get('created_on'), x.get('id','')[:8],
-                    [(v.get('version_id','')[:8], v.get('percentage')) for v in ver])
-          "
-          # 再确认一次「Cloudflare 手里到底存的是哪份代码」
-          echo "--- 已上传脚本的内容特征 ---"
-          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/content" \
-            -o /tmp/script.js -w 'content bytes=%{size_download}\n' || true
-          for kw in 期指期权 serveFut futprobe; do
-            printf '%s: %s\n' "$kw" "$(grep -c -- "$kw" /tmp/script.js 2>/dev/null || true)"
-          done
-          echo "--- 账号子域与 workers.dev 开关 ---"
-          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/subdomain" | head -c 300; echo
-          curl -sS -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/scripts/etf-board/settings" | head -c 600; echo
-
       # 2026-11-09 踩到的：wrangler 报 success、deployments 接口也显示最新版本
       # 100%，但 workers.dev 别名返回的还是上一个版本的代码（版本预览域名是新的）。
       # 显式再把这个版本挂一次到别名上，比在 Dashboard 里手点省事。
+      # 顺序上必须在「核对」之前：反过来核对看到的是上一个版本，像没生效。
       - name: 强制把最新版本挂到 workers.dev 别名
         continue-on-error: true
         working-directory: worker
@@ -124,6 +92,51 @@ jobs:
           echo "latest version: $VER"
           [ -n "$VER" ] || exit 0
           npx --yes wrangler@3.90.0 versions deploy "$VER@100%" --yes 2>&1 | tail -5
+
+      # 核对「线上跑的到底是哪个版本」。换成能真判错的写法：
+      #   1. CF 侧部署记录最新一条必须 100% 生效（灰度没切完等于没上线）
+      #   2. 端到端打一次 /api/status，取其 build 指纹（构建时间 + commit）
+      # 旧写法是拉 /content 再数关键词，那个端点要 Workers Scripts:Read，token
+      # 没这项时回来的是 52 字节错误 JSON，脚本却把「命中 0 次」当结论打印——
+      # 从 11-09 加上起一直是假校验，什么都没验。
+      - name: 核对线上版本
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          API="https://api.cloudflare.com/client/v4"
+          SITE="https://etf-board.iniestao.workers.dev"
+          fail() { echo "::error::$1"; exit 1; }
+
+          echo "== 1/2 Cloudflare 侧部署记录 =="
+          DEP=$(curl -sS --max-time 20 -H "Authorization: Bearer $CF_TOKEN" \
+            "$API/accounts/$CF_ACCOUNT/workers/scripts/etf-board/deployments?per_page=1") \
+            || fail "deployments 接口请求失败"
+          [ "$(echo "$DEP" | jq -r '.success')" = "true" ] \
+            || fail "deployments 查询失败：$(echo "$DEP" | jq -c '.errors' | head -c 200)"
+          echo "$DEP" | jq -r '.result.deployments[0] |
+            "created_on \(.created_on)  versions \(.versions // [] | map("\(.version_id[0:8])@\(.percentage)%") | join(", "))"'
+          PCT=$(echo "$DEP" | jq -r '[.result.deployments[0].versions[]?.percentage] | max // 0')
+          [ "$PCT" = "100" ] || fail "最新部署没到 100%（max=${PCT}）：灰度没切完，线上还是旧代码"
+
+          echo "== 2/2 线上构建指纹 =="
+          ST=""
+          for i in 1 2 3 4; do
+            ST=$(curl -sS --max-time 15 "$SITE/api/status" 2>/dev/null || true)
+            [ -n "$ST" ] && break
+            echo "  第 ${i} 次没拿到，等 6 秒重试"
+            sleep 6
+          done
+          [ -n "$ST" ] || fail "线上 /api/status 拿不到：workers.dev 挂了，或路由没开"
+          echo "$ST" | head -c 400; echo
+          B=$(echo "$ST" | jq -r '.build // empty')
+          SHA7="${GH_SHA:0:7}"
+          echo "线上 build = ${B:-（空）}    本次 commit = $SHA7"
+          [ -n "$B" ] || fail "线上 /api/status 没有 build 字段——跑的还是没指纹的旧代码"
+          case "$B" in
+            *"$SHA7"*) echo "✓ 线上跑的就是本次构建" ;;
+            *) fail "线上不是本次代码：build=$B，期望包含 $SHA7" ;;
+          esac
 
       # secrets 不会被 deploy 覆盖，但代码改动有可能忘配新变量，
       # 这里只做提醒不回显值，避免把口令打进日志。
