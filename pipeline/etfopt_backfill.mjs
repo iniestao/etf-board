@@ -390,6 +390,21 @@ const CLOSED = (function () {
   return dow !== 0 && dow !== 6 && (t.getUTCHours() * 100 + t.getUTCMinutes()) >= 1505;
 })();
 
+/* 最近一个「已经收盘」的交易日。过 15:05 就是今天，否则退到上一个工作日。
+   节假日会推到没有行情的日子——那种天在旧文件里没有格子（iT<0），already 为空，
+   正常跑一遍、抓不到新数据也不会写错，只是慢一点。 */
+const lastClosedTradingDay = (function () {
+  const t = bjNow();
+  let d = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
+  if (t.getUTCHours() * 100 + t.getUTCMinutes() < 1505) d -= 86400e3;
+  for (let i = 0; i < 10; i++) {
+    const dow = new Date(d).getUTCDay();
+    if (dow !== 0 && dow !== 6) break;
+    d -= 86400e3;
+  }
+  return new Date(d).toISOString().slice(0, 10);
+})();
+
 /* 只补缺的：最近那个交易日已经有值的品种直接跳过。
  *
  * 东财对同一 IP 是「跑到某个点开始全拒」，不是随机丢包（2026-11-19 两轮：
@@ -408,18 +423,27 @@ async function main() {
   const oldDays = (old && old.d) || [];
   const lastOld = oldDays[oldDays.length - 1];
 
-  /* 判「要补的那一格有没有值」。目标日分两种：
-   *   收盘后 → 今天（正常跑的方式）
-   *   盘中/盘前 → 老文件最后一天（那是手动补昨天，比如 11-19 早上补 11-18）
-   * 只写「最后一天」会在收盘后永远跳过今天，只写「今天」在补昨天时永远不跳过。 */
-  const targetDay = CLOSED ? TODAY : (lastOld || null);
-  const iT = targetDay ? oldDays.indexOf(targetDay) : -1;
+  /* 判「要补的那一格有没有值」。目标日是**最近一个已收盘的交易日**，不是
+   * 「老文件最后一天」。
+   *
+   * 原来写 CLOSED ? TODAY : lastOld，两个分支都踩过：
+   *   - 凌晨跑（GitHub 把 16:35 的定时拖到次日 01:35）：CLOSED=false
+   *     （01:35 < 15:05），于是拿 lastOld 当目标日 → 9 只全部「已有值，跳过」，
+   *     11-19 一整天白跑，最后是时效体检把它红出来的。
+   *   - 上一轮自己失败时，lastOld 就停在失败那天，下一轮继续拿它当目标日 →
+   *     永远跳过同一格，"只补缺的" 退化成 "永不补"。
+   * lastOld 只能说明「上次跑到哪」，不能说明「该跑到哪」。 */
+  const targetDay = lastClosedTradingDay;
+  const iT = oldDays.indexOf(targetDay);
   const already = new Set();
   if (ONLY_MISSING && old && iT >= 0) {
     for (const [code, o] of Object.entries(old.s || {})) {
       if ((o.nb || [])[iT] != null) already.add(code);
     }
     console.log('  ' + targetDay + ' 已有 ' + already.size + ' 只，跳过它们');
+  } else if (ONLY_MISSING) {
+    console.log('  ' + targetDay + ' 还不在旧文件里（旧文件停在 '
+      + (lastOld || '无') + '），全部重抓');
   }
 
   const res = {};
@@ -511,6 +535,21 @@ async function main() {
     const dts = o.nd.filter((x) => x != null);
     console.log('  ' + code + '  近月 ' + nf + ' 天'
       + (dts.length ? '  dte ' + Math.min(...dts) + '~' + Math.max(...dts) : ''));
+  }
+
+  /* 收尾对一次账：目标日到底补上没有。
+   * 上面任何一处「跳过」都可能让脚本 success 却没干活——11-19 就是这样，9 只全
+   * 「已有值，跳过」，日志一片正常，数据停在 11-18，最后是时效体检红出来的。
+   * 这里把差距直接写在日志末尾，不用再去翻日期轴。 */
+  const iTgt = allD.indexOf(targetDay);
+  if (iTgt < 0) {
+    console.log('  ! ' + targetDay + ' 不在日期轴上（源上还没有这天的近月），最新仍是 '
+      + (allD[allD.length - 1] || '-'));
+  } else {
+    const hole = Object.entries(s).filter(([, o]) => o.nb[iTgt] == null).map(([c]) => c);
+    console.log(hole.length
+      ? '  ! ' + targetDay + ' 缺 ' + hole.length + ' 只：' + hole.join(' ') + '（下一轮再补）'
+      : '  ✓ ' + targetDay + ' 九只齐');
   }
 }
 
