@@ -608,31 +608,94 @@ async function runContracts(base, pass) {
     if (nUs < 40) bad('/api/overnight 美股少于 40 只，赛道均涨跌会失真');
     const nv = (on.us || {}).usnvda;
     if (!nv || !isFinite(nv.chg)) bad('/api/overnight 缺英伟达或涨跌幅非法');
-    /* 费半不在腾讯那批里（usSOX / usPHLX 都回 pv_none_match），单独走东财
-       251.SOX。它是唯一一条跨厂商补进来的指数，取不到只丢卡片上一格，不该
-       抬高整体阈值；但「偶尔丢」和「从来没接上」在日志里长得一样，钉一条断言。 */
+    /* 费半不在腾讯那批里（usSOX / usPHLX 都回 pv_none_match），单独一条链路，
+       内部按「东财 → Nasdaq → 新浪」串行降级。它是唯一一条跨厂商补进来的
+       指数，取不到只丢卡片上一格，不该抬高整体阈值；但「偶尔丢」和「从来没
+       接上」在日志里长得一样，钉一条断言，顺带把实际用的源打出来。 */
     const sox = (on.us || {}).ussox;
     if (sox && sox.p > 0 && isFinite(sox.chg)) {
-      ok('/api/overnight 费城半导体 ' + sox.p.toFixed(2) + ' · ' + sox.chg.toFixed(2) + '%');
+      ok('/api/overnight 费城半导体 ' + sox.p.toFixed(2) + ' · ' + sox.chg.toFixed(2) + '%'
+        + (sox.src ? ' · src=' + sox.src : ''));
     } else {
-      /* 失败得先分清是「东财此刻不可达」还是「代码没接上」。沙箱出口撞东财限流
-         很常见，那时候这条会天天红，红久了就没人看了——而它本来是用来抓
-         「跨厂商补的那一格悄悄丢了」的。 */
-      let alive = false;
-      for (const host of ['push2delay.eastmoney.com', 'push2.eastmoney.com']) {
-        try {
-          const u = 'https://' + host + '/api/qt/stock/get?fltt=2&invt=2&secid=251.SOX&fields=f43,f58,f170';
-          const rr = await fetch(u, {
+      /* 失败得先分清是「三个源此刻都不可达」还是「代码没接上」。沙箱出口撞
+         东财限流很常见，那时候这条会天天红，红久了就没人看——而它本来是用来
+         抓「跨厂商补的那一格悄悄丢了」的。所以探一遍三家：任一家有数就是代码
+         的问题（判红），全都没数才算环境问题（跳过）。 */
+      const probes = [
+        async () => {
+          const rr = await fetch('https://push2delay.eastmoney.com/api/qt/stock/get?fltt=2&invt=2'
+            + '&secid=251.SOX&fields=f43,f58,f170', {
             headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://quote.eastmoney.com/' },
             signal: AbortSignal.timeout(8000),
           });
           const tt = await rr.json().catch(() => null);
-          if (tt && tt.data && tt.data.f43 > 0) { alive = true; break; }
-        } catch { /* 换下一个站点 */ }
+          return !!(tt && tt.data && tt.data.f43 > 0);
+        },
+        async () => {
+          const rr = await fetch('https://api.nasdaq.com/api/quote/SOX/info?assetclass=index', {
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+            signal: AbortSignal.timeout(8000),
+          });
+          const tt = await rr.json().catch(() => null);
+          const pd = tt && tt.data && tt.data.primaryData;
+          return !!(pd && parseFloat(String(pd.lastSalePrice || '').replace(/,/g, '')) > 0);
+        },
+        async () => {
+          const rr = await fetch('https://hq.sinajs.cn/list=gb_sox', {
+            headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://finance.sina.com.cn/' },
+            signal: AbortSignal.timeout(8000),
+          });
+          const tx = new TextDecoder('gbk').decode(await rr.arrayBuffer());
+          const mm = /hq_str_gb_sox="([^"]*)"/.exec(tx);
+          return !!(mm && +mm[1].split(',')[1] > 0);
+        },
+      ];
+      const alive = [];
+      for (let i = 0; i < probes.length; i++) {
+        try { if (await probes[i]()) alive.push(['东财', 'Nasdaq', '新浪'][i]); } catch { /* 不可达 */ }
       }
-      if (alive) bad('/api/overnight 缺费城半导体：东财此刻有数据，是接口没取到');
-      else ok('/api/overnight 费城半导体的源此刻不可达（沙箱出口撞限流，跳过判定）');
+      if (alive.length) bad('/api/overnight 缺费城半导体：' + alive.join('/') + ' 此刻有数据，是接口没取到');
+      else ok('/api/overnight 费城半导体的三源此刻都不可达（出口受限，跳过判定）');
     }
+
+    /* 费半点开的分时/日线是另一套源（CNBC）：东财 251 号段不给分时，腾讯也没
+       这个代码。上面那条绿着只说明「卡片有数」，点开还是可能一片空白——用户
+       看到的是「这个指数点不开」，和「卡片少一格」是两个不同的故障。 */
+    const mor = await rawRequest(base, '/api/ovmin?sid=251.SOX', { cookie });
+    const mj = mor.json();
+    const mpts = (mj && mj.pts) || [];
+    if (mj && mj.ok && mpts.length >= 60 && mj.pre > 0) {
+      const pct = (mpts[mpts.length - 1][1] / mj.pre - 1) * 100;
+      ok('/api/ovmin 费半分时 ' + mpts.length + ' 点 · 昨收 ' + mj.pre.toFixed(2)
+        + ' · 末点 ' + pct.toFixed(2) + '% · 源 ' + (mj.src || '-'));
+      /* 昨收必须能和末点对上「卡片上那个涨跌幅」，否则整条线的基准是错的：
+         CNBC 的 previous_day_closing 对 .SOX 曾经原样返回当日收盘，
+         画出来整条贴着 0%，和卡片 −2.41% 打架。 */
+      if (sox && sox.p > 0 && Math.abs(pct - sox.chg) > 0.5) {
+        bad('/api/ovmin 费半的昨收基准不对：末点 ' + pct.toFixed(2)
+          + '%，卡片 ' + sox.chg.toFixed(2) + '%');
+      }
+    } else bad('/api/ovmin 费半分时异常：' + mor.status + ' ' + mor.body.slice(0, 60));
+
+    const kor = await rawRequest(base, '/api/ovk?sid=251.SOX&n=60', { cookie });
+    const kj = kor.json();
+    const kbar = (kj && kj.bars) || [];
+    if (kj && kj.ok && kbar.length >= 20) {
+      const lastK = kbar[kbar.length - 1];
+      ok('/api/ovk 费半日线 ' + kbar.length + ' 根 · ' + kbar[0][0] + ' → ' + lastK[0]
+        + ' · 源 ' + (kj.src || '-'));
+      /* 末根不能是「还没开盘的今天」。盘前的分钟 bar 聚出来的蜡烛，开高低是
+         上一交易日下午加今天盘前拼的、收是昨天的收盘价——四个数来自两个交易日，
+         OHLC 关系还全部合法，只看蜡烛根本发现不了。北京时间 22 点前美股一定
+         没开盘（冬令时 22:30、夏令时 21:30），所以够用。 */
+      const bjNow = new Date(Date.now() + 8 * 3600e3);
+      if (lastK[0] === bjNow.toISOString().slice(0, 10) && bjNow.getUTCHours() < 22) {
+        bad('/api/ovk 费半日线多出一根今日蜡烛（此刻美股还没开盘）：' + lastK.join(' '));
+      }
+      if (!(lastK[2] >= lastK[4] && lastK[3] <= lastK[4] && lastK[2] >= lastK[1])) {
+        bad('/api/ovk 费半末根 OHLC 不自洽：' + lastK.join(' '));
+      }
+    } else bad('/api/ovk 费半日线异常：' + kor.status + ' ' + kor.body.slice(0, 60));
     if (nFut === 0) bad('/api/overnight 期货全空（东财+新浪两条都挂了，只影响期货行不影响主数据）');
     /* 亚太 6 只里只有 KOSPI 是单源：腾讯对新浪那套外盘代码一律 pv_none_match，
        新浪 int_kospi 是空壳，能在东财之外给韩国指数报价的源没找到。所以判据拆开：

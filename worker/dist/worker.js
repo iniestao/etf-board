@@ -1046,16 +1046,19 @@ async function asiaSnapFromKV(env) {
    市场号 251 = 纳斯达克国际指数，费半、SOXQ 这类都挂在这一档。 */
 const SOX_SECID = '251.SOX';
 
-async function fetchSox() {
+/* 东财那一档（原来唯一的一档）。2026-11-20 沙箱实测：push2delay / push2his /
+   push2 三个域对 251.SOX 同时空回，而 searchapi 还能查到代码——说明是 IP 限流，
+   不是代码失效。限流期间整个费半那格消失，所以往下再挂两档。 */
+async function fetchSoxEm() {
   const r = await fetch('https://push2delay.eastmoney.com/api/qt/stock/get?fltt=2&invt=2'
     + '&secid=' + SOX_SECID + '&fields=f43,f58,f60,f170,f86', {
     headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
     signal: AbortSignal.timeout(6000),
   });
-  if (!r.ok) throw new Error('SOX HTTP ' + r.status);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
   const j = await r.json();
   const d = j && j.data;
-  if (!d || !(+d.f43 > 0) || !isFinite(+d.f170)) throw new Error('SOX empty');
+  if (!d || !(+d.f43 > 0) || !isFinite(+d.f170)) throw new Error('空壳');
   /* d 只留日期：前端从 a[30]（腾讯的 "2026-11-19 16:59:13"）里 slice(5,10)
      取「美东哪天收盘」，给 "2026-11-19" 取出来一样是 "11-19"。
      f86 是 UTC 秒，而美东 16:00 收盘对应 UTC 20:00~21:00，仍在同一日期，
@@ -1063,6 +1066,81 @@ async function fetchSox() {
   const t = d.f86 ? new Date(d.f86 * 1000) : null;
   const day = t && !isNaN(t) ? t.toISOString().slice(0, 10) : '';
   return { s: 'SOX', n: '费城半导体', p: +d.f43, chg: +d.f170, d: day };
+}
+
+/* 新浪：gb_sox 是这一档里唯一有费半的实时接口，数值和东财逐位一致
+   （9419.7224 / −2.41% / 昨收 9652.7966）。它的问题在出口——hq.sinajs.cn
+   对数据中心 IP 常常直接 403，所以不能当主源，只能排在后面。
+   字段位：[1] 最新价 [2] 涨跌幅% [3] 北京时间更新时刻 … [26] 昨收。 */
+async function fetchSoxSina() {
+  const r = await fetch('https://hq.sinajs.cn/list=gb_sox', {
+    headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const text = new TextDecoder('gbk').decode(await r.arrayBuffer());
+  const m = /hq_str_gb_sox="([^"]*)"/.exec(text);
+  const a = m && m[1] ? m[1].split(',') : null;
+  if (!a || !(a.length > 5)) throw new Error('空壳');
+  const p = +a[1], chg = +a[2];
+  if (!(p > 0) || !isFinite(chg)) throw new Error('数值非法');
+  return { s: 'SOX', n: '费城半导体', p, chg, d: usDateOfBjStamp(a[3]) };
+}
+
+/* Nasdaq 官方报价。指数页的 primaryData 里 lastSalePrice / percentageChange /
+   lastTradeTimestamp 一次给全，字段名是死的，不会随页面改版变。
+   它和另外两家同一个上游（费城交易所），9919.72 这种数不会出现口径差。 */
+async function fetchSoxNasdaq() {
+  const r = await fetch('https://api.nasdaq.com/api/quote/SOX/info?assetclass=index', {
+    headers: { 'User-Agent': UA, Accept: 'application/json' },
+    signal: AbortSignal.timeout(7000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  const d = j && j.data && j.data.primaryData;
+  if (!d) throw new Error('空壳');
+  const p = parseFloat(String(d.lastSalePrice || '').replace(/,/g, ''));
+  const chg = parseFloat(String(d.percentageChange || '').replace('%', ''));
+  if (!(p > 0) || !isFinite(chg)) throw new Error('数值非法');
+  return { s: 'SOX', n: '费城半导体', p, chg, d: usDateOfText(d.lastTradeTimestamp) };
+}
+
+/* 三档串行，谁先给出有效值就用谁。串行而不是并行，是因为这张卡每次刷新都会
+   打上游（没有边缘缓存），正常情况第一档 1 秒内就回；并行等于每次多打两次
+   没人看的请求，把限流养得更严重。 */
+async function fetchSox() {
+  const errs = [];
+  for (const [name, fn] of [['em', fetchSoxEm], ['nasdaq', fetchSoxNasdaq], ['sina', fetchSoxSina]]) {
+    try {
+      const v = await fn();
+      if (v && v.p > 0) return { ...v, src: name };
+    } catch (e) {
+      errs.push(name + ':' + String((e && e.message) || e).slice(0, 24));
+    }
+  }
+  throw new Error('费半三源均不可用（' + errs.join(' / ') + '）');
+}
+
+/* 北京时刻串 → 美东日期。新浪的 [3] 是「标的最末更新的北京时间」，
+   转成绝对时刻再减美东偏移，得到「这颗数属于美东哪一天」。
+   例：北京 11-20 09:16 → UTC 01:16 → 美东 11-19 20:16 → 2026-11-19。 */
+function usDateOfBjStamp(s) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2})/.exec(String(s || ''));
+  if (!m) return '';
+  const y = +m[1], mo = +m[2], da = +m[3];
+  const utc = Date.UTC(y, mo - 1, da, +m[4] - 8, +m[5]);
+  const t = new Date(utc - (usDst(y, mo, da) ? 4 : 5) * 3600e3);
+  return isNaN(t) ? '' : t.toISOString().slice(0, 10);
+}
+
+/* "Nov 19, 2026" → "2026-11-19"。Nasdaq 只给这种人类可读格式。 */
+const US_MONTHS = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6,
+  Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+function usDateOfText(s) {
+  const m = /([A-Z][a-z]{2})[a-z]*\s+(\d{1,2}),?\s*(\d{4})/.exec(String(s || ''));
+  if (!m || !US_MONTHS[m[1]]) return '';
+  const p2 = (n) => (n < 10 ? '0' + n : '' + n);
+  return m[3] + '-' + p2(US_MONTHS[m[1]]) + '-' + p2(+m[2]);
 }
 
 async function serveOvernight(env, ctx) {
@@ -1420,7 +1498,14 @@ async function ovSnapGet(env, sid) {
         所以必须按美东→北京换算（+13h 冬令时），直接当时钟用会把横轴错 14 小时；
      2) 1D 窗口是最近 24 小时，日经/韩股这种带午休的市场会带回前一个交易日的尾巴，
         所以从最后一根往前回溯，遇到大于 3 小时的间隔就停，切出「当前这一场」。 */
-const CNBC_MIN = { '100.N225': '.N225', '100.KS11': '.KS11' };
+const CNBC_MIN = { '100.N225': '.N225', '100.KS11': '.KS11', '251.SOX': '.SOX' };
+
+/* 美股指数的 1D 会带盘前盘后：11-19 实测 bar 一直拖到 17:15，而指数在 16:00
+   收盘后价格不再变，尾巴是一长串同一个价。图上看着像「尾盘横盘一小时」，
+   容易被读成「最后没有波动」。按常规时段截断。
+   日经/韩国不进这张表：它们的 1D 只有本国时段，靠「间隔 > 3 小时」切段就够，
+   而它们的「常规时段」换算成美东是个跨午夜的区间，用同一套截断反而会切错。 */
+const CNBC_REGULAR = { '.SOX': [930, 1600] };
 
 function cnbcMs(ts) {
   const s = String(ts || '');
@@ -1442,14 +1527,28 @@ async function fetchCnbcMin(sid) {
   const bars = j && j.barData && j.barData.priceBars;
   if (!Array.isArray(bars) || bars.length < 10) throw new Error('CNBC 分时为空');
 
-  let i = bars.length - 1;
-  while (i > 0 && cnbcMs(bars[i].tradeTime) - cnbcMs(bars[i - 1].tradeTime) <= 180 * 60000) i--;
-  const pts = [];
-  for (let k = i; k < bars.length; k++) {
-    const s = String(bars[k].tradeTime || '');
-    const px = +bars[k].close;
+  /* 先按常规时段筛，再切「当前这一场」——顺序反了的话盘后那段平线会被当成
+     连续行情的一部分，回溯停在盘前，横轴上就多出一截收盘后几小时的空走。 */
+  const reg = CNBC_REGULAR[sym];
+  const rows = [];
+  for (const b of bars) {
+    const s = String((b && b.tradeTime) || '');
+    const px = +b.close;
     if (!/^\d{14}$/.test(s) || !(px > 0)) continue;
-    pts.push([etClockToBj(s.slice(0, 8), +s.slice(8, 10), +s.slice(10, 12)), px]);
+    if (reg) {
+      const hm = +s.slice(8, 10) * 100 + +s.slice(10, 12);
+      if (hm < reg[0] || hm > reg[1]) continue;
+    }
+    rows.push({ s, px, ms: cnbcMs(s) });
+  }
+  if (rows.length < 10) throw new Error('CNBC 分时为空（筛常规时段后）');
+
+  let i = rows.length - 1;
+  while (i > 0 && rows[i].ms - rows[i - 1].ms <= 180 * 60000) i--;
+  const pts = [];
+  for (let k = i; k < rows.length; k++) {
+    const s = rows[k].s;
+    pts.push([etClockToBj(s.slice(0, 8), +s.slice(8, 10), +s.slice(10, 12)), rows[k].px]);
   }
   if (pts.length < 10) throw new Error('CNBC 分时解析为空');
 
@@ -1470,6 +1569,16 @@ async function fetchCnbcMin(sid) {
       if (v > 0) pre = v;
     }
   } catch (e) { /* 拿不到就用本时段首点当基准，前端会标注 */ }
+
+  /* CNBC 的 previous_day_closing 对 .SOX 是错的：返回 9419.722，和当日收盘
+     一模一样。拿它当基准，整条分时线会贴在 0% 附近，而卡片写的是 −2.41%，
+     两个数字互相打脸，看图的人会以为图表坏了。
+     识别方式是「它等于最新价」。这时从 1D 序列里取上一交易日的最后一根收盘
+     ——那段本来就在这次响应里，不用多发一次请求，也不会转去问别家。 */
+  const lastPx = pts.length ? pts[pts.length - 1][1] : 0;
+  if (pre > 0 && lastPx > 0 && Math.abs(pre / lastPx - 1) < 1e-4) pre = 0;
+  if (!pre && i > 0) pre = rows[i - 1].px;
+
   return { pre, pts };
 }
 
@@ -1486,6 +1595,17 @@ function bjYmd(ts) {
 
 function bjToday() {
   return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+}
+
+/* 美东今天。
+   美股的交易日必须按美东日期切：北京 11-20 凌晨 04:30 那一刻，美东还是
+   11-19 15:30，用 bjToday() 会把 11-19 后半场算成「今天」，日线于是多出
+   一根假蜡烛——开盘价是昨天中午的、最低价是昨天的最低，收盘却是昨天的收盘，
+   OHLC 四个数来自两个不同交易日，肉眼完全看不出错。 */
+function usToday() {
+  const now = new Date();
+  const off = usDst(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate()) ? 4 : 5;
+  return new Date(now.getTime() - off * 3600e3).toISOString().slice(0, 10);
 }
 
 /** CNBC 日线：日经 225 与韩国 KOSPI 用。
@@ -1526,37 +1646,50 @@ async function fetchCnbcDaily(sid, lim) {
   }
   if (bars.length < 20) throw new Error('CNBC 日线解析为空');
 
-  const today = bjToday();
+  /* 交易日的切法按符号分两套：美股用 tradeTime 自带的日期（它本来就是美东
+     表达，日期部分就是交易日）；日经/韩国要先转北京——东京 11-20 09:00 在
+     CNBC 里标成 11-19 19:00，直接取日期会整体错一天。 */
+  const reg = CNBC_REGULAR[sym];
+  const today = reg ? usToday() : bjToday();
+  const dayOf = (s) => (reg
+    ? String(s).slice(0, 4) + '-' + String(s).slice(4, 6) + '-' + String(s).slice(6, 8)
+    : bjYmd(s));
+
   if (bars[bars.length - 1][0] !== today) {
     /* 先试报价接口：open/high/low/last/volume 一次给全，比把分钟 bar 聚成
        一根省一次 RTT。只用 last_time 就是今天的——休市日（周末、当地假期）
-       报价里是上一个交易日的数，照补就会多出一根假蜡烛。 */
+       报价里是上一个交易日的数，照补就会多出一根假蜡烛。
+       美股跳过这一档：盘前时段它给的 open/high/low 还是昨天的，配今天的
+       last 会拼出一根自相矛盾的蜡烛（实测 11-20 盘前补出 O 9772.855 /
+       L 9412.19 / C 9419.722，四个数来自两个交易日）。 */
     let added = false;
-    try {
-      const rq = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
-        + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
-        + '&fund=1&exthrs=1&output=json&events=1', {
-        headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
-        signal: AbortSignal.timeout(6000),
-      });
-      if (rq.ok) {
-        const jq = await rq.json();
-        const q0 = jq && jq.FormattedQuoteResult && jq.FormattedQuoteResult.FormattedQuote;
-        const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
-        const num = (v) => parseFloat(String(v == null ? '' : v).replace(/[,%]/g, ''));
-        const qt = String((row && row.last_time) || '').slice(0, 10);   // '2026-11-12'
-        const o = num(row && row.open), h = num(row && row.high);
-        const l = num(row && row.low), c = num(row && row.last);
-        if (qt === today && o > 0 && c > 0) {
-          /* volume 要 ×1000：报价接口给的是「千股」（KOSPI 实测 233,733，
-             同一交易日的日线是 233,733,000，正好差一千倍），直接写进去
-             图上今天那根量柱会矮到看不见，像当天没成交。 */
-          bars.push([today, o, h > 0 ? h : Math.max(o, c), l > 0 ? l : Math.min(o, c),
-            c, (num(row && row.volume) || 0) * 1000]);
-          added = true;
+    if (!reg) {
+      try {
+        const rq = await fetch('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+          + '?symbols=' + encodeURIComponent(sym) + '&requestMethod=itv&noform=1&partnerId=2'
+          + '&fund=1&exthrs=1&output=json&events=1', {
+          headers: { 'User-Agent': UA, Referer: 'https://www.cnbc.com/' },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (rq.ok) {
+          const jq = await rq.json();
+          const q0 = jq && jq.FormattedQuoteResult && jq.FormattedQuoteResult.FormattedQuote;
+          const row = Array.isArray(q0) ? q0[0] : (q0 && q0.FormattedQuote);
+          const num = (v) => parseFloat(String(v == null ? '' : v).replace(/[,%]/g, ''));
+          const qt = String((row && row.last_time) || '').slice(0, 10);   // '2026-11-12'
+          const o = num(row && row.open), h = num(row && row.high);
+          const l = num(row && row.low), c = num(row && row.last);
+          if (qt === today && o > 0 && c > 0) {
+            /* volume 要 ×1000：报价接口给的是「千股」（KOSPI 实测 233,733，
+               同一交易日的日线是 233,733,000，正好差一千倍），直接写进去
+               图上今天那根量柱会矮到看不见，像当天没成交。 */
+            bars.push([today, o, h > 0 ? h : Math.max(o, c), l > 0 ? l : Math.min(o, c),
+              c, (num(row && row.volume) || 0) * 1000]);
+            added = true;
+          }
         }
-      }
-    } catch (e) { /* 退到分钟聚合 */ }
+      } catch (e) { /* 退到分钟聚合 */ }
+    }
 
     if (!added) {
       try {
@@ -1571,7 +1704,13 @@ async function fetchCnbcDaily(sid, lim) {
           let o = 0, h = 0, l = 0, c = 0, v = 0;
           for (const b of mins) {
             const s = String((b && b.tradeTime) || '');
-            if (/^\d{8}000000$/.test(s) || bjYmd(s) !== today) continue;
+            if (/^\d{8}000000$/.test(s) || dayOf(s) !== today) continue;
+            /* 只收常规时段：盘前盘后的 bar 会把「开盘价」拉到盘前第一笔，
+               而那天其实还没开盘。收盘后再补一根也一样是假的。 */
+            if (reg) {
+              const hm = +s.slice(8, 10) * 100 + +s.slice(10, 12);
+              if (hm < reg[0] || hm > reg[1]) continue;
+            }
             const px = +b.close;
             if (!(px > 0)) continue;
             if (!o) o = +b.open > 0 ? +b.open : px;
@@ -5099,7 +5238,7 @@ async function serveResearch(env) {
  *   INLINE_BUILD  build.mjs 拼单文件时替成「时间 + sha」，给粘贴部署兜底；
  *              直接跑 src（沙箱版）时它是占位符，一眼看出不是构建产物。
  */
-const INLINE_BUILD = '2026-11-20T08:59:16Z c0c1ab0-dirty';
+const INLINE_BUILD = '2026-11-20T09:27:18Z 956ef19-dirty';
 function buildOf(env) {
   const v = env && env.BUILD;
   return (v && String(v)) || INLINE_BUILD;
