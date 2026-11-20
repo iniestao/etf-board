@@ -296,7 +296,11 @@ async function one(secid, code, tag) {
   for (let pass = 1; pass <= 2; pass++) {
     const miss = uniq.filter((c) => !kls.has(c));
     if (!miss.length || overBudget()) break;
-    console.log('    ' + tag + ' 补抓第 ' + pass + ' 轮：' + miss.length + ' 条');
+    /* 撞到限流后立刻补，等于继续打——2026-11-20 那轮 159922 从 00:05:56 一直
+       被拒到 00:12:53，七分钟里补了两轮、一条没回来，因为窗口一直是满的。
+       先停 45 秒把窗口放空，再补，才补得动。 */
+    console.log('    ' + tag + ' 补抓第 ' + pass + ' 轮：' + miss.length + ' 条（先等 45 秒让配额恢复）');
+    await sleep(45000);
     for (let i = 0; i < miss.length; i += CONC) {
       if (overBudget()) { console.log('    ' + tag + ' 补抓超预算，先收尾'); break; }
       const seg = miss.slice(i, i + CONC);
@@ -462,7 +466,10 @@ async function main() {
     } catch (e) {
       console.log('    ' + tag + ' 失败：' + e.message);
     }
-    await sleep(300);
+    /* 一只 20~24 档，7 秒打完，9 只连起来就是 3.4 条/秒——东财的阈值大约
+       130 条/分钟，前 5 只能过、第 6 只开始全拒。每只之间停 12 秒，整体压到
+       1 条/秒以内，9 只多花 100 秒，但不用撞墙、不用补抓。 */
+    await sleep(12000);
   }
 
   /* ---------------- 和上一版合并 ----------------
