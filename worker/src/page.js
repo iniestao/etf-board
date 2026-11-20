@@ -1056,7 +1056,10 @@ align-items:center;justify-content:center;padding:18px}
 #ovMask,#shMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:80;display:none;
 align-items:center;justify-content:center;padding:18px}
 #ovMask.on,#shMask.on{display:flex}
-#ovBody svg{display:block;width:100%;height:auto}
+/* 弹窗里的两张图（分时/日线）都能悬停读数，光标给 crosshair 提示「这里能指」。
+   touch-action:pan-y 让手机竖着滑还是滚页面，横着拖才落到图上——不设的话
+   手指一碰图就被图表吃掉，弹窗再也滚不动。 */
+#ovBody svg{display:block;width:100%;height:auto;cursor:crosshair;touch-action:pan-y}
 .ovmeta{display:flex;gap:8px 16px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt2);
 margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
 #ovBody .ovretry{margin-top:2px;font-size:var(--fs-xs);padding:3px 11px;border:1px solid var(--line);
@@ -8843,7 +8846,9 @@ var OV = null;
 function ovOpen(sid, nm){
   // bars/win 一次打开内复用：切到分时再切回来，缩放过的窗口还在
   OV = { sid: sid, nm: nm, mode: 'min', bars: null, win: 0 };
+  OVGEO = null;
   document.getElementById('ovMask').classList.add('on');
+  ovHoverBind();
   ovLoad();
 }
 
@@ -9191,6 +9196,170 @@ function sentiStkOpen(code){
 document.getElementById('ovClose').onclick = ovClose;
 document.getElementById('ovMask').onclick = function(e){ if (e.target === this) ovClose(); };
 
+/* ---------------- 弹窗图表的悬停读数 ----------------
+   隔夜 / 亚太条目点开的分时和日线，原来只能看形状：一根尖刺是几点打的、那根
+   大阴线收在哪，全得靠估。ETF 详情那边（canvas）早就有十字线，这里补齐，
+   手势也对齐：pointermove 跟随、pointerleave 收起。
+
+   两个卡过人的点：
+   - 监听挂在 #ovBody 上，不挂在 svg 上。body.innerHTML 每次切档、每次 ↑↓ 缩放
+     都会换一个新 svg，绑在图里的监听跟着节点一起消失——第二次切换就没反应。
+   - 坐标走 getScreenCTM 反算。viewBox 是固定宽、svg 是 width:100% 缩放，
+     用 clientX 减 boundingRect 在窄屏上会整体偏移，越靠右偏得越多。 */
+var OVGEO = null;
+
+function ovHoverBind(){
+  var body = document.getElementById('ovBody');
+  if (!body || body.getAttribute('data-ovhov')) return;
+  body.setAttribute('data-ovhov', '1');
+  body.addEventListener('pointermove', ovHoverAt);
+  body.addEventListener('pointerdown', ovHoverAt);
+  body.addEventListener('pointerleave', ovHoverOff);
+  body.addEventListener('pointercancel', ovHoverOff);
+}
+
+function ovHoverOff(e){
+  /* 触摸没有「移出」这回事。手指抬起时浏览器会补发 pointerleave / pointercancel，
+     照做的话点一下读数只闪一帧——手机用户根本来不及看。触摸场景改成「留着，
+     下一次点按覆盖它」，关闭弹窗时 ovClose 会无参调一次，那时才收。 */
+  if (e && e.pointerType === 'touch') return;
+  var body = document.getElementById('ovBody');
+  if (!body) return;
+  var layer = body.querySelector('svg .ovh');
+  if (layer) layer.style.display = 'none';
+  /* 「最新价」牌要还回来。它在悬停时被藏起来是因为右轴只有一列，
+     两个价格块叠在一起会互相盖住——藏一个比错位好读。 */
+  var last = body.querySelectorAll('svg .ov-last');
+  for (var i = 0; i < last.length; i++) last[i].style.display = '';
+}
+
+function ovHoverAt(e){
+  var g = OVGEO;
+  var body = document.getElementById('ovBody');
+  var svg = body && body.querySelector('svg');
+  if (!g || !svg) return;
+  var ctm = svg.getScreenCTM();
+  if (!ctm) return;
+  var pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  var vx = pt.matrixTransform(ctm.inverse()).x;
+  if (g.kind === 'min') ovHoverMin(svg, g, vx);
+  else ovHoverK(svg, g, vx);
+}
+
+/* 成交量：东财给的是手/股混着来，只求量级可比，不追单位。
+   隔夜卡上这些品种一天几千万到几亿，用亿/万两档就够读。 */
+function ovVol(v){
+  if (!(v > 0)) return '-';
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (v >= 1e4) return (v / 1e4).toFixed(1) + '万';
+  return String(Math.round(v));
+}
+
+function ovHoverMin(svg, g, vx){
+  var n = g.n;
+  if (n < 2) return;
+  var idx = Math.round((vx - g.ml) / g.plotW * (n - 1));
+  idx = Math.max(0, Math.min(n - 1, idx));
+  var v = g.vals[idx];
+  if (!isFinite(v)){ ovHoverOff(); return; }
+  var x = g.ml + idx / (n - 1) * g.plotW;
+  var y = g.yOf(v);
+  var up = v >= g.base, col = up ? 'var(--up)' : 'var(--down)';
+  var chg = (v / g.base - 1) * 100;
+
+  var layer = svg.querySelector('.ovh');
+  var ln = svg.querySelector('.ovh-x'), dot = svg.querySelector('.ovh-dot');
+  var pb = svg.querySelector('.ovh-pb'), pv = svg.querySelector('.ovh-p');
+  var bg = svg.querySelector('.ovh-bg');
+  var t1 = svg.querySelector('.ovh-t'), t2 = svg.querySelector('.ovh-v');
+  if (!layer || !ln || !dot || !pb || !pv || !bg || !t1 || !t2) return;
+
+  ln.setAttribute('x1', x.toFixed(1)); ln.setAttribute('x2', x.toFixed(1));
+  dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+  dot.setAttribute('fill', col);
+
+  /* 右轴价格块就压在原来的「最新价」牌上：两块 y 撞在一起时后画的在上，
+     正好让悬停这块显出来，不必额外藏旧牌。宽度按字数算，费半 9419 和
+     原油 58.12 的位数差一倍，写死 50 会顶出圆角。 */
+  var ptxt = g.fmt(v), bwd = Math.max(44, ptxt.length * 6.4 + 10);
+  pb.setAttribute('x', (g.ml + g.plotW + 2).toFixed(1));
+  pb.setAttribute('y', (y - 7.5).toFixed(1));
+  pb.setAttribute('width', bwd.toFixed(1));
+  pb.setAttribute('fill', col);
+  pv.setAttribute('x', (g.ml + g.plotW + 2 + bwd / 2).toFixed(1));
+  pv.setAttribute('y', (y + 3.6).toFixed(1));
+  pv.textContent = ptxt;
+
+  t1.textContent = String(g.labels[idx] || '');
+  t2.textContent = ptxt + '  ' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%';
+  // 深色气泡上用浅一档的红绿，--up/--down 在白底够醒目，在 #15181d 上发黑
+  t2.setAttribute('fill', chg > 0 ? '#fca5a5' : chg < 0 ? '#86efac' : '#fff');
+
+  var tw = 126, th = 36;
+  var bx = x + 12, by = y - th - 10;
+  if (bx + tw > g.W - 2) bx = x - tw - 12;      // 贴右边翻到左侧
+  if (by < 2) by = y + 12;                       // 贴顶翻到下方
+  if (bx < 2) bx = 2;
+  bg.setAttribute('x', bx.toFixed(1)); bg.setAttribute('y', by.toFixed(1));
+  t1.setAttribute('x', (bx + 8).toFixed(1)); t1.setAttribute('y', (by + 14).toFixed(1));
+  t2.setAttribute('x', (bx + 8).toFixed(1)); t2.setAttribute('y', (by + 29).toFixed(1));
+  layer.style.display = '';
+  // 右轴只留悬停这一块：两个价格牌叠在一起，谁也读不清
+  var lastEls = svg.querySelectorAll('.ov-last');
+  for (var i = 0; i < lastEls.length; i++) lastEls[i].style.display = 'none';
+}
+
+function ovHoverK(svg, g, vx){
+  var k = g.i0 + Math.floor((vx - g.ml) / g.plotW * g.cnt);
+  k = Math.max(g.i0, Math.min(g.n - 1, k));
+  var b = g.bars[k];
+  if (!b) { ovHoverOff(); return; }
+  var x = g.xOf(k), y = g.yOf(b[4]);
+  var prev = k > 0 ? g.bars[k - 1][4] : b[1];
+  var chg = prev > 0 ? (b[4] / prev - 1) * 100 : 0;
+  var col = b[4] >= b[1] ? 'var(--up)' : 'var(--down)';
+
+  var layer = svg.querySelector('.ovh');
+  var ln = svg.querySelector('.ovh-x');
+  var pb = svg.querySelector('.ovh-pb'), pv = svg.querySelector('.ovh-p');
+  var bg = svg.querySelector('.ovh-bg');
+  var t1 = svg.querySelector('.ovh-t1'), t2 = svg.querySelector('.ovh-t2'), t3 = svg.querySelector('.ovh-t3');
+  if (!layer || !ln || !pb || !pv || !bg || !t1 || !t2 || !t3) return;
+
+  ln.setAttribute('x1', x.toFixed(1)); ln.setAttribute('x2', x.toFixed(1));
+  var ptxt = ovPx(b[4]), bwd = Math.max(44, ptxt.length * 6.4 + 10);
+  pb.setAttribute('x', (g.ml + g.plotW + 2).toFixed(1));
+  pb.setAttribute('y', (y - 7.5).toFixed(1));
+  pb.setAttribute('width', bwd.toFixed(1));
+  pv.setAttribute('x', (g.ml + g.plotW + 2 + bwd / 2).toFixed(1));
+  pv.setAttribute('y', (y + 3.6).toFixed(1));
+  pv.textContent = ptxt;
+
+  t1.textContent = String(b[0] || '') + '   收 ' + ovPx(b[4])
+    + '   ' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%';
+  t1.setAttribute('fill', chg > 0 ? '#fca5a5' : chg < 0 ? '#86efac' : '#fff');
+  t2.textContent = '开 ' + ovPx(b[1]) + '   高 ' + ovPx(b[2]) + '   低 ' + ovPx(b[3]);
+  var ma = [];
+  if (g.maA[k] != null) ma.push('MA10 ' + ovPx(g.maA[k]));
+  if (g.maB[k] != null) ma.push('MA30 ' + ovPx(g.maB[k]));
+  /* 指数没有成交量：251.SOX 的 kline 第 6 列一律是 0，跟着印「量 -」等于
+     在读数里塞一个永远没有的字段。有量才写。 */
+  if (b[5] > 0) ma.push('量 ' + ovVol(b[5]));
+  t3.textContent = ma.join('   ');
+
+  var tw = 238, th = 48;
+  var bx = x + 14, by = y - th - 10;
+  if (bx + tw > g.W - 2) bx = x - tw - 14;
+  if (by < 2) by = y + 12;
+  if (bx < 2) bx = 2;
+  bg.setAttribute('x', bx.toFixed(1)); bg.setAttribute('y', by.toFixed(1));
+  t1.setAttribute('x', (bx + 8).toFixed(1)); t1.setAttribute('y', (by + 14).toFixed(1));
+  t2.setAttribute('x', (bx + 8).toFixed(1)); t2.setAttribute('y', (by + 28).toFixed(1));
+  t3.setAttribute('x', (bx + 8).toFixed(1)); t3.setAttribute('y', (by + 42).toFixed(1));
+  layer.style.display = '';
+}
+
 function ovChartSvg(pts, pre, cap){
   /* viewBox 宽度跟着窗口走。svg 是 width:100% 缩放的，固定 680 在手机上
      按 0.48 缩，10px 的字到屏上只剩 5px，纵轴加了也读不出来。让「画布宽
@@ -9266,25 +9435,46 @@ function ovChartSvg(pts, pre, cap){
   }
 
   var badgeW = 50;
+  /* 悬停层：折线只给形状，读不出「这个尖峰是几点、多少」。竖线 + 圆点 +
+     两块标签全部预埋，pointermove 时只改属性——跟随鼠标时如果重建 DOM，
+     线会一格一格地跳，比不显示更差。
+     右轴价格块故意不写死宽度：有的品种六位数（费半 9419），有的四位小数
+     （原油 58.12），按字数算宽度，否则数字会顶出圆角。 */
+  var hoverG = '<g class="ovh" style="display:none;pointer-events:none">'
+    + '<line class="ovh-x" y1="' + mt + '" y2="' + (mt + plotH) + '" stroke="var(--txt3)"'
+    + ' stroke-width="1" stroke-dasharray="3 3"/>'
+    + '<circle class="ovh-dot" r="3.4" fill="' + col + '" stroke="#fff" stroke-width="1.5"/>'
+    + '<rect class="ovh-pb" rx="3" height="15" fill="' + col + '"/>'
+    + '<text class="ovh-p" font-size="10" font-weight="bold" fill="#fff" text-anchor="middle"></text>'
+    + '<g class="ovh-tip"><rect class="ovh-bg" rx="4" width="126" height="36" fill="#15181d" opacity="0.92"/>'
+    + '<text class="ovh-t" font-size="10" fill="#cbd5e1"></text>'
+    + '<text class="ovh-v" font-size="11" font-weight="600" fill="#fff"></text></g></g>';
   var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg">'
     + g
     + '<line x1="' + ml + '" y1="' + yOf(base).toFixed(1) + '" x2="' + (ml + plotW)
     + '" y2="' + yOf(base).toFixed(1) + '" stroke="var(--txt3)" stroke-dasharray="3 3" stroke-width="0.9"/>'
     + '<path d="' + area + '" fill="' + col + '" opacity="0.08"/>'
     + '<path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="1.6"/>'
-    + '<circle cx="' + xOf(s.length - 1).toFixed(1) + '" cy="' + yLast.toFixed(1) + '" r="2.6" fill="' + col + '"/>'
-    + '<rect x="' + (ml + plotW + 2) + '" y="' + (yLast - 7.5).toFixed(1) + '" width="' + badgeW
+    + '<circle class="ov-last" cx="' + xOf(s.length - 1).toFixed(1) + '" cy="' + yLast.toFixed(1) + '" r="2.6" fill="' + col + '"/>'
+    + '<rect class="ov-last" x="' + (ml + plotW + 2) + '" y="' + (yLast - 7.5).toFixed(1) + '" width="' + badgeW
     + '" height="15" rx="3" fill="' + col + '"/>'
-    + '<text x="' + (ml + plotW + 2 + badgeW / 2) + '" y="' + (yLast + 3.6).toFixed(1)
+    + '<text class="ov-last" x="' + (ml + plotW + 2 + badgeW / 2) + '" y="' + (yLast + 3.6).toFixed(1)
     + '" font-size="10" font-weight="bold" fill="#fff" text-anchor="middle">' + fmt(last) + '</text>'
     + '<text x="' + ml + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)">' + esc(s[0][0]) + '</text>'
     + '<text x="' + (ml + plotW) + '" y="' + (H - 6) + '" font-size="10" fill="var(--txt3)" text-anchor="end">'
     + esc(s[s.length - 1][0]) + '</text>'
+    + hoverG
     + '</svg>'
     + '<div class="ovmeta"><span>' + (usePre ? '较昨收 ' : '较本时段开盘 ')
     + '<b class="' + (up ? 'up' : 'down') + '">' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</b></span>'
     + '<span>基准（0 轴）＝' + (usePre ? '昨收 ' : '开盘 ') + fmt(base) + '</span>'
     + '<span>' + s.length + ' 个点 · ' + (s.length >= pts.length ? '' : '按 ' + step + ' 抽 1 显示') + '</span></div>';
+  /* 记下几何给 hover 用：画的是抽稀后的 s，指到哪个点就得读哪个点，
+     拿原 pts 反算会差出好几格。yOf / fmt 是闭包，直接存引用。 */
+  OVGEO = { kind: 'min', n: s.length, ml: ml, plotW: plotW, base: base,
+            vals: s.map(function(p){ return p[1]; }),
+            labels: s.map(function(p){ return p[0]; }),
+            yOf: yOf, W: W, fmt: fmt };
   return h;
 }
 
@@ -9342,8 +9532,6 @@ function ovKlineSvg(bars, i0){
   // 只留右轴价格：蜡烛的高低本身就在表达涨跌，左边不必再给一列百分比
   var ml = 6, mr = vw < 480 ? 46 : 52, mt = 10, mb = 16;
   var plotW = W - ml - mr, plotH = H - mt - mb;
-  var volH = Math.round(plotH * 0.22), gap = 6;
-  var pH = plotH - volH - gap;
   var n = bars.length, cnt = Math.max(1, n - i0), i;
 
   var mn = Infinity, mx = -Infinity;
@@ -9361,6 +9549,11 @@ function ovKlineSvg(bars, i0){
 
   var vmax = 0;
   for (i=i0;i<n;i++) if (bars[i][5] > vmax) vmax = bars[i][5];
+  /* 指数（费半、纳指这一档）的 kline 不带成交量，第 6 列全是 0。留出量区
+     等于在图底铺一条空白带，蜡烛还得往上挤——没量就不占这块高度。 */
+  var volH = vmax > 0 ? Math.round(plotH * 0.22) : 0;
+  var gap = volH > 0 ? 6 : 0;
+  var pH = plotH - volH - gap;
 
   // 横坐标按「窗口内第几根」定位，i0 之前的不画（数据还在，用来喂均线）
   var xOf = function(k){ return ml + (k - i0 + 0.5) / cnt * plotW; };
@@ -9381,7 +9574,7 @@ function ovKlineSvg(bars, i0){
 
   // 成交量：压在价格区下面，颜色跟蜡烛一致但更淡，不抢注意力
   var vTop = mt + pH + gap;
-  for (i=i0;i<n;i++){
+  for (i=i0;i<n && volH > 0;i++){
     var vv = vmax > 0 ? bars[i][5] / vmax : 0;
     var vhh = Math.max(1, vv * volH);
     var vcol = bars[i][4] >= bars[i][1] ? 'var(--up)' : 'var(--down)';
@@ -9427,7 +9620,24 @@ function ovKlineSvg(bars, i0){
     s += '<text x="' + tx.toFixed(1) + '" y="' + (H - 4) + '" font-size="10" fill="var(--txt3)" '
       + 'text-anchor="middle">' + esc(ds) + '</text>';
   }
+  /* 悬停：竖线从价格区一直拉到量区，右轴给收盘价块，气泡三行写全
+     日期/涨跌、OHLC、均线与成交量。蜡烛比折线更需要读数——一根蜡烛的
+     高低开收、离均线多远，光看形状只能猜。 */
+  var hoverK = '<g class="ovh" style="display:none;pointer-events:none">'
+    + '<line class="ovh-x" y1="' + mt + '" y2="' + (vTop + volH) + '" stroke="var(--txt3)"'
+    + ' stroke-width="1" stroke-dasharray="3 3"/>'
+    + '<rect class="ovh-pb" rx="3" height="15" fill="#15181d" opacity=".92"/>'
+    + '<text class="ovh-p" font-size="10" font-weight="bold" fill="#fff" text-anchor="middle"></text>'
+    + '<g class="ovh-tip"><rect class="ovh-bg" rx="4" width="238" height="48" fill="#15181d" opacity="0.92"/>'
+    + '<text class="ovh-t1" font-size="10" font-weight="600" fill="#fff"></text>'
+    + '<text class="ovh-t2" font-size="10" fill="#cbd5e1"></text>'
+    + '<text class="ovh-t3" font-size="10" fill="#cbd5e1"></text></g></g>';
+  s += hoverK;
   s += '</svg>';
+  /* 几何留给 hover：xOf 用「窗口内第几根」定位，所以必须带上 i0 和 cnt，
+     否则悬停到左端会整体偏到窗口之前去。 */
+  OVGEO = { kind: 'k', i0: i0, n: n, cnt: cnt, ml: ml, plotW: plotW, bars: bars,
+            maA: maA, maB: maB, xOf: xOf, yOf: yOf, W: W };
   return s;
 }
 
