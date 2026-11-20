@@ -6,14 +6,19 @@ name: 更新 ETF 数据
 
 on:
   schedule:
-    # 两批。GitHub 的 cron 是 UTC，+8 才是北京：
+    # 三批。GitHub 的 cron 是 UTC，+8 才是北京：
     #   08:35 UTC = 北京 16:35  主批次
     #   13:00 UTC = 北京 21:00  兜底批次
+    #   23:00 UTC = 北京次日 07:00  开盘前最后一次
     # 加第二批是因为单点失败会直接丢一天，而深市份额断了就再也补不回来。
-    # 兜底批次先跑 probe 判断数据是否已齐，齐了立刻结束（约 30 秒），
+    # 第三批是给「前两批都没跑成」准备的：2026-11-18 和 11-19 的 16:35 主批次
+    # GitHub 都没创建运行，21:00 那批又被拖到次日 05:02 才启动——等于每天只有
+    # 一次机会，还落在凌晨。07:00 这次离开盘两小时，补完正好赶上用户看盘。
+    # 后两批先跑 probe 判断数据是否已齐，齐了立刻结束（约 30 秒），
     # 不齐才整条重跑。仓库是公开的，Actions 分钟数不计费，成本只在时间。
     - cron: '35 8 * * 1-5'
     - cron: '0 13 * * 1-5'
+    - cron: '0 23 * * 0-4'
   workflow_dispatch:        # 支持手动跑，改因子后不用等定时
 
 concurrency:
@@ -25,10 +30,10 @@ permissions:
   contents: write
 
 jobs:
-  # 兜底批次专用：数据已经齐了就不要再跑一遍 39 分钟的流水线。
+  # 主批次之外都先探测：数据已经齐了就不用再跑一遍 39 分钟的流水线。
   # 主批次不探测——16:35 那会儿当天数据必定还没到，问了也是白问。
   probe:
-    if: github.event.schedule == '0 13 * * 1-5'
+    if: github.event_name == 'schedule' && github.event.schedule != '35 8 * * 1-5'
     runs-on: ubuntu-latest
     timeout-minutes: 6
     outputs:
@@ -46,7 +51,7 @@ jobs:
     needs: [probe]
     # probe 自己挂掉时 outputs 是空的，若只看 need=='true' 就会静默跳过、白丢一天。
     # 所以再加一条：probe 没成功也照跑（跑一次的成本远低于缺一天）。
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.schedule != '0 13 * * 1-5' || needs.probe.outputs.need == 'true' || needs.probe.result != 'success') }}
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || github.event.schedule == '35 8 * * 1-5' || needs.probe.outputs.need == 'true' || needs.probe.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
