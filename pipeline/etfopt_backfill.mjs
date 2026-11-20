@@ -239,8 +239,17 @@ async function one(secid, code, tag) {
     const v = mthDte.get(x.mth);
     if (v == null || x.dte < v) mthDte.set(x.mth, x.dte);
   }
+  /* 只留 dte 最小的那一个月。
+   *
+   * 留两个是白抓：算基差只取 frontMonth(d) 那个月，而「今天仍在市」的合约里，
+   * 只有当月能当历史的当月——次月在任何一天都不是「当月」，拉回来就扔。
+   * 换月那天也不需要提前抓：dte 最小的月会自己从 11 月切成 12 月，
+   * 已经到期消失的 11 月数据早在文件里（合并规则只加不删）。
+   *
+   * 实测 159915 从 48 档降到 24、159901 从 32 降到 16，9 只总量约 85 条，
+   * 一轮内能打完——原来 170 条必撞东财那个 ~130 条/分钟的阈值。 */
   const keepMth = new Set([...mthDte.entries()]
-    .sort((a, b) => a[1] - b[1]).slice(0, 2).map((e) => e[0]));
+    .sort((a, b) => a[1] - b[1]).slice(0, 1).map((e) => e[0]));
 
   /* 再按行权价砍一道：只留「近 20 个交易日里可能落在平值附近」的档位。
    *
@@ -438,13 +447,25 @@ async function main() {
    *     永远跳过同一格，"只补缺的" 退化成 "永不补"。
    * lastOld 只能说明「上次跑到哪」，不能说明「该跑到哪」。 */
   const targetDay = lastClosedTradingDay;
-  const iT = oldDays.indexOf(targetDay);
+  /* 判「齐了没有」要看最近两个交易日，不只看目标日。
+   * 只判目标日的话，一次限流留下的空档会永远留着：11-19 那天 159901/159915
+   * 是 null，第二天目标日变成 11-20，两只都被判「已有值」跳过，11-19 的坑再也
+   * 没人填。而 one() 本来每轮都返回整段 16 天，合并只补空——只要没被跳过，
+   * 昨天的空档顺带就补上了。
+   * 目标日还不在文件里（新的一天）时，needDays 为空，9 只都跑。 */
+  const iTgt0 = oldDays.indexOf(targetDay);
+  const needDays = iTgt0 >= 0 ? [targetDay, oldDays[iTgt0 - 1]].filter(Boolean) : [];
   const already = new Set();
-  if (ONLY_MISSING && old && iT >= 0) {
+  if (ONLY_MISSING && old && needDays.length) {
     for (const [code, o] of Object.entries(old.s || {})) {
-      if ((o.nb || [])[iT] != null) already.add(code);
+      const arr = o.nb || [];
+      const full = needDays.every((d) => {
+        const i = oldDays.indexOf(d);
+        return i >= 0 && arr[i] != null;
+      });
+      if (full) already.add(code);
     }
-    console.log('  ' + targetDay + ' 已有 ' + already.size + ' 只，跳过它们');
+    console.log('  ' + needDays.join(' / ') + ' 都有值的 ' + already.size + ' 只，跳过它们');
   } else if (ONLY_MISSING) {
     console.log('  ' + targetDay + ' 还不在旧文件里（旧文件停在 '
       + (lastOld || '无') + '），全部重抓');
