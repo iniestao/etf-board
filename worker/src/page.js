@@ -852,16 +852,31 @@ padding:3px 0 0;border-top:1px dashed var(--line);margin-top:2px;font-size:var(-
 /* 格子点开后的占比走势。存在的理由：页面只有「今天占比多少」，
    看不出这个数是刚起步还是已经走了一半。 */
 .strend{margin:2px 0 10px;padding:9px 12px 7px;background:var(--bg2);
-border:1px solid var(--line);border-radius:8px}
+border:1px solid var(--line);border-radius:8px;position:relative}
 .sthd{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt3)}
 .sthd b{font-size:var(--fs-md);color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
 .sthd .sttag{font-size:var(--fs-2xs);padding:1px 6px;border-radius:4px;background:var(--bg3);
 color:var(--txt2);border:1px solid var(--line)}
 .sthd .sttag.hi{color:#a8541c;border-color:#f0dcc8;background:#fdf6ef}
 .sthd .sttag.lo{color:#1c6b8a;border-color:#cfe3ee;background:#f2f9fc}
-.strend svg{display:block;width:100%;height:86px;margin-top:5px}
+.strend svg{display:block;width:100%;height:86px;margin-top:5px;cursor:crosshair}
 .stax{display:flex;justify-content:space-between;font-size:var(--fs-2xs);color:var(--txt3);
 margin-top:1px;font-variant-numeric:tabular-nums}
+/* 曲线上的悬停读数。250 个点画成一条线，横轴只有首尾两个月——中间任何一个
+   凸起都读不出是哪天、到了什么位置。停一下给日期、占比、以及这一点在整年
+   里排第几（分位口径与格子上那个「近一年分位」一致，都是 <= 计数）。 */
+.stcur{position:absolute;left:0;top:0;width:0;height:0;border-left:1px dashed var(--accent);
+opacity:0;pointer-events:none;transition:opacity .1s linear}
+.stcur u{position:absolute;left:-3.5px;width:7px;height:7px;margin-top:-3.5px;border-radius:50%;
+background:var(--accent);box-shadow:0 0 0 2px var(--bg2)}
+.strend.hot .stcur{opacity:.8}
+.sttip{position:absolute;z-index:1200;pointer-events:none;opacity:0;transition:opacity .1s linear;
+padding:5px 8px;border-radius:7px;background:var(--surface);border:1px solid var(--line2);
+box-shadow:0 6px 18px rgba(23,32,54,.14);font-size:var(--fs-2xs);color:var(--txt3);
+line-height:1.5;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sttip b{font-size:var(--fs-xs);color:var(--txt);font-weight:600}
+.strend.hot .sttip{opacity:1}
+html[data-theme="dark"] .sttip{box-shadow:0 6px 18px rgba(0,0,0,.5)}
 
 /* 集中度 × 宽度四象限。格子回答「钱在哪条线」，这张图回答
    「这种分布是常态还是异常」——只给一个 58.7% 没人知道算高算低。 */
@@ -3822,7 +3837,10 @@ function secQuadCard(){
     + '</div></div>' + pop + '</div>';
 }
 
-/** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。 */
+/** 一格占比的走势卡。返回空串表示没有历史（新板块），不占位。
+    顺带把这条序列登记到 TREND_REG，悬停读数要按 data-k 反查回去——
+    250 个点不可能塞进 data 属性，也不可能每个点都做一个 DOM 节点。 */
+var TREND_REG = {};
 function secTrend(s){
   var h = secHistArr(s.key);
   if (!h || h.v.length < 20) return '';
@@ -3871,14 +3889,16 @@ function secTrend(s){
   var tagCls = pct >= 85 ? ' hi' : (pct <= 15 ? ' lo' : '');
 
   var head = s.th ? '占本组行业合计（与行业格重叠）'
-    : (s.code === 'x' ? '占跨境地区成交额' : '占' + s.g + '行业成交额');
+    : '占' + s.g + 'ETF 成交额';
+  // 悬停读数要用：序列、日期、y 轴换算（lo/hi/H0 已经折进 yOf 里了）
+  TREND_REG[s.key] = { a:a, d:dates, yOf:yOf, H0:H0 };
   return '<div class="strend">'
     + '<div class="sthd"><span>' + head + '</span>'
     + '<b>' + (a[a.length-1] / 10).toFixed(1) + '%</b>'
     + '<span class="sttag' + tagCls + '">近一年 ' + pct.toFixed(0) + ' 分位</span>'
     + '<span style="margin-left:auto">区间 ' + (mn/10).toFixed(1) + '–' + (mx/10).toFixed(1)
     + '% · 中位 ' + (med/10).toFixed(1) + '%</span></div>'
-    + '<svg viewBox="0 0 ' + W + ' ' + H0 + '" preserveAspectRatio="none">'
+    + '<svg class="stsvg" data-k="' + s.key + '" viewBox="0 0 ' + W + ' ' + H0 + '" preserveAspectRatio="none">'
     + '<line x1="0" y1="' + yMed + '" x2="' + W + '" y2="' + yMed
     + '" stroke="#aeb6c4" stroke-dasharray="5 5" vector-effect="non-scaling-stroke"/>'
     + '<path d="' + d + '" fill="none" stroke="var(--accent)" stroke-width="1.7"'
@@ -3888,6 +3908,7 @@ function secTrend(s){
     + '" y2="' + (yOf(a[a.length-1]) + 5).toFixed(1)
     + '" stroke="var(--accent)" stroke-opacity=".45" vector-effect="non-scaling-stroke"/>'
     + '</svg>'
+    + '<i class="stcur"><u></u></i><div class="sttip"></div>'
     + '<div class="stax"><span>' + dates[0].slice(0, 7) + '</span>'
     + '<span>虚线＝一年中位</span>'
     + '<span>' + dates[dates.length-1].slice(0, 7) + '</span></div>'
@@ -4204,7 +4225,7 @@ function secMetaToggle(){
 
    为什么不用原生 title：要悬停一秒才冒出来、样式不跟主题、窄屏和触屏干脆没有，
    而且它跟「点开看指数明细」抢同一个手势。自己画一个<div>，跟鼠标走。 */
-var SMTIP = null, SEC_BY = {}, SEC_SDEL = null;
+var SMTIP = null, SEC_BY = {}, SEC_SDEL = null, SEC_GTOT = {};
 function smTipEl(){
   if (SMTIP) return SMTIP;
   SMTIP = document.createElement('div');
@@ -4213,18 +4234,28 @@ function smTipEl(){
   document.body.appendChild(SMTIP);   // 挂在 body 上：格子 overflow:hidden，放里面会被裁掉
   return SMTIP;
 }
-/* 主指标是「占本组成交额」。A 股格算占 A 股，港股、跨境各算各的分母——
+/* 主指标是「占本组 ETF 成交额」。A 股格算占 A 股，港股、跨境各算各的分母——
    跨市场加总没有交易含义（汇率、交易时段都不同），这和地图分三组是同一个理由。
-   主题格（AI / 新能源）的分子不计入分母，占比会算出 135% 那种数，所以只报重叠。 */
+   主题格（AI / 新能源）的分子不计入分母，占比会算出 135% 那种数，所以只报重叠。
+
+   为什么写「ETF」而不只写「A股成交额」：分母是这 19 个格子的 ETF 成交额合计
+   （几百亿到几千亿），而「A股成交额」在全市场口径下是万亿级——差三十倍。
+   少了 ETF 两个字，14.3% 会被读成「这只 ETF 占了全 A 股一成四」，那是另一个数。
+   所以主指标带 ETF，下面再跟上分子（本格成交额）和分母（同组多少格合计），
+   三个数并排放着，怎么读都不会读岔。 */
 function smTipHTML(s){
   var cls = s.ret > 0 ? 'up' : (s.ret < 0 ? 'down' : 'flat');
   var pct = secSharePct(s.key, s.share);
   var h = '<div class="tt"><b>' + s.k + '</b><em class="' + cls + '">' + fpc(s.ret) + '</em></div>';
   h += s.th
     ? '<div class="tm">主题格 <b>与行业格重叠</b></div>'
-    : '<div class="tm">占' + s.g + '成交额 <b>' + (s.share * 100).toFixed(1) + '%</b></div>';
-  h += '<div class="tr"><span>成交额</span><b>' + fmtAmt(s.amt) + '</b></div>'
-    + '<div class="tr"><span>跟踪指数</span><b>' + s.up + ' / ' + s.n + ' 涨</b></div>';
+    : '<div class="tm">占' + s.g + 'ETF 成交额 <b>' + (s.share * 100).toFixed(1) + '%</b></div>';
+  h += '<div class="tr"><span>成交额</span><b>' + fmtAmt(s.amt) + '</b></div>';
+  var gt = SEC_GTOT[s.code];
+  if (!s.th && gt && gt.amt > 0){
+    h += '<div class="tr"><span>同组 ' + gt.n + ' 格合计</span><b>' + fmtAmt(gt.amt) + '</b></div>';
+  }
+  h += '<div class="tr"><span>跟踪指数</span><b>' + s.up + ' / ' + s.n + ' 涨</b></div>';
   /* 占比变化只在超过 0.5pt 时报，门槛跟格子里那个 ↑/↓ 一致——
      小到 0.05pt 的变化天天有，报出来只会把浮层变成噪声。 */
   var dl = SEC_SDEL && SEC_SDEL[s.key];
@@ -4286,6 +4317,87 @@ function bindSMTip(){
   window.addEventListener('scroll', smTipHide, { passive: true });
 }
 
+/* ---------- 占比走势的悬停读数 ----------
+   250 个点画成一条线，横轴只标首尾两个月，中间任何一个峰谷都读不出是哪天、
+   到了什么位置——「现在 3.2% 算高吗」还是只能靠旁边那个分位标签硬记。
+   鼠标停上去给三个数：日期、当天占比、这一点在整年里的分位。
+
+   分位口径跟格子上那个「近一年分位」完全一致（<= 计数 ÷ 样本数），同一根线
+   在两处读出来的数不会打架。这里额外算而不是复用 secSharePct，是因为那个函数
+   只接受「当前 share」、固定比到序列末尾，而这里要按光标所在的点算。
+
+   吸附到最近的数据点而不是跟着像素走：线是 250 个离散交易日，停在第 37 天和
+   第 38 天之间时给出一个中间值，会让人以为图上真有这个点。 */
+function bindTrendTip(){
+  if (document.__stb) return;
+  /* 触屏没有 hover，但 Chrome 的触摸会补一次 mousemove —— 浮层会闪一下然后永远
+     停在那儿（没有 mouseleave 来收）。这类设备直接不绑。 */
+  try { if (window.matchMedia && window.matchMedia('(hover:none)').matches) return; } catch(e){}
+  document.__stb = 1;
+  var hot = null;
+  var off = function(){
+    if (hot){ hot.classList.remove('hot'); hot = null; }
+  };
+  document.addEventListener('mousemove', function(e){
+    var t = e.target;
+    var svg = (t && t.closest) ? t.closest('.strend svg') : null;
+    if (!svg){ off(); return; }
+    var box = svg.parentNode;
+    var R = svg.getAttribute('data-k') && TREND_REG[svg.getAttribute('data-k')];
+    if (!R || !box || !box.classList || !box.classList.contains('strend')){ off(); return; }
+
+    var br = svg.getBoundingClientRect();
+    if (br.width < 2) return;
+    var n = R.a.length;
+    var rx = (e.clientX - br.left) / br.width;
+    if (rx < 0) rx = 0; else if (rx > 1) rx = 1;
+    var idx = Math.round(rx * (n - 1));
+    if (idx < 0) idx = 0; else if (idx >= n) idx = n - 1;
+    var v = R.a[idx];
+
+    if (hot !== box){ off(); box.classList.add('hot'); hot = box; }
+
+    /* svg 是 SVGSVGElement，没有 offsetLeft/offsetTop/offsetTop 这些 HTMLElement
+       属性（拿到 undefined，再点 toFixed 就整段抛错）。只能用 rect 相减，
+       再减掉 .strend 自己的边框宽度——绝对定位的 left/top 是相对 padding box 的。 */
+    var boxr = box.getBoundingClientRect();
+    var ox = br.left - boxr.left - box.clientLeft;
+    var oy = br.top - boxr.top - box.clientTop;
+    var x = ox + (n > 1 ? idx / (n - 1) : 0) * br.width;
+    var y = oy + R.yOf(v) / R.H0 * br.height;
+    var cur = box.querySelector('.stcur');
+    if (cur){
+      cur.style.left = x.toFixed(1) + 'px';
+      cur.style.top = oy.toFixed(1) + 'px';
+      cur.style.height = br.height.toFixed(1) + 'px';
+      var dot = cur.firstChild;
+      if (dot) dot.style.top = (y - oy).toFixed(1) + 'px';
+    }
+    var tip = box.querySelector('.sttip');
+    if (!tip) return;
+    var c = 0, k;
+    for (k=0;k<n;k++) if (R.a[k] <= v) c++;
+    tip.innerHTML = '<b>' + R.d[idx] + '</b>&nbsp; ' + (v / 10).toFixed(1) + '%'
+      + '<br>近一年 ' + (c / n * 100).toFixed(0) + ' 分位';
+    var tw = tip.offsetWidth, th2 = tip.offsetHeight;
+    // 横向贴边翻到左侧；纵向夹在曲线那一条带子里，让它跟着点上下但不盖住
+    // 上面的标题（那里有当前值、区间、中位）和下面的月份轴。
+    var left = x + 10;
+    if (left + tw > ox + br.width) left = x - tw - 10;
+    if (left < ox + 2) left = ox + 2;
+    var top = y - th2 / 2;
+    var tMax = oy + br.height - th2 - 1;
+    if (top < oy + 1) top = oy + 1;
+    if (top > tMax) top = tMax;
+    tip.style.left = left.toFixed(1) + 'px';
+    tip.style.top = top.toFixed(1) + 'px';
+  }, { passive: true });
+  // 切标签页、鼠标从窗口边缘出去时不会再有 mousemove，得单独收一次
+  document.addEventListener('mouseleave', off, { passive: true });
+  // 滚走之后竖线会停在旧位置（scroll 不触发 mousemove），那根线就成了鬼影
+  window.addEventListener('scroll', off, { passive: true });
+}
+
 function renderSectors(){
   SEC_GROUPS_OUT = buildGroups();
   SECS = [];
@@ -4307,6 +4419,16 @@ function renderSectors(){
   }
   var curAmt = {};
   for (var ci=0;ci<SECS.length;ci++) curAmt[SECS[ci].key] = SECS[ci].amt;
+  /* 分组的占比分母，和 secShareDelta 里 totCur 同一口径：主题格的分子不进分母。
+     存在这儿是为了让悬浮读数能把「58.9 / 4126.3 亿」两个数并排摆出来——
+     只给一个 14.3%，分母藏在代码里，读的人没法验算，也分不清是占 ETF 还是占全 A。 */
+  SEC_GTOT = {};
+  for (var ci2=0;ci2<SECS.length;ci2++){
+    var sz0 = SECS[ci2];
+    if (sz0.th) continue;
+    var gt0 = SEC_GTOT[sz0.code] || (SEC_GTOT[sz0.code] = { amt:0, n:0 });
+    gt0.amt += sz0.amt; gt0.n++;
+  }
   var sdel = secShareDelta(curAmt);
   SEC_SDEL = sdel;      // 悬浮读数要用（占比较上一日的变化），格子里的箭头只是摘要
 
@@ -4423,6 +4545,7 @@ function renderSectors(){
   }
   body.innerHTML = h;
   bindSMTip();
+  bindTrendTip();
   maybeSaveSecDaily();
   stampN('secN', DATA_TS);
 
