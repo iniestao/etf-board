@@ -20,6 +20,10 @@
  *   node pipeline/etfopt_backfill.mjs            # 全量重建，写 dist/etfopt_hist.json
  *   node pipeline/etfopt_backfill.mjs --dry      # 只打印统计，不写文件
  *   node pipeline/etfopt_backfill.mjs --recalc   # 强制用新值覆盖（正常不用）
+ *
+ * 兜底：某只的目标日抓不到（东财 push2his 按出口 IP 限流，队尾两只常年吃亏），
+ * 自动改走「东财合约链 + 腾讯现货 + 新浪 CON_OP 快照」补这一天，见 sinaFill()。
+ * 新浪只有当日快照，所以只能补最近已收盘的那个交易日，更早的洞仍靠下一轮重抓。
  */
 import fs from 'fs';
 import path from 'path';
@@ -418,6 +422,124 @@ const lastClosedTradingDay = (function () {
   return new Date(d).toISOString().slice(0, 10);
 })();
 
+/* ---------------- 新浪快照兜底：日线被限流时的最后一条路 ----------------
+ * 东财 push2his 的配额是按「出口 IP」算的，Actions 的 runner 落在 Azure 公共池里，
+ * 同一时刻还有别人的抓取在打同一个池——所以每轮能过几只全看运气：
+ * 2026-11-19 前 2 只成功、2026-11-20 前 7 只成功（106 秒 84 档，第 85 档起全拒），
+ * 切点随机，但**队尾固定吃亏**。159901/159915 排在 LIST 最后，连着两天断在它们身上。
+ *
+ * 还有一条不共享那个配额的组合：
+ *   合约链    push2.eastmoney.com/api/qt/slist   （另一个域，配额独立）
+ *   现货收盘  腾讯 newfqkline                    （spotKline 本来就用它）
+ *   期权收盘  hq.sinajs.cn/list=CON_OP_xxx       （一条请求拿全部档）
+ * 新浪只给**当日快照**、没有历史，所以只补「最近已收盘的交易日」这一天；
+ * 时间戳对不上目标日就整只放弃——宁可不补，也不能把今天的价写成昨天的。
+ *
+ * 口径与 one() 逐字一致（同一套 keepMth、平值窗口、median(K+C−P)）。
+ * 2026-11-21 拿已经算好的三只回验：159919 -0.959 / 159922 -0.400 / 510050 -1.241，
+ * 与东财日线版本逐位相同，确认窗口与合成法没有偏差。
+ */
+async function sinaQuotes(codes) {
+  const url = 'https://hq.sinajs.cn/list=' + codes.map((c) => 'CON_OP_' + c).join(',');
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': UA, Referer: 'https://finance.sina.com.cn/' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const buf = await r.arrayBuffer();
+      /* 新浪是 GBK。Node 自带 full-icu 时 TextDecoder('gbk') 直接可用；
+         万一哪天跑在裁剪过的运行时上，退回 utf8 也能解析——正文里的中文会变成
+         替换字符，但我们要的数字、引号、日期都是 ASCII，一个都不受影响。 */
+      let txt;
+      try { txt = new TextDecoder('gbk').decode(buf); }
+      catch (e) { txt = new TextDecoder('utf-8').decode(buf); }
+      const out = new Map();
+      for (const m of txt.matchAll(/CON_OP_(\d+)="([^"]*)"/g)) {
+        const f = m[2].split(',');
+        if (f.length < 33) continue;
+        out.set(m[1], { last: +f[2], prev: +f[8], k: +f[7], oi: +f[5], ts: (f[32] || '').trim() });
+      }
+      return out;
+    } catch (e) {
+      if (i === 2) { console.log('    兜底 新浪报价取不到：' + e.message); return new Map(); }
+      await sleep(1500 * (i + 1));
+    }
+  }
+  return new Map();
+}
+
+async function sinaFill(secid, code, tag) {
+  const target = lastClosedTradingDay;
+  const ch = await chain(secid).catch(() => []);
+  if (!ch.length) { console.log('    兜底 ' + tag + ' 合约链取不到，放弃'); return null; }
+
+  const spotK = await spotKline(secid, code).catch(() => null);
+  const S = spotK && spotK[target];
+  if (!(S > 0)) { console.log('    兜底 ' + tag + ' 没有 ' + target + ' 的现货收盘，放弃'); return null; }
+
+  /* 与 one() 同一套筛法：只留 dte 最小的月，再按近 20 日现货区间砍行权价 */
+  const mthDte = new Map();
+  for (const x of ch) {
+    const v = mthDte.get(x.mth);
+    if (v == null || x.dte < v) mthDte.set(x.mth, x.dte);
+  }
+  const mth = [...mthDte.entries()].sort((a, b) => a[1] - b[1])[0][0];
+  /* 换月之后链上最短的月是新的当月，可 target 那天的当月还是旧的那个——
+     旧合约已经到期消失，这条兜底补不了，老老实实留空。 */
+  if (mth !== frontMonth(target)) {
+    console.log('    兜底 ' + tag + ' ' + target + ' 的当月是 ' + frontMonth(target)
+      + ' 月、链上最短是 ' + mth + ' 月，不补');
+    return null;
+  }
+
+  const sDays = Object.keys(spotK).filter((d) => spotK[d] > 0).sort().slice(-20);
+  const sVals = sDays.map((d) => spotK[d]);
+  const kLo = Math.min(...sVals) * 0.96, kHi = Math.max(...sVals) * 1.04;
+
+  const byK = new Map();
+  for (const x of ch) {
+    if (x.mth !== mth || x.k < kLo || x.k > kHi) continue;
+    if (!byK.has(x.k)) byK.set(x.k, {});
+    byK.get(x.k)[x.side] = x.code;
+  }
+  const pairs = [...byK.entries()]
+    .filter(([, v]) => v.C && v.P)
+    .map(([k, v]) => ({ k, C: v.C, P: v.P }));
+  if (!pairs.length) { console.log('    兜底 ' + tag + ' 平值窗口里没有可配的 C/P 档'); return null; }
+
+  const win = atmWindow(pairs, S);
+  const sn = await sinaQuotes([...win.map((x) => x.C), ...win.map((x) => x.P)]);
+  const syns = [];
+  let stale = 0, empty = 0;
+  for (const x of win) {
+    const c = sn.get(x.C), p = sn.get(x.P);
+    if (!c || !p || !(c.last > 0) || !(p.last > 0)) { empty++; continue; }
+    if (!c.ts.startsWith(target) || !p.ts.startsWith(target)) { stale++; continue; }
+    syns.push(x.k + c.last - p.last);
+  }
+  if (!syns.length) {
+    console.log('    兜底 ' + tag + ' 新浪无可用价（日期不符 ' + stale + ' 档，缺价 ' + empty + ' 档）');
+    return null;
+  }
+  const syn = median(syns);
+  const bp = (syn - S) / S * 100;
+  const dte = mthDte.get(mth) + daysBetween(target, TODAY);
+  console.log('    兜底 ' + tag + ' 新浪 ' + syns.length + '/' + win.length + ' 档'
+    + '  S=' + S.toFixed(3) + '  syn=' + syn.toFixed(4) + '  bp=' + bp.toFixed(3) + '%');
+  return [{
+    d: target,
+    near: {
+      mth,
+      dte,
+      n: syns.length,
+      bp: +bp.toFixed(3),
+      ann: dte >= 3 ? +(bp * 365 / dte).toFixed(2) : null,
+    },
+  }];
+}
+
 /* 只补缺的：最近那个交易日已经有值的品种直接跳过。
  *
  * 东财对同一 IP 是「跑到某个点开始全拒」，不是随机丢包（2026-11-19 两轮：
@@ -481,11 +603,30 @@ async function main() {
     console.log('  ' + tag + ' (' + code + ')');
     try {
       const rows = await one(secid, code, tag);
-      if (!rows || !rows.length) { console.log('    ' + tag + ' 无可还原日期'); continue; }
-      res[code] = rows;
-      console.log('    ' + tag + ' 还原 ' + rows.length + ' 天  ' + rows[0].d + ' ~ ' + rows[rows.length - 1].d);
+      if (rows && rows.length) {
+        res[code] = rows;
+        console.log('    ' + tag + ' 还原 ' + rows.length + ' 天  ' + rows[0].d + ' ~ ' + rows[rows.length - 1].d);
+      } else {
+        console.log('    ' + tag + ' 无可还原日期');
+      }
     } catch (e) {
       console.log('    ' + tag + ' 失败：' + e.message);
+    }
+    /* 目标日还是没值（被限流 / 整只失败）→ 换新浪快照补这一天。
+       只补一天是因为新浪没有历史；更早的洞还是得等东财下轮重抓，合并规则只加不删。 */
+    const gotTarget = (res[code] || []).some((r) => r.d === targetDay);
+    if (!gotTarget && !overBudget()) {
+      console.log('    ' + tag + ' ' + targetDay + ' 仍缺，改走新浪快照兜底');
+      try {
+        const fb = await sinaFill(secid, code, tag);
+        if (fb && fb.length) {
+          res[code] = [...(res[code] || []), ...fb];
+          console.log('    ' + tag + ' 兜底补上 ' + targetDay + '  ' + fb[0].near.bp + '%'
+            + '（' + fb[0].near.n + ' 档）');
+        }
+      } catch (e) {
+        console.log('    兜底 ' + tag + ' 失败：' + e.message);
+      }
     }
     /* 一只 20~24 档，7 秒打完，9 只连起来就是 3.4 条/秒——东财的阈值大约
        130 条/分钟，前 5 只能过、第 6 只开始全拒。每只之间停 12 秒，整体压到
