@@ -998,7 +998,7 @@ background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:no
 .sntL{display:flex;flex-direction:column}
 .sntL>.sntline{margin-top:auto}
 .sntL,.sntR{min-width:0}
-/* 右栏也做列布局，让末尾那两张小图沉到底。左栏（6+6 格数字）比右栏长，
+/* 右栏也做列布局，让梯队沉到底。左栏（6+6 格数字）比右栏长，
    原来空白整块堆在卡片右下角，看着像图没加载完；沉底之后它变成「图」与
    「明细」之间的分组间距，是常规排版，不再是个缺口。 */
 .sntR{padding-left:26px;border-left:1px solid var(--line);
@@ -1013,7 +1013,10 @@ background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:no
   border-bottom:1px solid var(--grid);font-size:var(--fs-cap);color:var(--txt3);
   letter-spacing:.4px;white-space:nowrap}
 .sntgl>em{font-style:normal;margin-left:auto;color:var(--txt3);opacity:.8;letter-spacing:0}
-.sntgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 18px;margin-top:0}
+/* 三列 × 两行：一格 132px，刚好放下「4 个字的标签 + 27px 的数 + 一行 10px 注释」。
+   2 列时一格 200px，数值和注释并排，注释被迫跟数值抢同一行，读到「43% ≤-7%·100分位」
+   要横着拼两遍才知道哪个数。 */
+.sntgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px 16px;margin-top:0}
 /* 900 以下退回单栏：曲线在 700px 以下本来就画不出细节，硬分两栏只会让
    左栏数字挤成两行。单栏时数字改 3 列，横着排更省高度。 */
 @media(max-width:900px){
@@ -1031,20 +1034,37 @@ background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:no
 overflow:hidden;text-overflow:ellipsis}
 /* 首屏这几个数（昨涨停/红盘率/大面/中位）是打开页面最先要抓的东西，
    原来跟正文一样 21px，被周围 12.5px 的注释一衬只剩"稍大"，抓不住眼。
-   抬到 27px / 700 之后才有主数字的分量，又不会撑破 2 列 200px 的格子。 */
+   抬到 27px / 700 之后才有主数字的分量。3 列下最长的「14.3%」约 76px，
+   132px 的格子放得下，再宽就会和右边那格贴脸。 */
 .sntk>b{font-size:27px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.6px;
 line-height:1.18;display:block;margin-top:1px}
-.sntk>em{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);margin-left:3px}
-.sntk>b.up{color:var(--up)}.sntk>b.down{color:var(--down)}
-.sntk>b i{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);font-weight:400;
+/* 单位（只/家）跟着数字走，注释（分位/口径）另起一行：
+   两者混在同一个 <b> 里时，3 列宽度的第一批溢出就出现在这里。 */
+.sntk>b i.u{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);font-weight:400;
 margin-left:3px;letter-spacing:0}
+.sntk>em.n{display:block;margin-top:2px;font-style:normal;font-size:var(--fs-cap);
+color:var(--txt3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.1px}
+.sntk>b.up{color:var(--up)}.sntk>b.down{color:var(--down)}
 /* 同刻对照单独一行、缩进两格：它修饰的是上面那个涨停数，不是另一个指标。
    并排成两列会被读成「今天 38 家 / 历史 41 家」两个平行的事实。 */
 /* 解释性注释：比结构性小字（表头、坐标轴）再退一档。盯盘时这些是
    「要看才看」的说明，和表头同重量就会在每个区块底部堆出一条灰带。 */
 .sntref{margin:6px 0 0;font-size:var(--fs-2xs);color:#7d8698;line-height:1.68}
 .sntref b{color:var(--txt2);font-variant-numeric:tabular-nums;font-weight:600}
-.snlb{color:var(--txt3);margin-right:9px}
+/* 分层表：一列两行，指标名常驻。原来「首板 … ｜ 连板 …」挤成一行，434px 下折三行，
+   读到第二段时已经忘了上面那个 30% 标的是首板还是连板——而这恰好是整段的关键。 */
+.snlb2{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin-top:10px;
+  padding-top:8px;border-top:1px dashed var(--line);font-size:var(--fs-2xs);color:#7d8698}
+.snlbk{color:var(--txt3);white-space:nowrap}
+.snlbrs{display:flex;flex-direction:column;gap:3px}
+.snlbr{display:flex;gap:14px;align-items:baseline;font-variant-numeric:tabular-nums}
+.snlbh{color:var(--txt2);font-weight:600;flex:0 0 26px}
+.snlbn{flex:0 0 46px}
+.snlbr b{color:var(--txt2);font-weight:600}
+/* 这条必须写在 .snlb2 定义之后：同优先级下后者胜，放在前面的 media 块里会被覆盖。
+   326px 下「标签 + 首板 23 只 红盘 30% 中位 -5.08%」会顶到卡片边缘，
+   标签单独占一行，两行数据左对齐，反而更像一张小表。 */
+@media(max-width:560px){ .snlb2{grid-template-columns:1fr;gap:4px} }
 .sntline{display:flex;gap:12px;flex-wrap:wrap;align-items:baseline;
 margin-top:9px;padding-top:7px;border-top:1px solid var(--line);
 font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6}
@@ -1055,12 +1075,6 @@ font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6}
 border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-height:1.7}
 .snt.open .sntwhy{display:block}
 .sntwhy i{font-style:normal;color:var(--txt2)}
-/* 两组口径之间加一条竖线：左边是「昨天的池子今天怎么样」，右边是「今天的过程量」，
-   横着加不起来。不加分隔会有人拿涨停 38 去减昨涨停 37。 */
-.sntk.sep{grid-column:1/-1;display:flex;align-items:baseline;gap:11px;
-  margin-top:3px;padding-top:10px;border-top:1px solid var(--grid)}
-.sntk.sep>span{display:inline;margin:0}
-.sntgrid.sntrowsplit{margin-top:0}
 /* 梯队柱：8 档固定列宽，柱子按最大档归一。底部对齐，柱高才可比。 */
 .sntlrow{display:flex;align-items:flex-end;gap:14px;margin-top:8px}
 .sntbar{display:flex;align-items:flex-end;gap:11px}
@@ -1079,12 +1093,10 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 /* 副图标题：比刻度字小一号、颜色更淡，它只在说明这块区域是什么，
    不该和曲线上的数字抢注意力。 */
 .sntcv .cvlb{font-size:var(--fs-cap);fill:var(--txt2);opacity:.8}
-.lbseg{display:inline}
-.lbsplit{color:#cdd2da;margin:0 2px}
 /* ---- 图表带 ----
    卡片里的图必须有统一的宽度基线。改之前是三张各算各的：主曲线 1252px、
    梯队竖柱约 100px、20 日走势 128px，并排放在同一张卡里，看着像贴了三张
-   不同尺寸的截图。现在主曲线通栏，下面两张对半分，每张都吃满自己那栏。 */
+   不同尺寸的截图。现在主曲线吃满右栏，梯队贴在它下面。 */
 .sntduo{display:grid;grid-template-columns:1fr;gap:11px;
   margin-top:13px;padding-top:12px;border-top:1px solid var(--line)}
 .sntdc{min-width:0}
@@ -1109,8 +1121,6 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
   color:var(--txt2);font-variant-numeric:tabular-nums}
 
 
-/* 走势条用百分比 viewBox，宽度交给容器；高度与梯队条一致，两栏底部齐平 */
-.sntsp{display:block;width:100%;height:42px;overflow:visible}
 /* 曲线占位：撑住右栏高度，别让两栏在数据没到时一高一矮 */
 .sntcvph{display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:5px;height:240px;border:1px dashed var(--line2);border-radius:8px;
@@ -1124,15 +1134,12 @@ border:1px solid var(--line);font-size:var(--fs-2xs);color:var(--txt3);line-heig
 .sntlmx{margin-left:2px;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;padding-bottom:1px}
 .sntlmx b{color:var(--txt2);font-variant-numeric:tabular-nums}
 @media(max-width:820px){
-  .sntgrid{gap:9px 12px}
+  .sntgrid{gap:11px 12px}
   .sntk>b{font-size:var(--fs-md)}
   .sntbar{gap:9px}
   .sntbar .sb>i{width:17px}
   .sntlmx{margin-left:0}
   .sntlrow{flex-wrap:wrap;gap:6px}
-  .sntk>b i.more{display:none}
-  .lbseg{display:block}
-  .lbsplit{display:none}
   .snttag{display:none}
 }
 @media(max-width:560px){.snt{padding:7px 9px 6px}.snttag{letter-spacing:0}}
@@ -1990,7 +1997,6 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
           <li><b>涨停行业</b>：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情——同样是「涨停 38 家」，对第二天的意义正好相反。</li>
           <li><b>当日曲线</b>：红实线是今天到此刻为止的曾触板累积，灰虚线是近 14 个交易日同一时刻的中位数，中间那片是 25–75 分位。上方的线回答「今天比平常强还是弱」，弯曲的走势回答「在加速还是熄火」——同样 31 家曾触板，从 8 家一路冲上来和从 50 家掉下来，第二天的做法完全相反。</li>
           <li><b>曲线下方那排竖条</b>：<b>每 15 分钟新封了几家</b>，也就是「封板速度」。上面的曲线是「累积进度」——只说明今天到此刻一共走了多远，说明不了现在还有没有人往里冲。同样是 62 家，一路匀速堆上去和开盘半小时堆完再躺平，第二天的应对完全相反，区别只在这排柱子上。<br>三件事：<b>柱高＝这 15 分钟新增的家数</b>（右侧标了满格是几家，线性刻度，可以直接读）；<b>灰横＝历史同一时段的中位新增</b>；<b>深红柱表示比历史同期快、浅红表示慢</b>，不用比高度也能一眼看出后半场是熄火还是加速。柱子按速率换算，末档不满 15 分钟会折算，所以盘中最后一根不会因为窗口没走完就显得矮；末档与前一档相隔不足 8 分钟时干脆不画（会和前一根叠住），当前速度由下方「最近 15 分 +N 家」那行文字给。鼠标停在柱子上能看到具体数字。<br>涨停家数的当日轨迹只能靠本机采样画点（炸板池没有炸板时间，重建不出「此刻是否封住」），换台机器或清了缓存就没有这批点，曲线本身不受影响——它由服务端按两个池的首次封板时间回算，页面没打开的那些时段也在。</li>
-          <li><b>近 20 日红盘率</b>：横轴是「天」，跟当日曲线回答的不是一件事。连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。纵轴按当段自适应，所以旁边标出实际区间。</li>
           <li><b>曾触板同刻中位</b>：近 15 个交易日里，到同一时刻为止曾封上涨停的只数区间。这一项能从东财两个池精确重建，所以只有它配同刻对照。</li>
         </ul>
         <p>跌停不给同刻基准：跌停池只有「最后封板时间」，没有「首次跌停时间」，拿它重建盘中值是严格下界——11-13 收盘 33 家里 26 家当天开过板，10:00 重建值仅 2 家，比盘中真实的 5 家少一半以上，方向恰好是最坏的那种假恐慌。所以跌停只报绝对值，另配「昨日跌停池今日表现」做交叉验证。</p>
@@ -2664,19 +2670,17 @@ function sentiCard(){
   var stCol = STC[S.state] || 'var(--txt3)';
   var P = S.prem, Y = S.yprem, F = S.form, pct = S.pct || {};
 
-  /* cell 的第四个字是小字：分位、合计、口径说明都塞这儿。分位统一写成
-     「30分位」，前面不留空格——小字本来就窄，多一个空格会把 37 只挤到换行。 */
-  /* sub 是必看的小字（分位/口径），sub2 是明细，窄屏上会被隐藏：
-     手机一格只有 114px，「18.9% · 7/37 只 · 54分位」必然断成两行还断在字中间。
-     分位比分子分母重要，所以窄屏留 sub、砍 sub2。 */
-  function cell(k, v, sub, cls, extra, sub2){
-    return '<div class="sntk' + (extra ? ' ' + extra : '') + '"><span>' + k + '</span><b'
-      + (cls ? ' class="' + cls + '"' : '') + '>' + v
-      + (sub ? '<i>' + sub + '</i>' : '')
-      + (sub2 ? '<i class="more">' + sub2 + '</i>' : '')
-      + '</b></div>';
+  /* 每格三段：标签 / 数值（+ 单位）/ 小字注释。单位跟着数值走、注释单独一行——
+     原来数值、单位、分位全挤在 <b> 里，3 列之后 132px 装不下「43% ≤-7% · 100分位」，
+     浏览器只能一路缩字号或溢出。拆成两行后，注释统一 10px 灰字，扫一眼就能跳过。 */
+  function cell(k, v, unit, note, cls){
+    return '<div class="sntk"><span>' + k + '</span>'
+      + '<b' + (cls ? ' class="' + cls + '"' : '') + '>' + v
+      + (unit ? '<i class="u">' + unit + '</i>' : '') + '</b>'
+      + (note ? '<em class="n">' + note + '</em>' : '')
+      + '</div>';
   }
-  function pq(v){ return v == null ? '' : ' · ' + v + '分位'; }
+  function pq(v){ return v == null ? '' : v + ' 分位'; }
 
   var h = '<div class="snt" id="sentiCard">';
 
@@ -2692,7 +2696,7 @@ function sentiCard(){
     + '<span class="snttag">' + (brief.length
       ? '近 250 天：' + brief.join(' · ') : '点状态灯看判定依据') + '</span></div>';
 
-  /* 左栏放「数」，右栏放「形」。两组各六格：
+  /* 左栏放「数」，右栏放「形」。两组各六格，3 列 × 2 行：
      第 1 组是「昨天的池子今天怎么样」（样本盘中固定，A 类）；
      第 2 组是「今天到现在为止的过程量」（累积量，C 类 + 封板率 B 类）。
      两组口径完全不同，所以各有各的组标题，别让人以为可以横向加减。 */
@@ -2700,43 +2704,53 @@ function sentiCard(){
   var h1 = '';
   if (P){
     h1 += cell('昨涨停', P.n, '只')
-      + cell('今日红盘', Math.round(P.red) + '%', pq(pct.red), P.red >= 50 ? 'up' : 'down')
-      + cell('大面', Math.round(P.big) + '%', '≤-7%' + pq(pct.big), P.big >= 15 ? 'down' : '')
-      + cell('中位', fpc(P.mid), null, P.mid >= 0 ? 'up' : 'down')
-      + cell('晋级', P.promoRate == null ? '—' : P.promoRate + '%',
-        pq(pct.promo), P.promoRate >= 30 ? 'up' : '', '',
-        '· ' + P.promo + '/' + P.n + ' 只');
+      + cell('今日红盘', Math.round(P.red) + '%', '', pq(pct.red), P.red >= 50 ? 'up' : 'down')
+      + cell('大面', Math.round(P.big) + '%', '',
+        '≤-7%' + (pct.big == null ? '' : ' · ' + pct.big + ' 分位'), P.big >= 15 ? 'down' : '')
+      + cell('中位', fpc(P.mid), '', '', P.mid >= 0 ? 'up' : 'down')
+      + cell('晋级', P.promoRate == null ? '—' : P.promoRate + '%', '',
+        P.promo == null ? pq(pct.promo)
+          : (pq(pct.promo) ? pq(pct.promo) + ' · ' : '') + P.promo + '/' + P.n,
+        P.promoRate >= 30 ? 'up' : '');
   } else {
-    h1 += cell('昨涨停', '—', '样本不足');
+    h1 += cell('昨涨停', '—', '', '样本不足');
   }
-  /* 跌停侧只有两个数，不单独占一行——但必须和数据完全不同的涨停池隔开，
-     否则「昨跌停 5 只」会被读成「这 5 只来自上面那个池」。 */
+  /* 跌停侧只有两个数，排在第六格——和涨停池同一组（都是「昨天那个池子今天怎么样」），
+     但池子不同。标题改成「昨日两池」把这件事先说明，不然「昨跌停 83 只」会被
+     读成「这 83 只来自上面那个涨停池」。 */
   h1 += Y
-    ? cell('昨跌停', Y.n, '只 · 仍跌 ' + Math.round(Y.still) + '%', Y.still >= 30 ? 'down' : '', 'sep')
-    : cell('昨跌停', 0, '只 · 昨日无跌停', '', 'sep');
-  h += '<div class="sntgrp"><div class="sntgl">昨日涨停池'
+    ? cell('昨跌停', Y.n, '只', '仍跌 ' + Math.round(Y.still) + '%', Y.still >= 30 ? 'down' : '')
+    : cell('昨跌停', 0, '只', '昨日无跌停');
+  h += '<div class="sntgrp"><div class="sntgl">昨日两池'
     + '<em>样本固定 · 看今天表现</em></div>'
     + '<div class="sntgrid">' + h1 + '</div></div>';
 
   var h2 = cell('今日涨停', S.zt, '家')
-    + cell('一字板', F ? F.yz : '—', F ? '· 买不到' : '· 盘中才有')
-    + cell('炸板', S.zb, S.zbHold == null ? '家' : '家 · 未崩 ' + S.zbHold)
+    + cell('一字板', F ? F.yz : '—', '', F ? '买不到' : '盘中才有')
+    + cell('炸板', S.zb, '家', S.zbHold == null ? '' : '未崩 ' + S.zbHold)
     + cell('跌停', S.dt, '家')
-    + cell('封板率', S.seal == null ? '—' : Math.round(S.seal * 100) + '%', '· 封住/触板')
+    + cell('封板率', S.seal == null ? '—' : Math.round(S.seal * 100) + '%', '', '封住 / 触板')
     + cell('曾触板', S.touch, '家');
   h += '<div class="sntgrp"><div class="sntgl">今日过程量'
     + '<em>累积到此刻</em></div>'
     + '<div class="sntgrid">' + h2 + '</div></div>';
 
   /* 分层：整体红盘率被池子结构加权，首板和连板分开看才知道是「接力资金撤了」
-     还是「高位票自己在走」。这两个结论对应的动作完全相反。 */
+     还是「高位票自己在走」。这两个结论对应的动作完全相反。
+     做成一列两行、指标名常驻：原来挤在一行里用「｜」分隔，434px 下折成三行，
+     读第二段时已经忘了第一段的「红盘 30%」标的是首板还是连板。 */
   var LB = P && P.lb;
   if (LB && (LB.n1 || LB.n2)){
-    h += '<p class="sntref"><span class="snlb">昨涨停分层</span><span class="lbseg">首板 <b>' + LB.n1 + '</b> 只 · 红盘 <b>'
-      + (LB.red1 == null ? '—' : Math.round(LB.red1) + '%') + '</b> · 中位 <b>' + fpc(LB.mid1) + '</b>'
-      + '</span><span class="lbsplit">｜</span><span class="lbseg">连板 <b>' + LB.n2 + '</b> 只 · 红盘 <b>'
-      + (LB.red2 == null ? '—' : Math.round(LB.red2) + '%') + '</b> · 中位 <b>' + fpc(LB.mid2) + '</b>'
-      + '</span></p>';
+    var lbr = function(n, red, mid){
+      return '<span class="snlbn"><b>' + n + '</b> 只</span>'
+        + '<span>红盘 <b>' + (red == null ? '—' : Math.round(red) + '%') + '</b></span>'
+        + '<span>中位 <b>' + fpc(mid) + '</b></span>';
+    };
+    h += '<div class="snlb2"><span class="snlbk">昨涨停分层</span>'
+      + '<div class="snlbrs">'
+      + '<div class="snlbr"><span class="snlbh">首板</span>' + lbr(LB.n1, LB.red1, LB.mid1) + '</div>'
+      + '<div class="snlbr"><span class="snlbh">连板</span>' + lbr(LB.n2, LB.red2, LB.mid2) + '</div>'
+      + '</div></div>';
   }
 
   /* 行业集中度：38 家涨停散在 30 个行业里是普涨，挤在 3 个里是单赛道行情。
@@ -2808,10 +2822,10 @@ function sentiCard(){
       + '<i>非交易时段不会有当日数据</i></div>';
   }
 
-  /* 两张小图并排，宽度对半分、各自吃满自己那栏。之前它们是 100px 的竖柱和
-     128px 的折线，夹在 1252px 的主曲线旁边，卡片里像贴了三张不同尺寸的截图
-     ——这才是"有的图大有的图小"。现在两者同高、同宽基线，主曲线是通栏，
-     图表区从「三张图」变成「一大两小」这一种节奏。 */
+  /* 曲线下面只剩梯队这一张图（原先并排还有一条近 20 日红盘率，2026-11-23 去掉：
+     它和当日曲线回答的是两个时间尺度，20 个点的折线又只能在 434px 左栏里画成
+     一根小尾巴，读不出「横住」和「正在掉」的差别）。梯队吃满右栏宽度，条长按
+     家数归一，宽屏只会让条更长，不会多出留白。 */
   var duo = [];
   var L = S.ladder;
   if (L && L.t && L.mx > 0){
@@ -2820,18 +2834,8 @@ function sentiCard(){
       + (S.yMx ? '（昨 ' + S.yMx + ' 板）' : '') + '</span></div>'
       + ladderBars(L) + '</div>');
   }
-  if (S.trail && S.trail.red && S.trail.red.length >= 5){
-    var tr = S.trail.red, lo = 100, hi = 0, k;
-    for (k = 0; k < tr.length; k++){ if (tr[k] < lo) lo = tr[k]; if (tr[k] > hi) hi = tr[k]; }
-    duo.push('<div class="sntdc"><div class="sntdl">近 ' + tr.length + ' 日红盘率'
-      + '<span class="sntdlr">区间 ' + Math.round(lo) + '%–' + Math.round(hi) + '%</span></div>'
-      + sentiSpark(S.trail) + '</div>');
-  }
   if (duo.length) h += '<div class="sntduo' + (duo.length === 1 ? ' one' : '') + '">'
     + duo.join('') + '</div>';
-
-  /* 近 20 日轨迹：单个数字只回答「今天多冷」，回答不了「冷到哪一步」。
-     连续半个月 30% 和刚从 70% 掉到 30% 是两个完全不同的处境。 */
 
   var bits = [];
   if (S.ref && S.ref.med != null){
@@ -2975,11 +2979,13 @@ function curveChart(C, S, W0){
     var r = document.querySelector('#sentiBody .sntR');
     if (!r || !(r.clientHeight > 380)) return 0;
     var duo = r.querySelector('.sntduo');
-    var duoH = (duo && duo.offsetHeight > 60) ? duo.offsetHeight : 183;
+    /* 删掉「近 20 日红盘率」之后这里只剩梯队一张，高度约 96（标题 + 3 行条）。
+       首帧量不到时按 96 估——还按 183 估会让曲线先矮 90px 再弹一下。 */
+    var duoH = (duo && duo.offsetHeight > 60) ? duo.offsetHeight : 96;
     var ref = r.querySelector('.sntref');
     var refH = (ref && ref.offsetHeight > 10) ? ref.offsetHeight : 20;
     /* 固定占用：SVG 自身上下 8+16、副图标题带 14+5、柱区 HB、说明那行
-       上边距 7 + 行高 refH、两张小图前的分隔线 12+1。 */
+       上边距 7 + 行高 refH、梯队前的分隔线 12+1。 */
     var used = 8 + 14 + 5 + HB + 16 + 7 + refH + 13 + duoH;
     return r.clientHeight - used;
   })();
@@ -3399,37 +3405,6 @@ function cvSmpAt(smp, mins){
     if (smp[i][1] != null) v = smp[i][1];
   }
   return v;
-}
-
-/* 近 20 日红盘率迷你折线。只有 20 个点，一条 polyline 就够，不必上 canvas
-   ——卡片每 30 秒会被 innerHTML 重建一次，canvas 每次都得重画，SVG 跟着字符串走。
-   纵轴按当段自适应（并在旁边标出区间）：固定 0–100 的话，40%–60% 的波动会被压成
-   一条几乎水平的线，而「横住不动」和「正在往下掉」正是这条线要回答的问题。 */
-function sentiSpark(T){
-  var a = T.red, n = a.length, i;
-  /* 坐标用 0–100 的百分比，宽度交给 CSS。原先写死 128×26，在 1252px 的
-     主曲线旁边就是一根小尾巴；现在横轴吃满容器，preserveAspectRatio=none
-     负责横向拉伸，线宽用 non-scaling-stroke 钉住，拉伸不会把线变粗。 */
-  var W = 100, Hh = 34, padX = 1.5, padY = 3;
-  var mx = 0, mn = 100;
-  for (i = 0; i < n; i++){ if (a[i] > mx) mx = a[i]; if (a[i] < mn) mn = a[i]; }
-  if (mx - mn < 4){ mx = mn + 4; }          // 一段完全走平时别画成心电图
-  var sx = function(i2){ return padX + i2 / (n - 1) * (W - 2 * padX); };
-  var sy = function(v){ return Hh - padY - (v - mn) / (mx - mn) * (Hh - 2 * padY); };
-  var pts = [], area = [];
-  for (i = 0; i < n; i++) pts.push(sx(i).toFixed(2) + ',' + sy(a[i]).toFixed(2));
-  area.push(sx(0).toFixed(2) + ',' + (Hh - 0.5));
-  for (i = 0; i < n; i++) area.push(sx(i).toFixed(2) + ',' + sy(a[i]).toFixed(2));
-  area.push(sx(n - 1).toFixed(2) + ',' + (Hh - 0.5));
-  return '<svg class="sntsp" viewBox="0 0 ' + W + ' ' + Hh + '" preserveAspectRatio="none"'
-    + ' aria-label="近 ' + n + ' 日红盘率轨迹">'
-    + '<line x1="0" y1="' + sy(50).toFixed(2) + '" x2="' + W + '" y2="' + sy(50).toFixed(2)
-    + '" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"'
-    + ' stroke-dasharray="3 3" opacity=".9"/>'
-    + '<polygon points="' + area.join(' ') + '" fill="var(--up)" opacity=".10"/>'
-    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--up)"'
-    + ' stroke-width="1.6" vector-effect="non-scaling-stroke"'
-    + ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
 }
 
 /* 连板梯队的形状。满宽之下有两种画法：分段堆叠条（一段一家、段宽占比）和
