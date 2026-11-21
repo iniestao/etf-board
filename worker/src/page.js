@@ -144,11 +144,6 @@ html[data-theme="dark"] .hhmore b:hover{background:var(--accent-bg)}
 body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
 font-variant-numeric:tabular-nums;padding:18px 22px 52px}
 .wrap{max-width:1560px;margin:0 auto}
-/* 品牌带：一条 4px 渐变通栏压在标题上方。不做 position:fixed——吸顶导航
-   占着 top:0，固定条会盖住它的上沿、把毛玻璃切掉一条。这样滚走就没了，
-   只在打开页面那一眼交代「这是同一个产品」。 */
-.wrap::before{content:"";display:block;height:5px;border-radius:999px;margin:0 0 14px;
-  background:linear-gradient(90deg,#a82026 0%,#cf3f36 30%,#e0663f 58%,#e79a3c 82%,#dfae4a 100%)}
 header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
 /* 标题：左边一个迷你柱线标识（三根递增柱），右边「ETF 盯盘」两段式——
    ETF 用等宽小字压成标识词，盯盘是主语。比原来「ETF 全市场盯盘」一大串
@@ -180,11 +175,17 @@ background:var(--bg3);border:1px solid var(--line);font-size:var(--fs-xs);color:
 .dot.up i{background:var(--down);box-shadow:0 0 0 3px rgba(14,154,97,.16)}
 .dot.down i{background:var(--up);box-shadow:0 0 0 3px rgba(217,58,58,.16)}
 .dot.down{color:var(--up)}
-#btnTheme{padding:3px 10px;border-radius:20px;font-size:var(--fs-xs);color:var(--txt2);cursor:pointer;
+#btnTheme{padding:3px 11px;border-radius:20px;font-size:var(--fs-xs);color:var(--txt2);cursor:pointer;
 display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid transparent;
 user-select:none;-webkit-user-select:none}
 #btnTheme:hover{color:var(--txt);border-color:var(--accent)}
-#btnTheme u{text-decoration:none;font-family:var(--mono);font-size:var(--fs-2xs);opacity:.75}
+/* 「深色」这两个字必须跟旁边「因子研究」「使用说明」是同一套字。原来给它
+   挂了 --mono（等宽字体族）又小一号（11.5 vs 12.5）：中文在等宽字体里字面
+   宽度不一样、笔画也发细，一排按钮里一眼看出它不是同一套。
+   图标同理：<b> 默认 700 会让 ☾ 比汉字壮一档；字号写 em 不写 px，窄屏那档
+   按钮整体降到 11.5，写死 13 就会让图标比旁边的字大一圈。 */
+#btnTheme b{font-weight:400;font-size:1.04em;line-height:1;letter-spacing:0}
+#btnTheme u{text-decoration:none;font-family:inherit;font-size:inherit;letter-spacing:0}
 #btnRs,#btnHelp{padding:3px 11px;border-radius:20px;font-size:var(--fs-xs);color:var(--txt2);
 display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid transparent}
 #btnHelp{margin-left:6px}
@@ -193,6 +194,7 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
 @media(max-width:560px){
   header{gap:8px}
   #btnRs,#btnHelp{font-size:var(--fs-2xs);padding:2px 8px}
+  #btnTheme{font-size:var(--fs-2xs);padding:2px 9px}
   #btnHelp{margin-left:4px}
   h1 em{font-size:var(--fs-xs)}
 }
@@ -977,7 +979,13 @@ background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:no
 .sntL{display:flex;flex-direction:column}
 .sntL>.sntline{margin-top:auto}
 .sntL,.sntR{min-width:0}
-.sntR{padding-left:26px;border-left:1px solid var(--line)}
+/* 右栏也做列布局，让末尾那两张小图沉到底。左栏（6+6 格数字）比右栏长，
+   原来空白整块堆在卡片右下角，看着像图没加载完；沉底之后它变成「图」与
+   「明细」之间的分组间距，是常规排版，不再是个缺口。 */
+.sntR{padding-left:26px;border-left:1px solid var(--line);
+  display:flex;flex-direction:column}
+.sntR>.sntcv,.sntR>.sntcvph{flex:0 0 auto}
+.sntR>.sntduo{margin-top:auto}
 .sntgrp{margin-bottom:14px}
 .sntgrp:last-child{margin-bottom:0}
 /* 组标题：两行数字原来是「靠一条横线暗示分组」，读到第二行才知道换了口径。
@@ -2705,7 +2713,10 @@ function sentiCard(){
   /* 曲线现在住在右栏里，宽度不再是卡片内宽。分栏布局是左栏 434 固定 +
      26 间隙 + 右栏 26 左内边距，所以右栏 = 内宽 - 486。视口 900 以下退回
      单栏（与 CSS 断点一致），此时曲线重新吃满整卡。 */
-  var wideL = (window.innerWidth || 999) >= 900;
+  /* 这是「900 及以上算不算两栏」。CSS 的断点是 max-width:900，也就是 900
+     本身已经是单栏——用 >= 会把 900 当两栏，右栏宽度少算 486，曲线被压窄
+     一大截。用 > 900 才和布局一致。 */
+  var wideL = (window.innerWidth || 999) > 900;
   var colR = (function(){
     /* 优先量上一帧就已经在 DOM 里的右栏：估算式（内宽 − 434 − 间隙 − 内边距）
        在 1024 这类中间宽度上会差二十几像素，SVG 于是被 CSS 再缩一次，
@@ -2900,13 +2911,39 @@ function curveChart(C, S, W0){
      innerWidth 还是 960，刻度照 9 个画，09:30 和 10:00 会叠在一起。
      一切与密度有关的降级都按图本身的宽度判断。 */
   var tight = W < 580;
-  /* 高度跟着宽度走。分栏后曲线只剩 780 宽，再用固定的 114 高，宽高比还是
-     6:1——和通栏时一样扁，等于白分。给到宽度的 0.30（上限 210），曲线的
-     弯曲才看得出形状；再高右栏会顶出左栏的数字区。 */
-  var ih = Math.round(mob
-    ? Math.min(150, Math.max(96, iw * 0.26))
-    : Math.min(210, Math.max(126, iw * 0.30)));   // 累积线绘图区
   var HB = mob ? 32 : 40;           // 增量柱区高度
+  /* 绘图区高度：先按「右栏还剩多少空间」倒推，再用按图宽算的自然高度兜底。
+     原来只用自然高度（图宽的 0.30，上限 210），在 1440 上算出 210、右栏却
+     有 589 高，底部空 67px；到 1024–1280 更糟，曲线只有 247 高、空出 120px。
+     那一版的上限理由写的是「再高就会顶出左栏数字区」——方向搞反了：左栏
+     12 格数字才是撑高行的那一方，右栏总比它短。
+     右栏高度由左栏决定、与曲线自身无关，所以上一帧量到的 clientHeight
+     就是本帧的目标高度。首次渲染时 body 还是空的、量不到，就用自然高度；
+     曲线数据到达后那次重绘会自动校正，用户看不出中间换过一次。
+     单栏（<900）不倒推：那时右栏高度由自己内容撑开，倒推会锁死在上一帧。 */
+  var ihFit = (function(){
+    /* 断点要和 CSS 那条 @media(max-width:900px) 对齐：900 本身已经是单栏，
+       单栏时右栏高度由自己内容撑开，倒推会一帧一帧往上爬。 */
+    if (mob || (window.innerWidth || 999) <= 900) return 0;
+    var r = document.querySelector('#sentiBody .sntR');
+    if (!r || !(r.clientHeight > 380)) return 0;
+    var duo = r.querySelector('.sntduo');
+    var duoH = (duo && duo.offsetHeight > 60) ? duo.offsetHeight : 183;
+    var ref = r.querySelector('.sntref');
+    var refH = (ref && ref.offsetHeight > 10) ? ref.offsetHeight : 20;
+    /* 固定占用：SVG 自身上下 8+16、副图标题带 14+5、柱区 HB、说明那行
+       上边距 7 + 行高 refH、两张小图前的分隔线 12+1。 */
+    var used = 8 + 14 + 5 + HB + 16 + 7 + refH + 13 + duoH;
+    return r.clientHeight - used;
+  })();
+  var ihNat = mob
+    ? Math.min(150, Math.max(96, iw * 0.26))
+    : Math.min(258, Math.max(150, iw * 0.34));
+  /* 倒推值同时受「宽高比不低于 1.35:1」约束：960 那档图宽只有 341，
+     纯按剩余空间能拉到 283，一条日内的累计曲线画成近方形反而读不出斜度。 */
+  var ih = Math.round(ihFit > 0
+    ? Math.max(150, Math.min(ihFit, iw / 1.35, 340))
+    : ihNat);                        // 累积线绘图区
   var Hh = pT + ih + 14 + 5 + HB + 16;   // 总高
   var y0 = pT + ih;                 // 累积线 0 基线
   var yT = y0 + 12;                 // 副图标题基线（间隙里，不压柱子）
