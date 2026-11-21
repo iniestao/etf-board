@@ -197,6 +197,10 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
   #btnTheme{font-size:var(--fs-2xs);padding:2px 9px}
   #btnHelp{margin-left:4px}
   h1 em{font-size:var(--fs-xs)}
+  /* 秒级时钟在窄屏上把「使用说明」顶到第二行，而这一档屏幕上它本来也读不出
+     什么信息（页面每 60 秒自己刷，盯着秒数看只会以为数据在跳）。整只收掉，
+     时间改由各卡的「截至 xx:xx」交代。 */
+  #clock{display:none}
 }
 /* 吸顶锚点导航：页面 7000px+，没有跳转每次找自选都要滚半天。
    top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
@@ -1467,6 +1471,34 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .scell .sbar{height:3px;border-radius:2px;background:var(--bg3);margin-top:7px;overflow:hidden}
 .scell .sbar i{display:block;height:3px;border-radius:2px;background:var(--txt3);opacity:.55}
 .scell .sz{position:absolute;left:0;top:0;bottom:0;width:2.5px}
+/* 板块格的悬浮读数。格子里只放得下「涨跌 / 涨跌家数 / 成交额」三个数；这一格
+   占本组成交额多少、近一年走到什么分位，塞进格子会把 6 列网格撑散。原生 title
+   要悬停一秒才冒出来、样式也不跟主题，还和「点开看指数明细」抢同一个鼠标停留，
+   所以在页面级自己画一个：跟鼠标走，贴到视口边上自动翻向。 */
+.smtip{position:fixed;left:0;top:0;z-index:1200;pointer-events:none;min-width:196px;
+  max-width:260px;padding:8px 11px;border-radius:8px;background:var(--surface);
+  border:1px solid var(--line2);
+  box-shadow:0 8px 24px rgba(23,32,54,.16);font-size:var(--fs-xs);color:var(--txt2);
+  line-height:1.5;opacity:0;transition:opacity .1s linear}
+.smtip.on{opacity:1}
+html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
+.smtip .tt{display:flex;align-items:baseline;gap:8px}
+.smtip .tt b{font-size:var(--fs-sm);font-weight:700;color:var(--txt)}
+.smtip .tt em{margin-left:auto;font-style:normal;font-weight:700;
+  font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+.smtip .tt em.up{color:var(--up)}
+.smtip .tt em.down{color:var(--down)}
+/* 主指标单独一档、加一条虚线隔开：这一格「占 A 股多少」才是悬浮要看的东西，
+   其余三行是它的注解，字号压回次级，眼球才有主次。 */
+.smtip .tm{margin-top:6px;padding-top:6px;border-top:1px dotted var(--line2);
+  display:flex;align-items:baseline;gap:8px;color:var(--txt2);white-space:nowrap}
+.smtip .tm b{font-size:var(--fs-sm);font-weight:700;color:var(--txt);
+  font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+.smtip .tr{display:flex;align-items:baseline;gap:16px;margin-top:3px;color:var(--txt3);
+  white-space:nowrap}
+.smtip .tr b{margin-left:auto;font-weight:600;color:var(--txt2);font-variant-numeric:tabular-nums}
+.smtip .tr b.up{color:var(--up)}
+.smtip .tr b.down{color:var(--down)}
 .sdet{margin-top:9px;border-top:1px dashed var(--line);padding-top:7px;display:none}
 .sdet.show{display:block}
 .sdet .sdhd{font-size:var(--fs-xs);color:var(--txt3);margin-bottom:4px}
@@ -4165,14 +4197,109 @@ function secMetaToggle(){
     + (secHealth().msgs.length ? '<span class="warnmsg">⚠ ' + secHealth().msgs.join('；') + '</span>' : '');
 }
 
+/* ---------- 板块格悬浮读数 ----------
+   格子里只有三行：涨跌、涨跌家数、成交额。但读者最想知道的其实是「这一格占了
+   多少成交额」——判断钱往哪条线走靠的是它，不是绝对金额。放不进格子：6 列网格
+   里再加一行，每格都要多两行高，一屏装不下三组。所以做成悬浮，停一下就有。
+
+   为什么不用原生 title：要悬停一秒才冒出来、样式不跟主题、窄屏和触屏干脆没有，
+   而且它跟「点开看指数明细」抢同一个手势。自己画一个<div>，跟鼠标走。 */
+var SMTIP = null, SEC_BY = {}, SEC_SDEL = null;
+function smTipEl(){
+  if (SMTIP) return SMTIP;
+  SMTIP = document.createElement('div');
+  SMTIP.id = 'smTip';
+  SMTIP.className = 'smtip';
+  document.body.appendChild(SMTIP);   // 挂在 body 上：格子 overflow:hidden，放里面会被裁掉
+  return SMTIP;
+}
+/* 主指标是「占本组成交额」。A 股格算占 A 股，港股、跨境各算各的分母——
+   跨市场加总没有交易含义（汇率、交易时段都不同），这和地图分三组是同一个理由。
+   主题格（AI / 新能源）的分子不计入分母，占比会算出 135% 那种数，所以只报重叠。 */
+function smTipHTML(s){
+  var cls = s.ret > 0 ? 'up' : (s.ret < 0 ? 'down' : 'flat');
+  var pct = secSharePct(s.key, s.share);
+  var h = '<div class="tt"><b>' + s.k + '</b><em class="' + cls + '">' + fpc(s.ret) + '</em></div>';
+  h += s.th
+    ? '<div class="tm">主题格 <b>与行业格重叠</b></div>'
+    : '<div class="tm">占' + s.g + '成交额 <b>' + (s.share * 100).toFixed(1) + '%</b></div>';
+  h += '<div class="tr"><span>成交额</span><b>' + fmtAmt(s.amt) + '</b></div>'
+    + '<div class="tr"><span>跟踪指数</span><b>' + s.up + ' / ' + s.n + ' 涨</b></div>';
+  /* 占比变化只在超过 0.5pt 时报，门槛跟格子里那个 ↑/↓ 一致——
+     小到 0.05pt 的变化天天有，报出来只会把浮层变成噪声。 */
+  var dl = SEC_SDEL && SEC_SDEL[s.key];
+  if (dl && Math.abs(dl.ds) > 0.5){
+    h += '<div class="tr"><span>占比 vs ' + (dl.d ? dl.d.slice(5) : '上一日') + '</span>'
+      + '<b class="' + (dl.ds > 0 ? 'up' : 'down') + '">' + (dl.ds > 0 ? '+' : '')
+      + dl.ds.toFixed(1) + 'pt</b></div>';
+  }
+  if (pct != null) h += '<div class="tr"><span>占比近一年分位</span><b>' + pct.toFixed(0) + '</b></div>';
+  return h;
+}
+function smTipMove(e){
+  if (!SMTIP) return;
+  var w = SMTIP.offsetWidth, h = SMTIP.offsetHeight;
+  var vw = window.innerWidth, vh = window.innerHeight;
+  var x = e.clientX + 14, y = e.clientY + 16;
+  if (x + w > vw - 8) x = e.clientX - w - 14;   // 贴右边就翻到光标左侧
+  if (y + h > vh - 8) y = e.clientY - h - 12;   // 贴底就翻到光标上方
+  SMTIP.style.left = (x < 8 ? 8 : x) + 'px';
+  SMTIP.style.top  = (y < 8 ? 8 : y) + 'px';
+}
+function smTipHide(){ if (SMTIP) SMTIP.className = 'smtip'; }
+function bindSMTip(){
+  var box = document.getElementById('secBody');
+  if (!box || box.__smtip) return;
+  /* 触屏没有 hover：点一下会先补一次 mouseover，浮层闪一下再跟着点开明细，
+     看起来像卡住。这类设备直接不绑——它本来就走「点开看明细」那条路。 */
+  try { if (window.matchMedia && window.matchMedia('(hover:none)').matches) return; } catch(e){}
+  box.__smtip = 1;
+  var cellOf = function(t){
+    while (t && t !== box){
+      if (t.classList && t.classList.contains('scell')) return t;
+      t = t.parentNode;
+    }
+    return null;
+  };
+  box.addEventListener('mouseover', function(e){
+    var c = cellOf(e.target);
+    if (!c) return;
+    var s = SEC_BY[c.getAttribute('data-sec')];
+    if (!s) return;
+    var el = smTipEl();
+    el.innerHTML = smTipHTML(s);
+    el.className = 'smtip on';
+    smTipMove(e);
+  });
+  box.addEventListener('mousemove', function(e){
+    if (!SMTIP || !SMTIP.classList.contains('on')) return;
+    if (!cellOf(e.target)){ smTipHide(); return; }
+    smTipMove(e);
+  });
+  box.addEventListener('mouseout', function(e){
+    var c = cellOf(e.target);
+    if (!c) return;
+    if (e.relatedTarget && c.contains(e.relatedTarget)) return;   // 移到格子内部不算离开
+    smTipHide();
+  });
+  // 滚走了不跟着散，就会变成贴在页面上的鬼影
+  window.addEventListener('scroll', smTipHide, { passive: true });
+}
+
 function renderSectors(){
   SEC_GROUPS_OUT = buildGroups();
   SECS = [];
+  SEC_BY = {};
   for (var a=0;a<SEC_GROUPS_OUT.length;a++){
-    for (var b=0;b<SEC_GROUPS_OUT[a].cells.length;b++) SECS.push(SEC_GROUPS_OUT[a].cells[b]);
+    for (var b=0;b<SEC_GROUPS_OUT[a].cells.length;b++){
+      var sc0 = SEC_GROUPS_OUT[a].cells[b];
+      SECS.push(sc0);
+      SEC_BY[sc0.key] = sc0;      // 悬浮读数按格子的 data-sec 反查，不解析 DOM 文本
+    }
   }
   var body = document.getElementById('secBody');
   var hd = document.getElementById('secHead');
+  smTipHide();          // 重绘会把光标下那个格子换掉，浮层不主动散就成了孤儿
   if (!SECS.length){
     body.innerHTML = '<div class="empty">暂无行业主题数据（非交易时段或行情源未就绪）</div>';
     hd.innerHTML = '<span>—</span>';
@@ -4181,6 +4308,7 @@ function renderSectors(){
   var curAmt = {};
   for (var ci=0;ci<SECS.length;ci++) curAmt[SECS[ci].key] = SECS[ci].amt;
   var sdel = secShareDelta(curAmt);
+  SEC_SDEL = sdel;      // 悬浮读数要用（占比较上一日的变化），格子里的箭头只是摘要
 
   // 顶部只放三组总量。不做跨组「最强/最弱」——港股和 A 股的涨跌幅不可比，
   // 混排出来的第一名没有交易含义。组内对比放在各自组头。
@@ -4235,22 +4363,18 @@ function renderSectors(){
       var shNote = s.th ? '（主题：与行业格重叠，不计入分母）'
         : '（占' + s.g + '板块 ' + share.toFixed(1) + '%）'
           + (shPct != null ? '，近一年 ' + shPct.toFixed(0) + ' 分位' : '');
+      /* 原生 title 拿掉：悬浮读数已经覆盖同样的信息，两边都留会让浏览器在
+         自制浮层下面再弹一个系统黄框。aria-label 只留一句无障碍摘要。 */
       o += '<div class="scell' + (SEC_OPEN === s.key ? ' on' : '') + (s.th ? ' th' : '') + '" data-sec="' + s.key + '"'
-        + ' title="' + s.k + '：' + s.n + ' 个跟踪指数（每个指数只算成交额最大那只），成交额 '
-        + fmtAmt(s.amt) + shNote + '，'
-        + s.up + '/' + s.n + ' 个指数上涨'
-        + (s.th ? '。主题指数成分横跨多个行业，与上方行业格是同一批股票，不能再加一遍。' : '')
-        + (dl ? '　·　资金占比' + (s.th ? '' : ' ' + (dl.share*100).toFixed(1) + '%') + '，较 '
-          + (dl.d ? dl.d.slice(5) + ' 收盘' : '上一交易日') + ' '
-          + (dl.ds >= 0 ? '+' : '') + dl.ds.toFixed(1) + ' 个百分点'
-          : '　·　还没有收盘基准（收盘后自动记一条）') + '">'
+        + ' aria-label="' + s.k + '：' + s.n + ' 个跟踪指数，成交额 ' + fmtAmt(s.amt) + shNote + '"'
+        + '>'
         + '<i class="sz" style="background:rgba(' + rgb + ',' + (0.15 + 0.85*sh).toFixed(2) + ')"></i>'
         + '<div class="sn"><span class="nm">' + s.k + '</span>'
         + '<span class="sd ' + dsCls + '">' + dsTxt + '</span></div>'
         + '<div class="sv ' + cls + '">' + fpc(s.ret) + '</div>'
         + '<div class="ss"><span class="si">' + s.up + '/' + s.n + '</span>'
         + '<span class="sa">' + fmtAmt(s.amt) + '</span></div>'
-        + '<div class="sbar" title="成交额' + shNote + '"><i style="width:'
+        + '<div class="sbar"><i style="width:'
         + barW.toFixed(1) + '%;background:rgba(' + rgb + ',.55)"></i></div>'
         + '</div>';
     }
@@ -4298,6 +4422,7 @@ function renderSectors(){
       + '</div><div class="sdet" id="secDet_' + G2.code + '"></div></div>';
   }
   body.innerHTML = h;
+  bindSMTip();
   maybeSaveSecDaily();
   stampN('secN', DATA_TS);
 
@@ -10395,7 +10520,14 @@ document.getElementById('btnProbe').onclick = function(){
   }).catch(function(e){ toast('自检失败: ' + e.message); });
 };
 
-function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
+/* 窄屏这一档把时钟藏了（见 @media 560 处）。offsetParent 为 null 就是 display:none，
+   此时别写 textContent——每秒一次重排，白白浪费在没人看的地方。宽窄切换回来时
+   最多晚一秒补上，看不出差别。 */
+function clock(){
+  var el = document.getElementById('clock');
+  if (!el || !el.offsetParent) return;
+  el.textContent = new Date().toLocaleTimeString('zh-CN');
+}
 
 /* ---------- 深浅主题 ----------
    只切 data-theme，色板全在 CSS 里；JS 这边负责按钮文案、记住选择、
