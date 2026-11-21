@@ -44,13 +44,16 @@ export const HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ETF 全市场盯盘</title>
+<!-- 主题要在样式表之前定下来：等 body 起来再切，白底会先闪一下。
+     默认跟随系统，用户手动切过就按用户的选择走。 -->
+<script>try{var _t=localStorage.getItem("etf_theme");if(_t==="dark"||(!_t&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.setAttribute("data-theme","dark")}catch(e){}</script>
 <style>
 :root{
 /* 表面分三层：页面底、卡片白、卡内凹槽。凹槽用底色区分，不再套第二层边框
    ——原来衍生品区是 .sec > .futgrid > .mkbox(边框) > .tbl(边框) > table，
    三层白底三层灰线，眼睛分不出哪层是哪个。 */
---bg:#eef0f4;--bg2:#ffffff;--surface:#ffffff;
---bg1:#f1f3f6;--bg3:#f1f3f6;--sunken:#f1f3f6;
+--bg:#e8ebf1;--bg2:#ffffff;--surface:#ffffff;
+--bg1:#f4f6fa;--bg3:#f4f6fa;--sunken:#f4f6fa;
 /* 线分三档：卡片边、区块分界、图表网格。原来的 #e3e6eb 对白底只有 1.25:1，
    等于没画——111 处分隔线在多数屏上是消失的，这也是"看着平"的原因之一。 */
 --line:#d8dde6;--line2:#c6cddb;--grid:#e6e9ef;--cardline:#e3e7ee;
@@ -66,9 +69,15 @@ export const HTML = `<!DOCTYPE html>
 --accent:#2563eb;--accent-ink:#1d4ed8;--accent-bg:#eef3fe;--accent-line:#c7d7f7;
 /* 字号只留五档。原先 19 档、257 处声明，其中 10.5px 88 处、11.5px 81 处
    ——主次只差 1px，等于没有层级。 */
---fs-cap:10.5px;--fs-2xs:11.5px;--fs-xs:12.5px;--fs-sm:13.5px;--fs-md:15px;--fs-lg:21px;--fs-xl:26px;
+--fs-cap:10.5px;--fs-2xs:11.5px;--fs-xs:12.5px;--fs-sm:13.5px;--fs-md:15px;--fs-lg:21px;--fs-xl:30px;
+/* 视觉锚点：原来全页最大字 26px、只有 8 处，其余 2500 多个元素全挤在
+   10.5~15px 之间，视线找不到落点，所以整页"平"。首屏那几个最要紧的数字
+   （涨停数、红盘率、仓位）单独走到这一档，不跟正文抢同一把尺子。 */
+--fs-hero:38px;
 --lh-tight:1.2;--lh-ui:1.4;--lh-body:1.55;--lh-read:1.7;
---r-xs:4px;--r-sm:6px;--r-md:12px;--r-lg:14px;--r-pill:999px;
+/* 圆角原来 2px 出现 73 次，视觉上等于直角，跟 Excel 截图没区别。
+   抬到 8/14 以后卡片才有"一块板"的体积感。 */
+--r-xs:5px;--r-sm:8px;--r-md:14px;--r-lg:16px;--r-card:12px;--r-pill:999px;
 --s1:4px;--s2:6px;--s3:8px;--s4:12px;--s5:16px;--s6:24px;
 --pad-card:10px 12px;--pad-dense:6px 8px;
 /* 阴影只做「贴纸感」，悬浮才抬起。原来 20 多个卡片容器一个阴影都没有，
@@ -78,19 +87,77 @@ export const HTML = `<!DOCTYPE html>
 --sh-3:0 24px 64px -16px rgba(16,24,40,.28);
 --mono:"SF Mono",Consolas,"Roboto Mono",Menlo,monospace;
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+/* ---------- 深色主题 ----------
+   浅色是「白天在办公室看」的形态，深色是「晚上复盘、或者长时间盯盘」的形态。
+   两套只换色板，不改任何布局和字号——所以切主题不会让任何一块错位。
+   语义色在深色下必须整体提亮：--up 原来 #c62f34 放在 #14161b 上只有 2.1:1，
+   红字会糊成一块砖；抬到 #e4636a 之后才回到 4.5:1 以上。
+   深浅两套的 --up/--down 都保持"涨红跌绿"，跟 A 股习惯一致。 */
+html[data-theme="dark"]{
+--bg:#14161b;--bg2:#1c1f26;--surface:#1c1f26;--bg1:#23272f;--bg3:#23272f;--sunken:#23272f;
+--line:#2d323d;--line2:#3b4250;--grid:#262a33;--cardline:#2d323d;
+--txt:#e6e9ef;--txt1:#e6e9ef;--txt2:#a9b1c0;--txt3:#7e8798;--axis:#7e8798;
+--up:#e4636a;--up-ink:#f08b90;--up-bg:#2b1e21;--up-line:#4d2f33;
+--down:#34bf8d;--down-ink:#5cd6a7;--down-bg:#172a24;--down-line:#2b4b3e;
+--warn:#d9a441;--warn-bg:#2a2418;--warn-line:#4a3f28;
+--accent:#5b8cf7;--accent-ink:#82a9ff;--accent-bg:#1b2337;--accent-line:#2f3d66;
+--sh-1:0 1px 2px rgba(0,0,0,.45),0 2px 8px -3px rgba(0,0,0,.55);
+--sh-2:0 2px 6px -1px rgba(0,0,0,.55),0 8px 24px -12px rgba(0,0,0,.75);
+--sh-3:0 24px 64px -16px rgba(0,0,0,.75)}
+/* 下面这些是历史遗留的硬编码浅色，深色下不改就是一块块白斑。
+   新写样式请直接用变量，别再往这里塞。 */
+html[data-theme="dark"] .secnav{background:rgba(20,22,27,.92)}
+html[data-theme="dark"] .secnav a.on{background:var(--bg2);border-color:var(--line2)}
+html[data-theme="dark"] h1 .mk{background:linear-gradient(150deg,#3a2426,#2e1e20)}
+html[data-theme="dark"] h1 .tag{background:#332326;color:#f08b90}
+html[data-theme="dark"] h1 .tag b{color:#f39b9f}
+html[data-theme="dark"] .dot{background:var(--bg1);border-color:var(--line)}
+html[data-theme="dark"] #btnRs,html[data-theme="dark"] #btnHelp{background:var(--bg1)}
+html[data-theme="dark"] .onfut span.up{background:#2b1e21;border-color:#4d2f33}
+html[data-theme="dark"] .onfut span.down{background:#172a24;border-color:#2b4b3e}
+html[data-theme="dark"] .ontrk{background:var(--bg1);border-color:var(--line)}
+html[data-theme="dark"] thead th{background:var(--bg2);border-bottom-color:var(--line2)}
+html[data-theme="dark"] tbody td{border-bottom-color:var(--grid)}
+html[data-theme="dark"] tbody tr:hover td{background:#232833}
+html[data-theme="dark"] .mtab.on{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent-ink)}
+html[data-theme="dark"] .wbar{background:#262a33;box-shadow:inset 0 0 0 1px #2d323d}
+html[data-theme="dark"] .posbar,html[data-theme="dark"] .hhbar{background:#2b303a}
+html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{background:var(--bg1);color:var(--txt);border-color:var(--line)}
+html[data-theme="dark"] .stalebar{background:#2a2418;border-color:#4a3f28;color:#d9a441}
+html[data-theme="dark"] .stalebar.bad{background:#2b1e21;border-color:#4d2f33;color:#f08b90}
+/* 徽章：浅色下是一块 0.96 明度的淡底，放到 #1c1f26 的卡片上就是一片白斑。
+   按语义各给一档深底，文字同时提亮——深底配原来的 #b02a2a 只有 1.9:1，读不出来。 */
+html[data-theme="dark"] .pm.hi,html[data-theme="dark"] .mtag.t-up,html[data-theme="dark"] .dtag.d4,
+html[data-theme="dark"] .evt.lv2 .ek{background:#2b1e21;border-color:#4d2f33;color:#f08b90}
+html[data-theme="dark"] .pm.lo,html[data-theme="dark"] .mtag.t-down,html[data-theme="dark"] .dtag.d1,
+html[data-theme="dark"] .sthd .sttag.lo{background:#172a24;border-color:#2b4b3e;color:#5cd6a7}
+html[data-theme="dark"] .pm.mid,html[data-theme="dark"] .mtag.t-warn,html[data-theme="dark"] .dtag.d2,
+html[data-theme="dark"] .dtag.d3,html[data-theme="dark"] .sthd .sttag.hi{background:#2a2418;border-color:#4a3f28;color:#d9a441}
+html[data-theme="dark"] .mtag.t-info,html[data-theme="dark"] .fq,html[data-theme="dark"] .t3,
+html[data-theme="dark"] .ixb,html[data-theme="dark"] .scqtip .t3h{background:var(--bg1);border-color:var(--line);color:var(--txt3)}
+html[data-theme="dark"] .tag.on,html[data-theme="dark"] .syn{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent-ink)}
+html[data-theme="dark"] tr.hr:hover td,html[data-theme="dark"] tbody tr:hover,
+html[data-theme="dark"] .spdrow:hover,html[data-theme="dark"] .hhrow:hover{background:#232833}
+html[data-theme="dark"] .lbr>i{background:#39414f}
+html[data-theme="dark"] .hhmore b:hover{background:var(--accent-bg)}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
 font-variant-numeric:tabular-nums;padding:18px 22px 52px}
 .wrap{max-width:1560px;margin:0 auto}
+/* 品牌带：一条 4px 渐变通栏压在标题上方。不做 position:fixed——吸顶导航
+   占着 top:0，固定条会盖住它的上沿、把毛玻璃切掉一条。这样滚走就没了，
+   只在打开页面那一眼交代「这是同一个产品」。 */
+.wrap::before{content:"";display:block;height:5px;border-radius:999px;margin:0 0 14px;
+  background:linear-gradient(90deg,#a82026 0%,#cf3f36 30%,#e0663f 58%,#e79a3c 82%,#dfae4a 100%)}
 header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
 /* 标题：左边一个迷你柱线标识（三根递增柱），右边「ETF 盯盘」两段式——
    ETF 用等宽小字压成标识词，盯盘是主语。比原来「ETF 全市场盯盘」一大串
    平铺好读：一眼分得清「是什么」和「干什么」。
    红：页面底色是跌绿/涨红双色系统，标题取涨色（--up）才对得上「盯盘」这件
    事本身——蓝是通用 SaaS 味，跟行情没关系。 */
-h1{display:flex;align-items:center;gap:9px;font-size:var(--fs-lg);font-weight:600;letter-spacing:.2px}
-h1 .mk{display:inline-flex;align-items:flex-end;gap:2px;width:24px;height:24px;padding:5px;
-  box-sizing:border-box;background:#fbe4e4;border-radius:7px}
+h1{display:flex;align-items:center;gap:10px;font-size:22px;font-weight:700;letter-spacing:-.1px}
+h1 .mk{display:inline-flex;align-items:flex-end;gap:2px;width:27px;height:27px;padding:6px;
+  box-sizing:border-box;background:linear-gradient(150deg,#fce4e4,#f9d2d2);border-radius:8px}
 h1 .mk i{display:block;width:3px;border-radius:1px;background:var(--up)}
 h1 .mk i:nth-child(1){height:5px;opacity:.4}
 h1 .mk i:nth-child(2){height:9px;opacity:.7}
@@ -113,6 +180,11 @@ background:var(--bg3);border:1px solid var(--line);font-size:var(--fs-xs);color:
 .dot.up i{background:var(--down);box-shadow:0 0 0 3px rgba(14,154,97,.16)}
 .dot.down i{background:var(--up);box-shadow:0 0 0 3px rgba(217,58,58,.16)}
 .dot.down{color:var(--up)}
+#btnTheme{padding:3px 10px;border-radius:20px;font-size:var(--fs-xs);color:var(--txt2);cursor:pointer;
+display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid transparent;
+user-select:none;-webkit-user-select:none}
+#btnTheme:hover{color:var(--txt);border-color:var(--accent)}
+#btnTheme u{text-decoration:none;font-family:var(--mono);font-size:var(--fs-2xs);opacity:.75}
 #btnRs,#btnHelp{padding:3px 11px;border-radius:20px;font-size:var(--fs-xs);color:var(--txt2);
 display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid transparent}
 #btnHelp{margin-left:6px}
@@ -128,7 +200,7 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
    top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
    --navH 由 JS 量出来，区块 scroll-margin-top 和表头 sticky 都引用它。 */
 .secnav{position:sticky;top:0;z-index:6;display:flex;gap:2px;align-items:center;
-  margin:-2px 0 10px;padding:4px 0;background:rgba(238,240,244,.92);
+  margin:-2px 0 10px;padding:4px 0;background:rgba(232,235,241,.92);
   -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
   /* 六项在 375px 上必然溢出，横滑比换行好：换行会把吸顶导航顶成两行，吃掉半屏 */
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
@@ -158,15 +230,24 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
    盘前打开页面第一眼要看的东西，所以放在统计卡上面。
    涨红跌绿是 A 股习惯，美股数据进来也按这个上色——
    页面要迁就读者的眼睛，不是迁就数据源的习惯。 */
-.oncard{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
+.oncard{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);
   padding:8px 12px;margin-bottom:12px;font-size:var(--fs-sm)}
 .onhd{display:flex;align-items:baseline;gap:8px;color:var(--txt2)}
-.onhd b{color:var(--txt1);font-size:var(--fs-sm)}
-.onhd .n{font-size:var(--fs-xs);color:var(--txt3)}
-.onhd .ofold{margin-left:auto;cursor:pointer;color:var(--txt3);user-select:none}
+/* 窄屏上「隔夜」「收起」会被压成竖排两个字：.onhd 是 flex，中间那句说明
+   很长，b 和 .ofold 没有收缩下限，一挤就按字断行。这两个词必须完整。 */
+.onhd b{color:var(--txt1);font-size:var(--fs-sm);white-space:nowrap;flex:0 0 auto}
+.onhd .n{font-size:var(--fs-xs);color:var(--txt3);min-width:0}
+.onhd .ofold{margin-left:auto;cursor:pointer;color:var(--txt3);user-select:none;
+white-space:nowrap;flex:0 0 auto}
 .onfut{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
-.onfut span{background:var(--bg1);border:1px solid var(--line);border-radius:4px;
-  padding:2px 7px;font-size:var(--fs-xs);color:var(--txt2)}
+/* 每个条目按自己的方向铺一层极淡底：隔夜卡原来是一排一模一样的灰 pill，
+   只有末尾那三个数字有颜色，扫一眼分不出「昨晚是普跌还是分化」。整块上色后，
+   一片淡绿就是普跌、红绿相间就是分化——不用读数字，形状先说话。
+   底比文字淡两级，不跟数字抢；涨红跌绿仍按 A 股习惯。 */
+.onfut span{background:var(--bg1);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:3px 8px;font-size:var(--fs-xs);color:var(--txt2)}
+.onfut span.up{background:#fbe8ea;border-color:#f0c9cc}
+.onfut span.down{background:#e0f1e9;border-color:#bfdfd1}
 /* 美债那条是异步补进来的：外层 #onBond 只是挂载点，不能自己占一个框，
    否则先出现一个空边框、再撑成两个框。display:contents 让它的子元素
    直接当 .onfut 的 flex item 参与排布。 */
@@ -190,14 +271,14 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
 .stalebar{margin:-2px 0 12px;padding:7px 10px;border-radius:6px;font-size:var(--fs-sm);line-height:1.5;
   background:#fff8e8;border:1px solid #f0dcb0;color:#8a5a00}
 .stalebar.bad{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
-.card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);padding:12px 14px}
 .card .k{font-size:var(--fs-xs);color:var(--txt2);letter-spacing:.3px;margin-bottom:4px}
 .card .v{font-size:var(--fs-xl);font-weight:600;font-family:var(--mono);line-height:1.25}
 .card .v small{font-size:var(--fs-xs);font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:var(--fs-2xs);color:var(--txt3);margin-top:2px}
 /* ---------- 全市场异动 ---------- */
 .mktwrap{display:block}
-.mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 13px}
+.mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);padding:12px 14px}
 .wbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:9px 0 7px;
   background:#eef1f5;box-shadow:inset 0 0 0 1px #e3e6eb}
 .wbar i{display:block;height:8px}
@@ -298,12 +379,12 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* 「类型」是分类信息，不是涨跌信号。原来五套彩色并行、一行挂一块，
    30 行铺开就是 30 段彩色胶带，红绿反而被稀释得认不出来。统一成浅灰底，
    只用字色微差区分语义，色彩预算全部留给涨跌数字本身。 */
-.mtag{background:#f4f5f8;border:1px solid #e7e9ee;color:#6b7380}
+.mtag{background:var(--bg1);border:1px solid var(--line);color:var(--txt3)}
 .mtag.t-up{background:#fbf2f2;border-color:#efdcde;color:#a05055}
 .mtag.t-warn{background:#fbf8f1;border-color:#eee4d0;color:#8a6a3a}
 .mtag.t-down{background:#f2f8f5;border-color:#dcebe3;color:#3a7a63}
 .mtag.t-info{background:#f3f6fa;border-color:#e1e7f0;color:#4f6891}
-.mtag.t-mute{background:#f4f5f8;border-color:#e7e9ee;color:#6b7380}
+.mtag.t-mute{background:var(--bg1);border-color:var(--line);color:var(--txt3)}
 .mrow:last-child{border-bottom:none}
 .mrow:hover .mn{color:#1d4ed8}
 .mn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
@@ -362,7 +443,7 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* ---------- 今日变化 + 组合体检 ---------- */
 .split{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:9px;align-items:start}
 @media(max-width:860px){.split{grid-template-columns:1fr}}
-.evtbox,.portbox{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 13px}
+.evtbox,.portbox{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);padding:12px 14px}
 .evt{display:flex;gap:9px;padding:7px 0;border-bottom:1px dashed var(--line)}
 .evt:last-child{border-bottom:none;padding-bottom:1px}
 .evt i{width:6px;height:6px;border-radius:50%;margin-top:6px;flex:0 0 auto;background:#c3c9d4}
@@ -392,7 +473,7 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dnote{font-size:var(--fs-xs);color:var(--txt3);margin:-1px 0 9px;line-height:1.6}
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:9px}
 @media(max-width:560px){.dgrid{grid-template-columns:1fr}}
-.dcard{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px 12px 11px;
+.dcard{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);padding:11px 13px 12px;
   cursor:pointer;transition:border-color .15s,box-shadow .15s;display:flex;flex-direction:column}
 .dcard:hover{border-color:#c9d6ef;box-shadow:0 3px 12px rgba(23,32,54,.1)}
 .dcard.pend{opacity:.55}
@@ -401,12 +482,12 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dtop .dc{font-family:var(--mono);font-size:var(--fs-xs);color:var(--txt3);flex:0 0 auto}
 .dtag{margin-left:auto;font-size:var(--fs-xs);font-weight:600;padding:2px 7px;border-radius:5px;
   white-space:nowrap;flex:0 0 auto}
-.dtag.d0{background:#f4f5f8;color:#6b7380;border:1px solid #e7e9ee}
+.dtag.d0{background:var(--bg1);color:var(--txt3);border:1px solid var(--line)}
 .dtag.d1{background:#f2f8f5;color:#3a7a63;border:1px solid #dcebe3}
 .dtag.d2{background:#fbf8f1;color:#8a6a3a;border:1px solid #eee4d0}
 .dtag.d3{background:#fbf8f1;color:#8a6a3a;border:1px solid #eee4d0}
 .dtag.d4{background:#fbf2f2;color:#a05055;border:1px solid #efdcde}
-.posbar{position:relative;height:7px;border-radius:4px;background:#e7ebf1;overflow:visible}
+.posbar{position:relative;height:7px;border-radius:4px;background:var(--bg1);overflow:visible}
 .posbar u{position:absolute;left:0;top:0;height:7px;border-radius:4px;
   background:linear-gradient(90deg,#c9dbff,#5c92ec)}
 .posbar i{position:absolute;top:-2.5px;width:4px;height:12px;border-radius:2px;background:#1d4ed8;
@@ -431,7 +512,7 @@ input:focus,select:focus{border-color:var(--accent)}
 input#q{width:180px}
 button{cursor:pointer;transition:.15s}
 button:hover{background:var(--bg3)}
-button.pri{background:#eaf1ff;border-color:#b9cdf7;color:#1d4ed8}
+button.pri{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent-ink)}
 .tag{display:inline-block;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:var(--fs-sm);
 border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:.15s;user-select:none}
 .tag:hover{color:var(--txt)}
@@ -446,10 +527,10 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
    会把信号稀释成装饰。 */
 .sechd{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:0 0 9px 11px;
   position:relative;font-size:var(--fs-xs);color:var(--txt2);border-bottom:1px solid var(--line)}
-.sechd::before{content:'';position:absolute;left:0;top:1px;width:3px;height:15px;
-  border-radius:2px;background:var(--txt);opacity:.42}
-.sechd b{color:var(--txt);font-size:17px;font-weight:650;white-space:nowrap;flex:0 0 auto;
-letter-spacing:-.2px}
+.sechd::before{content:'';position:absolute;left:0;top:2px;width:4px;height:19px;
+  border-radius:2px;background:linear-gradient(180deg,#c62f34,#e8794a)}
+.sechd b{color:var(--txt);font-size:19px;font-weight:700;white-space:nowrap;flex:0 0 auto;
+letter-spacing:-.3px}
 .sechd .n{color:var(--txt3);font-size:var(--fs-2xs);min-width:0;overflow:hidden;text-overflow:ellipsis}
 /* 「重算 / 刷新」原来在 CSS 里一条规则都没有，长得跟正文灰字一样，
    六个区块上都有、没一个看得出能点。补成最低限度的按钮样子。 */
@@ -462,7 +543,7 @@ user-select:none;transition:background .15s,border-color .15s,color .15s}
 .sechd .n .tsm{white-space:nowrap;font-variant-numeric:tabular-nums}
 /* overflow 用 clip 不用 hidden：hidden 会把 .tbl 变成滚动容器，theadd 的
    sticky 就地失效（表头吸顶不出来）；clip 同样裁掉圆角外的内容但不建立滚动盒。 */
-.tbl{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:clip}
+.tbl{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);overflow:clip}
 table{width:100%;border-collapse:collapse}
 /* 表头不做"色块"，只做"标签"：灰底去掉，改字重 600 + 字距 .5px 立住，
    下面一条细线交代列的范围。原来一块浅灰底 + 11.5px 常规字，跟数据行
@@ -583,7 +664,7 @@ footer{margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:var(--fs-x
 /* 「今日变化」两格的空态不是错误也不是加载，只是一句话——按正文排版收紧行高，
    不再占一大块空白。 */
 .evtbox .empty,.portbox .empty{padding:6px 2px;text-align:left;line-height:1.7}
-#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#fff;box-shadow:0 8px 28px rgba(23,32,54,.16);
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--bg2);border:1px solid var(--line);box-shadow:var(--sh-2);
 border:1px solid var(--line);padding:8px 16px;border-radius:6px;font-size:var(--fs-sm);opacity:0;
 transition:.25s;pointer-events:none;z-index:9}
 #toast.show{opacity:1}
@@ -622,7 +703,7 @@ border-radius:6px;padding:2px;margin-left:auto}
 .hmodes b{padding:2px 10px;border-radius:4px;font-size:var(--fs-xs);font-weight:400;
 color:var(--txt2);cursor:pointer;user-select:none}
 .hmodes b:hover{color:var(--txt)}
-.hmodes b.on{background:#fff;color:var(--txt);font-weight:600;box-shadow:0 3px 12px rgba(23,32,54,.1)}
+.hmodes b.on{background:var(--bg2);color:var(--txt);font-weight:600;box-shadow:0 3px 12px rgba(23,32,54,.1)}
 .hmodes b[data-m="min"].on{color:var(--accent)}
 .htabs span{padding:3px 9px;border-radius:5px;font-size:var(--fs-xs);color:var(--txt2);
 cursor:pointer;border:1px solid transparent;user-select:none}
@@ -668,7 +749,7 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
    这层意思对不上，整列看着像没上色 */
 .hhctr{font-weight:600}
 .hhctr.up{color:var(--up)}.hhctr.dn{color:var(--down)}
-.hhbar{position:relative;height:7px;background:#eaeef4;border-radius:4px}
+.hhbar{position:relative;height:7px;background:var(--bg1);border-radius:4px}
 .hhbar:before{content:"";position:absolute;left:50%;top:0;width:1px;height:7px;background:#c9d2de}
 .hhbar u{position:absolute;top:0;height:7px;border-radius:3px}
 /* 合计行吸在底部：它是这一栏的结论（前 N 大解释了多少、剩下多少），
@@ -921,7 +1002,11 @@ background:var(--bg3);border:1px solid var(--line);cursor:pointer;user-select:no
 .sntk{min-width:0}
 .sntk>span{display:block;font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap;
 overflow:hidden;text-overflow:ellipsis}
-.sntk>b{font-size:var(--fs-lg);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+/* 首屏这几个数（昨涨停/红盘率/大面/中位）是打开页面最先要抓的东西，
+   原来跟正文一样 21px，被周围 12.5px 的注释一衬只剩"稍大"，抓不住眼。
+   抬到 27px / 700 之后才有主数字的分量，又不会撑破 2 列 200px 的格子。 */
+.sntk>b{font-size:27px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.6px;
+line-height:1.18;display:block;margin-top:1px}
 .sntk>em{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);margin-left:3px}
 .sntk>b.up{color:var(--up)}.sntk>b.down{color:var(--down)}
 .sntk>b i{font-style:normal;font-size:var(--fs-cap);color:var(--txt3);font-weight:400;
@@ -1504,6 +1589,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 <header>
   <h1><span class="mk"><i></i><i></i><i></i></span><span class="tag">ETF<b>盯盘</b></span><em id="clock">--:--:--</em></h1>
   <div class="sp"></div>
+  <span id="btnTheme" role="button" tabindex="0" title="切换深色 / 浅色（记住选择）"><b id="thIco">☾</b><u id="thTxt">深色</u></span>
   <a id="btnRs" href="/research" title="201 个因子的 IC 检验、样本外回测与 PE 策略">因子研究</a>
   <a id="btnHelp" href="/help" title="怎么看这个页面">使用说明</a>
 </header>
@@ -5888,6 +5974,21 @@ var HC = {
   grid:'#e9ecf1', axis:'#939aa7', cross:'#8b93a1', vol:'#dfe4ec', rsi:'#7c5cd6',
   boll:'#98a3b5'
 };
+/* canvas 的 fillStyle 是「画的那一刻取一次」的值，跟 CSS 变量没有绑定关系。
+   所以切主题必须重画，而重画前要先把这套色换成新主题的——不然深色底上
+   继续用 #e9ecf1 的网格线和 #939aa7 的坐标字，等于什么都看不见。 */
+function hcTheme(){
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (dark) {
+    HC.up='#e4636a'; HC.dn='#34bf8d'; HC.ma20='#d9a441'; HC.ma60='#6f9fff';
+    HC.grid='#282d37'; HC.axis='#7e8798'; HC.cross='#5c6675'; HC.vol='#2b303a';
+    HC.rsi='#a78bfa'; HC.boll='#8b95a8';
+  } else {
+    HC.up='#d93a3a'; HC.dn='#0e9a61'; HC.ma20='#d68910'; HC.ma60='#4c8dff';
+    HC.grid='#e9ecf1'; HC.axis='#939aa7'; HC.cross='#8b93a1'; HC.vol='#dfe4ec';
+    HC.rsi='#7c5cd6'; HC.boll='#98a3b5';
+  }
+}
 
 var H = {
   code:'', name:'', d:null, range:250, hover:-1, ok:false,
@@ -6732,6 +6833,7 @@ function minNote(){
 }
 
 function hDrawMin(){
+  hcTheme();
   hSize();
   var W = H.W, Ht = H.Ht, ctx = H.octx, m = H.m;
   if (!W) return;
@@ -7009,6 +7111,7 @@ function hLegendMin(idx){
 }
 
 function hDraw(){
+  hcTheme();
   if (H.mode === 'min') return hDrawMin();
   // 成分档下画布是 display:none，再画只会白烧 CPU，还会把隐藏画布上的旧图刷新
   if (H.mode === 'hold') return;
@@ -8870,7 +8973,8 @@ function onTxt(v){ return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
  *  压淡 + 单独说明，别让它跟旁边几条实时值长得一样。 */
 function ovChip(n, chg, sid, old){
   var tip = old ? '这一只是上次抓到的值，当前未刷新 · 点看分时 / 日线' : '点看分时 / 日线';
-  return '<span class="ovclk' + (old ? ' old' : '') + '" data-ovsid="' + sid
+  var dir = onCls(chg);
+  return '<span class="ovclk' + (old ? ' old' : '') + (dir ? ' ' + dir : '') + '" data-ovsid="' + sid
     + '" data-ovnm="' + esc(n) + '" title="' + tip + '">'
     + esc(n) + ' <b class="' + onCls(chg) + '">' + onTxt(chg) + '</b></span>';
 }
@@ -10255,6 +10359,35 @@ document.getElementById('btnProbe').onclick = function(){
 };
 
 function clock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN'); }
+
+/* ---------- 深浅主题 ----------
+   只切 data-theme，色板全在 CSS 里；JS 这边负责按钮文案、记住选择、
+   以及把 canvas 画过的那几张图重画一遍（SVG 都吃 CSS 变量，会自己跟着变）。 */
+function applyThemeUI(){
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var i = document.getElementById('thIco'), t = document.getElementById('thTxt');
+  if (i) i.textContent = dark ? '\u2600' : '\u263e';
+  if (t) t.textContent = dark ? '浅色' : '深色';
+}
+function toggleTheme(){
+  var h = document.documentElement;
+  var wasDark = h.getAttribute('data-theme') === 'dark';
+  if (wasDark) h.removeAttribute('data-theme'); else h.setAttribute('data-theme', 'dark');
+  try { localStorage.setItem('etf_theme', wasDark ? 'light' : 'dark'); } catch (e) {}
+  applyThemeUI();
+  try { hcTheme(); } catch (e) {}
+  try { if (H && H.ok && H.d) hDraw(); } catch (e) {}
+  try { if (H && H.m && H.min) hDrawMin(); } catch (e) {}
+}
+(function(){
+  var b = document.getElementById('btnTheme');
+  if (!b) return;
+  b.addEventListener('click', toggleTheme);
+  b.addEventListener('keydown', function(e){
+    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); toggleTheme(); }
+  });
+  applyThemeUI();
+})();
 
 /* ---------- 衍生品 ----------
    三块数据各走各的接口，互不阻塞：
