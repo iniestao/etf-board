@@ -572,13 +572,23 @@ async function runContracts(base, pass) {
     /* 归并后的清单量级：全市场 1600+、按指数去重后 400~500 组。低于 300 说明
        映射错把一堆不同指数并成了一个（那比不归并更糟：并错的那只永远不预热）。 */
     if (!(w1.n > 300)) bad('/api/pcfwarm 的清单只有 ' + w1.n + ' 只，归并后应该还有四五百组');
-    /* 同指数只留龙头：清单必须比市场总数明显少，且组数不超过清单长度。
+    /* 同指数只留龙头：清单必须比市场总数明显少，且**一只指数只占一个名额**。
+       后半句以前没查，结果 159919 和 510300 同属沪深300、两只都进了清单，
+       367 只只盖住 366 组，多出来的那一只谁也说不清——重复预热等于白烧一次
+       子请求，而且意味着「同指数只留一只」这条规则实际没生效。
+       现在用 n === grp + selfAdd 卡住（自选只在「映射里没有这个指数」时才会
+       开出新组），自选顶掉代表、自选之间互顶的只数分别记在 selfSwap / selfDup。
        两个数只在建计划那一轮返回，命中已有计划的轮次就跳过这条。 */
     if (w1.all) {
-      (w1.all > w1.n && w1.grp <= w1.n && w1.dropped === w1.all - w1.grp)
+      const selfAdd = w1.selfAdd || 0;
+      (w1.all > w1.n && w1.n === w1.grp + selfAdd && w1.dropped === w1.all - w1.grp)
         ? ok('/api/pcfwarm 按跟踪指数归并：' + w1.all + ' 只 → ' + w1.grp + ' 组 → 预热 ' + w1.n
-          + ' 只（' + w1.exact + ' 只落在同指数多只的组里）')
-        : bad('/api/pcfwarm 归并数目对不上：' + JSON.stringify({ all: w1.all, grp: w1.grp, n: w1.n, dropped: w1.dropped }));
+          + ' 只（' + w1.exact + ' 只落在同指数多只的组里'
+          + '；自选新开 ' + selfAdd + ' 组、顶掉代表 ' + (w1.selfSwap || 0)
+          + '、同组重复被并 ' + (w1.selfDup || 0) + '）')
+        : bad('/api/pcfwarm 归并数目对不上（应有 n === grp + selfAdd）：'
+          + JSON.stringify({ all: w1.all, grp: w1.grp, n: w1.n, dropped: w1.dropped,
+                             selfAdd: w1.selfAdd, selfSwap: w1.selfSwap, selfDup: w1.selfDup }));
       if (!(w1.exact > w1.all * 0.6)) {
         bad('/api/pcfwarm 只有 ' + w1.exact + '/' + w1.all + ' 只走指数映射，各成一组的太多');
       }

@@ -4875,9 +4875,23 @@ async function buildWarmPlan(day, env) {
   const dropped = got.length - leaders.length;
 
   /* 自选无条件进清单：用户天天看的那几十只，不该因为是「同指数里的非龙头」
-     而在盘中第一次点开时等一次现场拉。自选取不到不影响主流程。 */
+     而在盘中第一次点开时等一次现场拉。自选取不到不影响主流程。
+
+     撞指数时**自选顶掉代表**，不是代表顶掉自选：159919 和 510300 都跟沪深300，
+     穿透出来的成分是同一批股票，一份就够；留谁取决于谁更可能被点开。自选是用户
+     自己钉在那里的（每天第一眼看的就是它），代表只是当天成交额排第一的那只，
+     明天就可能换人。所以让自选占位，被顶掉的那只点开时走三级现场拉——它本来就是
+     「明天不一定在名单里」的角色。
+     一个组只让给第一个自选：同一指数自选了两只时，第二个计进 selfDup 并掉，
+     否则两只互相顶，最终留下谁取决于遍历顺序，那种不确定性最难查。 */
   const amt = new Map(got.map((x) => [x.c, x.a]));
   const keep = new Map(leaders.map((x) => [x.c, x]));
+  const grpTaken = new Map();          // 指数组 -> 占位的 code
+  const grpSelf = new Set();           // 该组的占位是否来自自选（自选之间不再互顶）
+  for (const x of leaders) grpTaken.set(groupKeyOf(x.c), x.c);
+  let selfAdd = 0;                     // 自选开了个新组（映射里没有它的指数）
+  let selfSwap = 0;                    // 自选顶掉了同组的代表
+  let selfDup = 0;                     // 同组已有自选，这只并掉
   try {
     if (env && env.WATCH) {
       const raw = await env.WATCH.get(WATCH_KEY);
@@ -4885,7 +4899,19 @@ async function buildWarmPlan(day, env) {
       if (Array.isArray(arr)) {
         for (const c of arr) {
           const code = String(c);
-          if (/^\d{6}$/.test(code) && !keep.has(code)) keep.set(code, { c: code, a: amt.get(code) || 0, m: '' });
+          if (!/^\d{6}$/.test(code) || keep.has(code)) continue;
+          const gk = groupKeyOf(code);
+          if (grpTaken.has(gk)) {
+            if (grpSelf.has(gk)) { selfDup++; continue; }
+            keep.delete(grpTaken.get(gk));
+            grpSelf.add(gk);
+            selfSwap++;
+          } else {
+            grpSelf.add(gk);
+            selfAdd++;
+          }
+          grpTaken.set(gk, code);
+          keep.set(code, { c: code, a: amt.get(code) || 0, m: '' });
         }
       }
     }
@@ -4903,7 +4929,11 @@ async function buildWarmPlan(day, env) {
   groups.sort((a, b) => b[0].a - a[0].a);
   const codes = [];
   for (const g of groups) for (const x of g) codes.push(x.c);
-  return { day, n: codes.length, codes, grp: byCore.size, dropped, all: got.length, exact };
+  /* 不变量：codes 里每个指数组最多出现一次（grpTaken 保证），所以
+     n === grp + selfAdd，自选被并掉的只数单独记在 selfDup 里。
+     之前是 n 比 grp 多 1、又查不出多的那只是谁——就是 159919 与 510300 撞组。 */
+  return { day, n: codes.length, codes, grp: byCore.size, dropped,
+           selfAdd, selfSwap, selfDup, all: got.length, exact };
 }
 
 /** 预热阶段抓一只：上交所重试 2 次，深交所只认今天的文件 */
@@ -4948,7 +4978,7 @@ async function warmRound(env) {
 
   // 建计划这一轮不抓清单：20 页列表已经吃掉不少子请求，再抓二十几只容易撞上限
   if (built) {
-    return { ok: true, built: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped, all: plan.all, exact: plan.exact };
+    return { ok: true, built: true, day, i: st.i, n: st.n, grp: plan.grp, dropped: plan.dropped, selfAdd: plan.selfAdd, selfSwap: plan.selfSwap, selfDup: plan.selfDup, all: plan.all, exact: plan.exact };
   }
 
   /* 清单日期探测：两个用途——还没开抓时判断要不要等，抓过之后判断要不要归零重抓。
@@ -4984,7 +5014,7 @@ async function warmRound(env) {
     const hm = cst.getUTCHours() * 100 + cst.getUTCMinutes();
     if (st.i === 0 && st.pday && st.pday !== day && hm < 905) {
       try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
-      return { ok: true, wait: true, day, sse: st.pday, i: 0, n: plan.n, grp: plan.grp, dropped: plan.dropped, exact: plan.exact };
+      return { ok: true, wait: true, day, sse: st.pday, i: 0, n: plan.n, grp: plan.grp, dropped: plan.dropped, selfAdd: plan.selfAdd, selfSwap: plan.selfSwap, selfDup: plan.selfDup, exact: plan.exact };
     }
   }
 
@@ -4995,7 +5025,7 @@ async function warmRound(env) {
       st.done = 1;
       try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
     }
-    return { ok: true, done: true, day, i: st.i, n: st.n, pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, exact: plan.exact };
+    return { ok: true, done: true, day, i: st.i, n: st.n, pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, selfAdd: plan.selfAdd, selfSwap: plan.selfSwap, selfDup: plan.selfDup, exact: plan.exact };
   }
 
   // 从游标开始，按整片累加到 WARM_PER_RUN 只以上（片不切，保证每片只写一次）
@@ -5037,7 +5067,7 @@ async function warmRound(env) {
   try { await env.WATCH.put(PCFW_KV + day, JSON.stringify(st), { expirationTtl: PCFS_TTL }); } catch (e) { /* 忽略 */ }
   return {
     ok: true, day, i: st.i, n: st.n, got: ok, fail, wrote, done: st.i >= st.n,
-    pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, all: plan.all, exact: plan.exact,
+    pday: st.pday, refresh: st.refresh, grp: plan.grp, dropped: plan.dropped, selfAdd: plan.selfAdd, selfSwap: plan.selfSwap, selfDup: plan.selfDup, all: plan.all, exact: plan.exact,
   };
 }
 
