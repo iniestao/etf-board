@@ -8861,6 +8861,10 @@ function scanAll(){
      视图不动，等第一笔成交再说。 */
   var prog = dayProgress();
   var open = isOpen();
+  /* 「提醒 关」关的是打扰，不是记录：清单照记得，只是不弹浮层/系统通知。
+     这两件事得分开——关掉提醒的人，盘后还是想回看今天都出了什么事；
+     而正在开会的人，要的是别响，不是「连记录一起丢」。 */
+  var canPop = ALERT.on && open;
   if (prog <= 0 && !open) return;
 
   /* 桶按「快照属于哪个交易日」走（周末、节假日都不翻页），
@@ -8940,7 +8944,7 @@ function scanAll(){
         if (evAdd('evr', 'hi', x, '放量 ' + evrTxt + ' · ' + fpc(x.chg),
           '今日折算 ' + fmtAmt(x.amt / prog) + ' / 20 日均 ' + fmtAmt(b.amt20)
             + (x.ix ? ' · 跟踪 ' + x.ix : ''),
-          x.chg > 0 ? 'up' : 'dn', open && pops < popMax && alertCool('evr|' + x.c, 45))){
+          x.chg > 0 ? 'up' : 'dn', canPop && pops < popMax && alertCool('evr|' + x.c, 45))){
           pops++;
         }
       } else if (evr >= EV_LOW_EVR && Math.abs(x.chg) >= EV_LOW_CHG){
@@ -8963,7 +8967,7 @@ function scanAll(){
           + (x.iopv != null ? ' · IOPV ' + x.iopv.toFixed(3) : '')
           + ' · 阈值 ' + thr + '%（' + (cat === 'cross' ? '跨境' : cat === 'commodity' ? '商品' : '股票') + '）';
         if (evAdd('pm', x.pm > 0 ? 'p' : 'd', x, pmTxt, pmSub,
-          x.pm > 0 ? 'up' : 'dn', open && pops < popMax && alertCool('pm|' + x.c, 60))){
+          x.pm > 0 ? 'up' : 'dn', canPop && pops < popMax && alertCool('pm|' + x.c, 60))){
           pops++;
         }
       }
@@ -8977,7 +8981,7 @@ function scanAll(){
        再记一条就是同一只票在列表里出现两次。 */
     if ((x.chg >= p99 && x.chg >= 3) || (x.chg <= p01 && x.chg <= -3)){
       var ek = 'ext|' + x.c;
-      if (open && pops < popMax && alertCool(ek, 90)){
+      if (canPop && pops < popMax && alertCool(ek, 90)){
         pops++;
         alertPop(x.n + ' ' + fpc(x.chg),
           '池内 ' + (x.chg > 0 ? '前 1%' : '后 1%') + '（' + (x.chg > 0 ? p99 : p01).toFixed(2)
