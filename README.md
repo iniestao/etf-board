@@ -2,6 +2,9 @@
 
 **线上地址：https://etf-board.iniestao.workers.dev**
 
+> **使用说明在 [`使用说明.md`](使用说明.md)**：哪里点、一天怎么用、看到怪现象怎么解释、出问题怎么查。
+> 这份 README 是设计决策日志——每个阈值怎么定出来的、哪里踩过坑，改动之前先看这里。
+
 境内上市全部 ETF（1717 只）的实时盯盘页，全部跑在云上：Cloudflare Workers 提供页面，
 GitHub Actions 每天收盘后算历史指标，推到仓库的 `data` 分支；Worker 从那里读，边缘缓存 6 小时。
 
