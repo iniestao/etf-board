@@ -1633,7 +1633,11 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
 .sdet .sr .cd2{font-family:var(--mono);color:var(--txt3);font-size:var(--fs-2xs);width:52px;text-align:right}
 .sdet .sr .v2{font-variant-numeric:tabular-nums;width:56px;text-align:right;font-weight:600}
 .sdet .sr .a2{font-variant-numeric:tabular-nums;width:62px;text-align:right;color:var(--txt3)}
-/* ---------- 盘中提醒 ---------- */
+/* ---------- 盘中提醒 ----------
+   提醒条仍挂在自选栏上（那是打开页面第一眼会看到的位置），但扫的是全市场，
+   跟自选没有关系——所以原来那个「范围 自选/全市场」的开关删掉了，
+   换成一个只读的「池 212」标签，点开说清池子怎么来的。
+   底下那套异动列表是独立的一块：右下角浮标 + 右侧抽屉，不占页面纵向空间。 */
 .alertbar{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .abtn{cursor:pointer;padding:2px 9px;border-radius:20px;border:1px solid var(--line);
   color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:var(--fs-xs);user-select:none}
@@ -1657,24 +1661,78 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
 .aitem.dn{border-left-color:var(--down)}
 .aitem b{font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
 .aitem small{display:block;color:var(--txt2);font-size:var(--fs-xs);margin-top:2px;line-height:1.4}
-/* 提醒记录：浮层只停 9 秒，全市场模式下这个列表才是主要出口 */
-#alertLog{position:fixed;right:14px;top:52px;z-index:998;width:min(340px,calc(100vw - 24px));
-  max-height:64vh;background:var(--bg2);border:1px solid var(--line);border-radius:8px;
-  box-shadow:0 8px 28px rgba(23,32,54,.16);display:none;flex-direction:column;overflow:hidden}
-#alertLog.show{display:flex}
-#alertLog .lh{padding:8px 11px;border-bottom:1px solid var(--line);font-size:var(--fs-sm);
-  color:var(--txt3);display:flex;align-items:center;gap:8px;flex:none}
-#alertLog .lh b{color:var(--txt);font-size:var(--fs-sm)}
-#alertLog .lh u{margin-left:auto;cursor:pointer;text-decoration:none;color:var(--txt3)}
-#alertLog .lh u:hover{color:var(--txt)}
-#alertLog .lb{overflow-y:auto;padding:2px 0}
-#alertLog .li{padding:5px 11px;font-size:var(--fs-xs);border-left:2px solid transparent;
-  display:flex;gap:7px;align-items:baseline}
-#alertLog .li.up{border-left-color:var(--up)}
-#alertLog .li.dn{border-left-color:var(--down)}
-#alertLog .li em{font-style:normal;color:var(--txt3);font-variant-numeric:tabular-nums;flex:none}
-#alertLog .li i{font-style:normal;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#alertLog .le{padding:18px 11px;text-align:center;color:var(--txt3);font-size:var(--fs-sm);line-height:1.6}
+
+/* ---------- 今日异动：右下角浮标 + 右侧抽屉 ----------
+   为什么不放在页面里当一块：这个页面已经有八个区块要滚了，再加一栏 150 条
+   的流水，等于让「异动」变成第九个要读的东西。浮标只说「今天有几条」，
+   想看才拉开——它是一个查询入口，不是一块仪表。
+
+   tabular-nums 在浮标数字上尤其重要：从 9 变 10 的时候，等宽数字不会让圆圈
+   左右抽动一下。 */
+.evf{position:fixed;right:16px;bottom:18px;z-index:997;display:flex;align-items:center;
+  gap:6px;padding:7px 13px 7px 11px;border-radius:22px;border:1px solid var(--line);
+  background:var(--bg2);box-shadow:0 4px 16px rgba(16,24,40,.14);cursor:pointer;
+  font-size:var(--fs-xs);color:var(--txt2);user-select:none;
+  transition:box-shadow .16s ease,transform .16s ease}
+.evf:hover{box-shadow:0 6px 22px rgba(16,24,40,.2);transform:translateY(-1px)}
+.evf b{font-variant-numeric:tabular-nums;font-size:var(--fs-sm);color:var(--txt);font-weight:600}
+.evf b.hit{color:var(--up)}
+.evf i{width:6px;height:6px;border-radius:50%;background:var(--txt3);flex:none}
+.evf i.live{background:var(--up);animation:evpulse 2.4s ease-in-out infinite}
+@keyframes evpulse{0%,100%{opacity:1}50%{opacity:.35}}
+.evf em{font-style:normal;color:var(--txt3);font-size:var(--fs-2xs)}
+
+#evPanel{position:fixed;top:0;right:0;bottom:0;z-index:998;width:min(410px,100vw);
+  background:var(--bg2);border-left:1px solid var(--line);box-shadow:-8px 0 32px rgba(16,24,40,.16);
+  display:flex;flex-direction:column;transform:translateX(102%);
+  transition:transform .22s cubic-bezier(.22,.8,.3,1);will-change:transform}
+#evPanel.show{transform:none}
+#evPanel .eh{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;gap:8px;flex:none}
+#evPanel .eh b{font-size:var(--fs-md)}
+#evPanel .eh span{color:var(--txt3);font-size:var(--fs-xs)}
+#evPanel .eh u{margin-left:auto;cursor:pointer;text-decoration:none;color:var(--txt3);
+  font-size:var(--fs-xs);padding:2px 6px;border-radius:5px}
+#evPanel .eh u + u{margin-left:0}
+#evPanel .eh u:hover{color:var(--txt);background:var(--bg3)}
+/* 日期切换：默认今天，往左能翻最近的交易日。存 5 个交易日是「一周」的实物，
+   再长就要开始算本地存储容量，而回头看两周前的异动本来也没什么用。 */
+#evPanel .ed{display:flex;gap:4px;padding:6px 12px 0;flex-wrap:wrap;flex:none}
+#evPanel .ed a{cursor:pointer;padding:1px 7px;border-radius:11px;font-size:var(--fs-2xs);
+  color:var(--txt3);border:1px solid transparent}
+#evPanel .ed a:hover{background:var(--bg3)}
+#evPanel .ed a.on{background:var(--sunken);border-color:var(--line);color:var(--txt)}
+#evPanel .ec{display:flex;gap:5px;padding:8px 12px;flex-wrap:wrap;flex:none;
+  border-bottom:1px solid var(--line)}
+#evPanel .ec a{cursor:pointer;padding:2px 8px;border-radius:12px;font-size:var(--fs-2xs);
+  color:var(--txt2);border:1px solid var(--line);background:var(--bg1);user-select:none}
+#evPanel .ec a:hover{border-color:var(--line2)}
+/* 选中态用 --txt 反白：浅色主题下是深底浅字，深色主题下是浅底深字。
+   写死 #fff 的话，深色主题会变成浅灰底白字，读不出来。 */
+#evPanel .ec a.on{background:var(--txt);border-color:var(--txt);color:var(--bg2)}
+#evPanel .ec a i{font-style:normal;opacity:.6;margin-left:3px;font-variant-numeric:tabular-nums}
+#evPanel .eb{flex:1;overflow-y:auto;overscroll-behavior:contain}
+#evPanel .ei{padding:6px 12px;border-bottom:1px solid var(--line);font-size:var(--fs-xs);
+  display:flex;gap:8px;align-items:baseline;border-left:2px solid transparent}
+#evPanel .ei.up{border-left-color:var(--up)}
+#evPanel .ei.dn{border-left-color:var(--down)}
+#evPanel .ei em{font-style:normal;color:var(--txt3);font-variant-numeric:tabular-nums;flex:none;
+  font-size:var(--fs-2xs);width:34px}
+#evPanel .ei u{text-decoration:none;flex:none;font-size:var(--fs-2xs);padding:0 4px;
+  border-radius:3px;background:var(--sunken);color:var(--txt3);border:1px solid var(--line)}
+#evPanel .ei s{text-decoration:none;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+/* 名称和描述之间必须有间隔：中文字符本身没有词边界，挤在一起会读成
+   「计算机创一年新低0.751」。margin-right 比空格可靠（空格在中文字体里很窄）。 */
+#evPanel .ei s b{font-weight:600;font-variant-numeric:tabular-nums;margin-right:6px}
+#evPanel .ei s small{color:var(--txt3);margin-left:6px;font-size:var(--fs-2xs)}
+#evPanel .empty{padding:26px 14px;text-align:center;color:var(--txt3);
+  font-size:var(--fs-sm);line-height:1.7}
+/* 手机：抽屉铺满，浮标往上让出底部安全区 */
+@media(max-width:700px){
+  .evf{right:12px;bottom:14px;padding:6px 11px 6px 9px}
+  #evPanel{width:100vw}
+}
 
 /* ---------- 卡片基线（后写覆盖，不删任何类名） ----------
    页面里有 14 个"白底 + 1px 边框 + 圆角"的容器，圆角 7/8/9、内边距各不相同，
@@ -1823,15 +1881,14 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
     <button class="pri" id="btnAdd">添加</button>
     <button id="btnClear">清空</button>
     <span class="alertbar">
-      <span class="abtn" id="btnAlert" title="在页面开着的时候，出现异动就提醒你（浏览器通知 + 页面浮层）">提醒 关</span>
-      <span class="abtn" id="btnScope" title="自选逐只提醒；全市场按指数代表扫，只弹汇总和极端个股">范围 自选</span>
+      <span class="abtn" id="btnAlert" title="页面开着的时候，出现异动就提醒你（浏览器通知 + 右上浮层）">提醒 关</span>
+      <span class="abtn" id="poolTag" title="提醒扫的是全市场：同指数去重后的代表标的（一个指数一票，取 20 日均额最大的那只），再剔掉债券货币、只留 20 日均额 ≥5000 万的。跟自选没有关系。">池 <b id="poolN">-</b></span>
       <span class="aset" id="alertSet">
-        涨跌≥<input id="aChg" value="2.0">%
-        急变≥<input id="aSpd" value="0.8">%/3分
-        溢价≥<input id="aPm" value="2.0">%
+        量能≥<input id="aEvr" value="2.0">×
+        涨跌≥<input id="aChg" value="1.5">%
+        前<input id="aRank" value="5">名
         <span class="abtn" id="btnPerm" title="允许后，页面在后台也能弹系统通知">桌面通知</span>
       </span>
-      <span class="abtn" id="btnLog" style="display:none" title="今天触发过的全部提醒，浮层只停留 9 秒，点这里回看">0 条</span>
       <span class="abtn" id="btnTrig" title="自定义组合触发器：自己拼条件（距新高、量能、位置、溢价……），全部满足才提醒">触发器 0</span>
     </span>
     <span class="n" id="quoteTip" style="font-size:11.5px;color:var(--txt3)"></span>
@@ -1982,7 +2039,17 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
 </div>
 <div id="toast"></div>
 <div id="alertBox"></div>
-<div id="alertLog"><div class="lh"><b>今日提醒</b><span id="logSub"></span><u id="logClr">清空</u></div><div class="lb" id="logBody"></div></div>
+<!-- 今日异动：浮标只说条数，点开是右侧抽屉。
+     列表默认是空的、浮标上是 0，这是对的——它要表达的就是「今天没什么事」。 -->
+<div class="evf" id="evFloat" title="今日异动清单：量能、折溢价、位置、横截面，按类型筛">
+  <i id="evDot"></i><b id="evN">0</b><span>异动</span><em id="evSub"></em>
+</div>
+<div id="evPanel">
+  <div class="eh"><b>今日异动</b><span id="evHead"></span><u id="evClr">清空</u><u id="evClose">关闭</u></div>
+  <div class="ed" id="evDays"></div>
+  <div class="ec" id="evCats"></div>
+  <div class="eb" id="evBody"><div class="empty">正在读取…</div></div>
+</div>
 
 <div id="histMask">
   <div class="hpanel">
@@ -2160,7 +2227,9 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
         <p>独立页面，含 201 个因子的 IC 检验、样本外回测与 PE 策略。另有一组先按指数去重再计算的因子，避免同指数多只 ETF 在横截面上重复投票、稀释 IC。</p></div>
 
         <div class="hm"><h3>提醒</h3>
-        <p>页面保持打开时生效，通过浏览器通知投递。监控范围可选自选逐只，或全市场按指数代表标的扫描；后者仅推送汇总与极端个股。</p></div>
+        <p>页面保持打开时生效，通过浏览器通知投递。扫的是<b>全市场</b>：同指数去重后的代表标的（一个指数一票，取 20 日均额最大的那只），再剔掉债券货币、只留 20 日均额 ≥5000 万的，约 210 只。跟自选没有关系——自选只是恰好落在这个池子里的一个子集。</p>
+        <p>逐只弹窗的只有三类，都是「指数解释不了的那部分」：<b>放量</b>（今日成交额按交易进度折算后 ≥2 倍 20 日均额，且涨跌 ≥1.5%、成交额 ≥5000 万——光放量不算事，套利和换仓也能把量拉起来）、<b>折溢价越界</b>（阈值按类别伸缩：跨境 8%、商品 1.8%、股票 1.2%。QDII 有额度限制，纳指日经这类常年溢价 3~6% 是结构性的，一个绝对值套所有类别等于对跨境天天响）、<b>横截面极端</b>（当日涨跌在池内 ≥99 分位且 ≥3%——用分位不用固定阈值，牛市里前 5 名是 +6%，震荡市里是 +2%）。</p>
+        <p>右下角浮标是<b>今日异动</b>清单：上面三类之外，再加位置类（一年新高新低含逼近 1%、20 日新高新低、站上/跌破 MA20、连阳连阴 ≥3、布林上下轨），全部「边沿触发」——从不在变进入的那一刻记一条，否则普跌日一天 60 只创 20 日新低，列表没法看。清单一天一百多条，不弹窗，想看才拉开，保留 5 个交易日。基线来自每日收盘后生成的 etf_base.json；取不到时量能与位置两类静默关闭，只留横截面与折溢价。</p></div>
 
         <div class="hm"><h3>数据与口径</h3>
         <ul>
@@ -8615,9 +8684,9 @@ function loadFull(){
     // 这几块共用同一份快照，「截至」一致；各模块自己也可能再打一次（重算按钮），幂等
     stampN('secN', DATA_TS, 'snap');
     stampN('listN', DATA_TS, 'snap');
-    // 全市场提醒跟着全量快照走（60 秒一刷），不能挂在 5 秒的自选行情上——
-    // 那个只有自选那几十只，扫出来的「全市场」是假的
-    alertScanAll();
+    // 提醒跟着全量快照走（60 秒一刷），不挂在 5 秒的自选行情上——
+    // 池子是全市场的，拿自选那几十只的价格去扫「全市场」是假的
+    scanAll();
     // 板块基准和历史是两个来源：基准走 /api/secdaily（KV，60 秒边缘缓存），
     // 首屏不等它——先把涨跌画出来，基准回来再补一次，页面不会白等一个来回
     if (SEC_BASE === null && !SEC_REQ){
@@ -8665,64 +8734,246 @@ function toTX(c){
 }
 
 /* ---------- 盘中提醒 ----------
-   两个范围，两种说法，因为信噪比差一个数量级：
+   ETF 的现价是派生的：约等于篮子价值 × (1 + 溢价)。所以「今天涨 2%」这件事里，
+   绝大部分信息属于它跟踪的指数，只有很小一部分属于这只 ETF 自己。
+   拿绝对涨跌幅当唯一条件，两头的错都犯了：
+   指数拉 3% 的日子，池子里几十只同时越线，弹窗等于复读大盘；
+   指数横盘的日子，一只盘口薄的票被一笔单子打出 1.5%，反而不报。
 
-   自选（默认 5 秒一刷）——逐只报。20 来只，一天越线三五次，报得起，
-   而且「我关心的那只出事了」本身就是重点。
+   盯市要盯的是「指数解释不了的那部分」，四类：
 
-   全市场（60 秒一刷）——只报两类：极端个股（2 倍阈值）和每 5 分钟一条汇总。
-   400 只按同一阈值逐只弹，一天几百条，弹到第二次就没人看了。全市场要回答的是
-   「今天哪条线在动」，不是「第 37 只涨了 2.1%」。
+   1) 放量异动 —— 今日成交额按进度折算后 ÷ 前 20 日均额。量是唯一没法伪造的东西，
+      但它必须和价格同向才构成事件：只放量不动价，多半是套利或换仓。
+   2) 折溢价越界 —— 阈值必须按类别给。跨境 8%（QDII 有额度限制，常年溢价 3~6%
+      是结构性的，用 2.5% 等于天天响）、商品 1.8%、股票 1.2%。一个绝对值套所有
+      类别，等于对跨境天天响、对股票永不响。
+   3) 横截面极端 —— 当日涨跌在池子里的分位（≥99 分位且 ≥3%）。
+      用分位不用固定阈值：名次天然随市场伸缩，牛市里前 5 名是 +6%，震荡市里是 +2%。
+   4) 位置突破 —— 一年新高新低、20 日新高新低、站上/跌破 MA20、连阳连阴、布林轨。
+      这类必须「边沿触发」：从「不在」变「进入」的那一刻记一条。按状态报的话，
+      普跌日一天 60 只创 20 日新低，列表直接没法看。
 
-   全市场这条不做 3 分钟急变：数据 60 秒一刷，3 分钟窗口只有 3 个采样点，
-   算出来的「急变」是采样误差不是行情。急变只在自选范围有效，这点在提示里写明。
+   输出分两层，因为「多」和「不打扰」只能靠分层同时满足：
+     · 弹窗/系统通知 —— 只有 1、2、3 三类，一天十来条，都是「这只出事了」；
+     · 今日异动列表 —— 上面三类 + 4 的全部，门槛降到 1.3 倍/1%，一天一百多条，
+       挂在右下角浮标上，想看才拉开。不打断，但想查的时候全在。
 
-   所有触发都进「今日提醒」记录（浮层只停 9 秒，全市场模式下记录才是主出口）。
+   范围是全市场同指数去重池，不是自选。池子在服务端定（gen_etf_base.mjs）：
+   一个指数一票、留 20 日均额最大的那只，再剔债券货币、只留 ≥5000 万。
+   为什么不用自选：自选那几十只本来就是池里的子集，单独一套阈值等于把
+   「我关注了它」当成「它更值得报警」，而实际问题从来不是漏掉自选。
 
    能力边界写在明处：这是**页面内**提醒，标签页关掉就没了。真要做 7×24 推送得配
    Web Push（需要 VAPID 密钥和订阅端点持久化），或走企业微信机器人，那是另一套东西。
    这里不假装自己是推送。 */
-var ALERT = { on:false, scope:'watch', chg:2.0, spd:0.8, pm:2.0 };
-var ALERT_MUTE = {};          // key -> 上次提醒时间，不落盘
-var ALERT_HIT = {};           // 当日已提醒过的 key（涨跌幅这类一天只提一次）
-var ALERT_SPD = {};           // code -> [{t,p}]，用来算 3 分钟变化
-var ALERT_DAY = new Date().toDateString();
-var ALERT_LOG = [];           // 今日触发记录，最多留 200 条
-var ALERT_ALL_TS = 0;         // 上次全市场汇总的时间
-var ALERT_ALL_GAP = 5 * 60000;
+
+var ALERT = { on:false, evr:2.0, chg:1.5, rank:5 };
+/* 折溢价阈值（%），按跟踪标的类别伸缩。cross 给到 8 是因为 QDII 的额度限制
+   让溢价变成了结构性的：纳指、日经、标普这类常年 3~6%，2.5% 的阈值等于天天响，
+   响到第三天就没人看了。真要抓「炒起来了」，得靠同组内相对中位偏离，那是下一步。 */
+var ALERT_PMK = { cross:8.0, commodity:1.8, stock:1.2 };
+/* 列表收录门槛：比弹窗松一档。1.3 倍量 / 1% 涨跌是实测出来的——
+   再松（1.0 倍、0.5%）就是「所有 ETF 都在呼吸」，一天三百条。 */
+var EV_LOW_EVR = 1.3, EV_LOW_CHG = 1.0;
+/* 放量还要求绝对成交额兜底：几百万的小票放量 3 倍也只有两千万，走不掉货，
+   而且它的「放量」经常只是做市商报价刷新。 */
+var EV_MIN_AMT = 5e7;
+
+var ALERT_HIT = {};           // 当日已入列 key（cat|tag|code），防同一条报两遍
+var ALERT_MUTE = {};          // 弹窗冷却：key -> 上次弹的时间
+var ALERT_DAY = '';
+var ALERT_LOG = [];           // 本次会话的弹窗流水（抽屉里的主数据是 EVD_STORE）
+var ETFB = null;              // 日线基线：{d, c:[code], f:[字段名], data:[[...]]}
+var ETFB_IDX = null;          // code -> data 下标
+var BASE_BAD = false;         // 基线取不到：退化成纯横截面 + 折溢价
+var POOL = [];                // 当前池子（DATA 里的对象引用）
+var EVD_STORE = {};           // 交易日 -> 条目数组
+var EVD = null;               // 正在看的那个交易日的数组（EVD_STORE 里的引用）
+var EV_VIEW = '';             // 正在看的交易日
+var EV_CAT = 'all';
+var EV_SAVE_T = 0;            // 排程中的写盘定时器
+var EV_DIRTY = false;         // 有未落盘的变化
 
 try {
   var aj = localStorage.getItem('etf_alert');
   if (aj){ var ao = JSON.parse(aj);
-    ALERT.chg = +ao.chg || 2.0; ALERT.spd = +ao.spd || 0.8; ALERT.pm = +ao.pm || 2.0;
-    if (ao.scope === 'all') ALERT.scope = 'all'; }
+    if (+ao.evr > 0) ALERT.evr = +ao.evr;
+    if (+ao.chg > 0) ALERT.chg = +ao.chg;
+    if (+ao.rank > 0) ALERT.rank = +ao.rank; }
 } catch(e){}
 
 function alertSave(){
   try { localStorage.setItem('etf_alert', JSON.stringify({
-    chg:ALERT.chg, spd:ALERT.spd, pm:ALERT.pm, scope:ALERT.scope })); } catch(e){}
+    evr:ALERT.evr, chg:ALERT.chg, rank:ALERT.rank })); } catch(e){}
 }
 
-function alertPush(title, body, cls, key){
+/* 交易日 key，YYYYMMDD。用本地日期而不是 UTC：北京时间 16:00 收盘后
+   再看页面，不该被算成第二天（UTC 那天才 08:00）。 */
+function dayKey(d){
+  d = d || new Date();
+  var m = d.getMonth() + 1, dd = d.getDate();
+  return '' + d.getFullYear() + (m < 10 ? '0' : '') + m + (dd < 10 ? '0' : '') + dd;
+}
+ALERT_DAY = dayKey();
+
+/* ---------- 基线 ---------- */
+function baseGet(code){
+  if (!ETFB || !ETFB_IDX) return null;
+  var i = ETFB_IDX[code];
+  if (i == null) return null;
+  var v = ETFB.data[i];
+  if (!v) return null;
+  // 字段顺序由文件里 f 决定，不在这里写死下标——加字段时旧文件不会静默错位
+  var o = {};
+  for (var k = 0; k < ETFB.f.length; k++) o[ETFB.f[k]] = v[k];
+  o.amt20 = (o.amt20 || 0) * 1e4;       // 文件里存的是万元，换回元
+  return o;
+}
+
+function loadBase(done){
+  fetch('/api/etfbase').then(function(r){ return r.json(); }).then(function(j){
+    if (!j || !j.c || !j.data || !j.data.length){
+      BASE_BAD = true;
+      if (done) done(false);
+      return;
+    }
+    ETFB = j;
+    ETFB_IDX = {};
+    for (var i = 0; i < j.c.length; i++) ETFB_IDX[j.c[i]] = i;
+    BASE_BAD = false;
+    paintPoolN();
+    if (done) done(true);
+  }).catch(function(){
+    // 基线取不到不报错：横截面和折溢价不依赖它，页面照常提醒。
+    // 但量能和位置这两类会静默消失——所以标题上要挂个「基线缺」的提示。
+    BASE_BAD = true;
+    paintPoolN();
+    if (done) done(false);
+  });
+}
+
+/* ---------- 池子 ----------
+   有基线就直接认基线里的代码：池子的定义只有一个事实来源（服务端），
+   页面不自己再算一遍「谁是同指数代表」，两端不会因为按当日成交额选
+   还是按 20 日均额选而错位。 */
+function alertPool(){
+  var arr = [], i, x;
+  if (ETFB_IDX){
+    for (i = 0; i < DATA.length; i++){
+      x = DATA[i];
+      if (ETFB_IDX[x.c] == null) continue;
+      if (!(x.p > 0) || x.pre) continue;
+      if (!isFinite(x.chg)) continue;
+      arr.push(x);
+    }
+    return arr;
+  }
+  // 降级：基线还没回来（或 data 分支上还没有这个文件）。
+  // 退回「同指数去重 + 当日成交额」，只够支撑横截面与折溢价两类。
+  for (i = 0; i < DATA.length; i++){
+    x = DATA[i];
+    if (!x || !isFinite(x.chg) || !(x.amt > 0) || x.pre) continue;
+    if (x.g === 'bond' || x.g === 'money') continue;
+    if (!isRep(x)) continue;
+    arr.push(x);
+  }
+  return arr;
+}
+
+function paintPoolN(){
+  var el = document.getElementById('poolN');
+  if (!el) return;
+  if (ETFB) el.textContent = ETFB.n;
+  else el.textContent = BASE_BAD ? '—' : '…';
+}
+
+/* ---------- 异动列表 ---------- */
+/* 分类名不用「位置↑ / 位置↓」：箭头在部分中文字体里是半角符号，11.5px 下
+   要么被挤掉、要么看起来像标点。用「走强/走弱」四个字，意思一样，宽度稳定。
+   这两类装的是「创新高、站上 MA20、连阳」和「创新低、跌破 MA20、连阴」。 */
+var EV_CATS = [
+  { k:'all',   n:'全部' },
+  { k:'evr',   n:'量能' },
+  { k:'pm',    n:'溢价' },
+  { k:'posup', n:'走强' },
+  { k:'posdn', n:'走弱' },
+  { k:'rank',  n:'横截面' },
+];
+var EV_CATN = { evr:'量能', pm:'溢价', posup:'走强', posdn:'走弱', rank:'横截面' };
+
+function evLoad(){
+  try {
+    var o = JSON.parse(localStorage.getItem('etf_evd_v1') || '{}');
+    EVD_STORE = (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+  } catch(e){ EVD_STORE = {}; }
+  // 留最近 5 个交易日。再长就开始吃容量，而两周前的异动本来也没人回看。
+  var ks = Object.keys(EVD_STORE).sort();
+  while (ks.length > 5) delete EVD_STORE[ks.shift()];
+  EV_VIEW = EVD_STORE[dayKey()] ? dayKey() : (ks.length ? ks[ks.length - 1] : dayKey());
+  if (!EVD_STORE[EV_VIEW]) EVD_STORE[EV_VIEW] = [];
+  EVD = EVD_STORE[EV_VIEW];
+}
+
+/* 存盘合并写：一次扫描可能连着加十几条，每条都写 localStorage 会在弱机上
+   卡出一帧 30ms。所以攒 700ms 写一次。
+
+   必须是「防抖 + 尾写」而不是「节流丢弃」：一开始写成「1.5 秒内只写第一次」，
+   结果一轮扫描 51 条只落盘了前 34 条——开头几条触发写入，1.5 秒内的后续全被
+   挡掉，而下一轮扫描因为 ALERT_HIT 已记过、加不出新条目，就再也不会补写。
+   刷新一次页面，当天的记录无声少一截。
+   收尾用定时器补写，外加藏页/关页时各 flush 一次（移动端 beforeunload 常常不触发）。 */
+function evSave(){
+  EV_DIRTY = true;
+  if (EV_SAVE_T) return;
+  EV_SAVE_T = setTimeout(function(){ EV_SAVE_T = 0; evFlush(); }, 700);
+}
+
+function evFlush(){
+  if (!EV_DIRTY) return;
+  EV_DIRTY = false;
+  try { localStorage.setItem('etf_evd_v1', JSON.stringify(EVD_STORE)); } catch(e){}
+}
+
+function evToday(){
+  if (!EVD_STORE[dayKey()]) EVD_STORE[dayKey()] = [];
+  return EVD_STORE[dayKey()];
+}
+
+/* 入列。tag 区分同类别下的不同形态（新高 / 站上 MA20 …），否则一只票
+   创了新高又站上 MA20 会被并成一条，丢掉一半信息。 */
+function evAdd(cat, tag, x, txt, sub, cls, pop){
+  var k = cat + '|' + tag + '|' + x.c;
+  if (ALERT_HIT[k]) return false;
+  ALERT_HIT[k] = 1;
+  evToday().push({ t: Date.now(), c: x.c, n: x.n, cat: cat, tag: tag,
+    txt: txt, sub: sub, cls: cls || '' });
+  evSave();
+  if (pop) alertPop(x.n + ' ' + txt, sub, cls, k);
+  return true;
+}
+
+/* ---------- 弹窗 ---------- */
+function alertPop(title, body, cls, key){
   var box = document.getElementById('alertBox');
-  var lp = document.getElementById('alertLog');
-  // 记录面板开着的时候不弹浮层：两者都在右上角，浮层会正好盖住列表，
+  var panel = document.getElementById('evPanel');
+  var panelOpen = panel && panel.className.indexOf('show') >= 0;
+  // 抽屉开着的时候不弹浮层：两者一个右上、一个右侧，浮层会正好压在列表上，
   // 而且列表本来就是浮层的完整版——同一件事没必要说两遍。
-  var panelOpen = lp && lp.className.indexOf('show') >= 0;
   if (box && !panelOpen){
     var d = document.createElement('div');
     d.className = 'aitem ' + (cls || '');
     d.innerHTML = '<b>' + esc(title) + '</b><small>' + esc(body) + '</small>';
+    // 拦住冒泡：document 上挂着「点空白关抽屉」，不拦的话点浮层会先开抽屉、
+    // 再被同一个 click 关掉
+    d.onclick = function(ev){ ev.stopPropagation(); evOpen(); };
+    d.style.pointerEvents = 'auto';
     box.appendChild(d);
     setTimeout(function(){ if (d.parentNode) d.parentNode.removeChild(d); }, 9000);
     while (box.children.length > 4) box.removeChild(box.firstChild);
   }
 
   ALERT_LOG.push({ t:Date.now(), title:title, body:body, cls:cls || '' });
-  if (ALERT_LOG.length > 200) ALERT_LOG = ALERT_LOG.slice(-200);
-  var nb = document.getElementById('btnLog');
-  if (nb){ nb.style.display = ''; nb.textContent = ALERT_LOG.length + ' 条'; }
-  if (lp && lp.className.indexOf('show') >= 0) renderAlertLog();
+  if (ALERT_LOG.length > 100) ALERT_LOG = ALERT_LOG.slice(-100);
 
   if (window.Notification && Notification.permission === 'granted'){
     try { new Notification(title, { body: body, tag: key, silent: false }); } catch(e){}
@@ -8732,236 +8983,379 @@ function alertPush(title, body, cls, key){
   }
 }
 
-function renderAlertLog(){
-  var body = document.getElementById('logBody');
-  var sub = document.getElementById('logSub');
-  if (!body) return;
-  if (sub) sub.textContent = ALERT.scope === 'all' ? '全市场' : '自选';
-  if (!ALERT_LOG.length){
-    body.innerHTML = '<div class="le">今天还没有触发过提醒<br>阈值在「提醒 开」右侧可以调</div>';
-    return;
-  }
-  var h = '';
-  for (var i=ALERT_LOG.length-1; i>=0; i--){
-    var r = ALERT_LOG[i];
-    var d = new Date(r.t);
-    var hm = (d.getHours()<10?'0':'') + d.getHours() + ':' + (d.getMinutes()<10?'0':'') + d.getMinutes();
-    h += '<div class="li ' + r.cls + '"><em>' + hm + '</em><i title="' + esc(r.body) + '">'
-      + esc(r.title) + '</i></div>';
-  }
-  body.innerHTML = h;
-}
-
-/* 冷却：同一标的同一类型 10 分钟内只响一次。没有这个，一只票在阈值附近来回抖，
-   5 秒一条，比不提醒更糟。 */
+/* 冷却：同一标的同一类型 N 分钟内只弹一次。没有这个，一只票在阈值附近
+   来回抖，60 秒一条，比不提醒更糟。 */
 function alertCool(key, min){
   var now = Date.now(), last = ALERT_MUTE[key];
-  if (last && now - last < (min || 10) * 60000) return false;
+  if (last && now - last < (min || 30) * 60000) return false;
   ALERT_MUTE[key] = now;
   return true;
 }
 
-function alertScan(items){
-  if (!ALERT.on || ALERT.scope !== 'watch' || !isOpen()) return;
-  var today = new Date().toDateString();
-  if (today !== ALERT_DAY){ ALERT_DAY = today; ALERT_HIT = {}; ALERT_SPD = {}; }
+/* ---------- 扫描 ----------
+   一轮扫描做四件事：算池内横截面上下文、逐只判四类信号、入列、限量弹窗。
+   挂在全量快照（60 秒）上跑，不挂在 5 秒的自选行情上——池子是全市场的，
+   拿自选那几十只的价格去扫「全市场」是假的。 */
+function scanAll(){
+  if (!DATA.length) return;
+  var pool = alertPool();
+  POOL = pool;
+  paintPoolN();
+  var n = pool.length;
+  if (!n) return;
 
-  var now = Date.now();
-  for (var c in items){
-    var x = items[c];
-    if (!x || !isFinite(x.chg)) continue;
+  var today = dayKey();
+  if (today !== ALERT_DAY){
+    ALERT_DAY = today; ALERT_HIT = {}; ALERT_MUTE = {};
+    EV_VIEW = today; EVD = evToday();
+  }
 
-    // 1) 当日涨跌幅越线：一天只提一次，否则每 5 秒响一遍
-    if (Math.abs(x.chg) >= ALERT.chg){
-      var k1 = 'chg|' + c + '|' + ALERT_DAY;
-      if (!ALERT_HIT[k1]){
-        ALERT_HIT[k1] = 1;
-        alertPush(x.n + ' ' + (x.chg > 0 ? '+' : '') + x.chg.toFixed(2) + '%',
-          '自选当日涨跌幅越过 ' + ALERT.chg + '% 阈值 · 现价 ' + x.p.toFixed(3),
-          x.chg > 0 ? 'up' : 'dn', k1);
+  var i, x, b;
+
+  /* ---- 横截面：分位与排名 ----
+     排序一次，正负两端各取。99 分位用线性插值——200 只的池子里 1% 就是第 2 名，
+     取整会变成「第 2 名永远触发」，插值能让阈值随分布慢慢移动。 */
+  var chgs = [];
+  for (i = 0; i < n; i++) if (isFinite(pool[i].chg)) chgs.push(pool[i].chg);
+  chgs.sort(function(a, b2){ return a - b2; });
+  var p99 = quantile(chgs, 0.99), p01 = quantile(chgs, 0.01);
+
+  var up = [], dn = [];
+  for (i = 0; i < n; i++){
+    x = pool[i];
+    if (!isFinite(x.chg)) continue;
+    if (x.chg > 0) up.push(x); else if (x.chg < 0) dn.push(x);
+  }
+  up.sort(function(a, b2){ return b2.chg - a.chg; });
+  dn.sort(function(a, b2){ return a.chg - b2.chg; });
+  var rk = Math.max(1, Math.round(ALERT.rank) || 5);
+
+  // 排名类进列表：涨跌各取前 N 名。
+  // tag 用 'top'/'bot' 而不是名次——按名次做 tag 的话，10:00 的第 1 名和 14:00
+  // 的第 1 名是「同一条」，但换了一只票就成了新的一条，一天下来能攒出几十条
+  // 「池内第 1」。按票去重，一只一天只记一次首次进榜。
+  for (i = 0; i < up.length && i < rk; i++){
+    x = up[i];
+    if (x.chg < EV_LOW_CHG) break;
+    evAdd('rank', 'top', x, fpc(x.chg) + ' 池内领涨',
+      '第 ' + (i + 1) + ' 名 · 成交 ' + fmtAmt(x.amt) + (x.ix ? ' · 跟踪 ' + x.ix : ''), 'up', false);
+  }
+  for (i = 0; i < dn.length && i < rk; i++){
+    x = dn[i];
+    if (x.chg > -EV_LOW_CHG) break;
+    evAdd('rank', 'bot', x, fpc(x.chg) + ' 池内领跌',
+      '倒数第 ' + (i + 1) + ' · 成交 ' + fmtAmt(x.amt) + (x.ix ? ' · 跟踪 ' + x.ix : ''), 'dn', false);
+  }
+
+  var prog = dayProgress();
+  var pops = 0, popMax = 2;      // 一轮最多弹两条：池子 200 只，同时触发的概率不低
+  var open = isOpen();
+
+  for (i = 0; i < n; i++){
+    x = pool[i];
+    b = baseGet(x.c);
+    var cat = x.g === 'cross' ? 'cross' : (x.g === 'commodity' ? 'commodity' : 'stock');
+
+    /* ---- 1) 放量 ----
+       早盘 25% 进度内不判：分母是「已交易分钟」，10 点前 prog 只有 0.12，
+       今日累计额除以它会放大 8 倍，任何一只都在「放量 5 倍」。 */
+    if (b && b.amt20 > 0 && prog >= 0.25 && isOpen()){
+      /* 判定和显示用同一个数：直接拿原始 evr 判、用 toFixed(2) 显示，
+         会出现「界面写着 2.00 倍、却没弹窗」——实际是 1.9996。
+         先四舍五入到显示精度再判，两处永远一致。 */
+      var evr = Math.round((x.amt / prog) / b.amt20 * 100) / 100;
+      var evrTxt = evr.toFixed(2) + ' 倍';
+      if (evr >= ALERT.evr && Math.abs(x.chg) >= ALERT.chg && x.amt >= EV_MIN_AMT){
+        if (evAdd('evr', 'hi', x, '放量 ' + evrTxt + ' · ' + fpc(x.chg),
+          '今日折算 ' + fmtAmt(x.amt / prog) + ' / 20 日均 ' + fmtAmt(b.amt20)
+            + (x.ix ? ' · 跟踪 ' + x.ix : ''),
+          x.chg > 0 ? 'up' : 'dn', open && pops < popMax && alertCool('evr|' + x.c, 45))){
+          pops++;
+        }
+      } else if (evr >= EV_LOW_EVR && Math.abs(x.chg) >= EV_LOW_CHG){
+        evAdd('evr', 'lo', x, evrTxt + '量 · ' + fpc(x.chg),
+          '今日折算 ' + fmtAmt(x.amt / prog) + ' / 20 日均 ' + fmtAmt(b.amt20),
+          x.chg > 0 ? 'up' : 'dn', false);
       }
     }
 
-    // 2) 3 分钟急变：滚动窗口，超出阈值再按冷却去重
-    var arr = ALERT_SPD[c] || (ALERT_SPD[c] = []);
-    arr.push({ t: now, p: x.p });
-    while (arr.length && now - arr[0].t > 180000) arr.shift();
-    if (arr.length >= 3){
-      var base = arr[0].p, mv = base > 0 ? (x.p / base - 1) * 100 : 0;
-      if (Math.abs(mv) >= ALERT.spd){
-        var k2 = 'spd|' + c;
-        if (alertCool(k2, 10)){
-          alertPush(x.n + ' 3 分钟 ' + (mv > 0 ? '+' : '') + mv.toFixed(2) + '%',
-            '从 ' + base.toFixed(3) + ' 到 ' + x.p.toFixed(3) + ' · 成交 ' + fmtAmt(x.amt),
-            mv > 0 ? 'up' : 'dn', k2);
+    /* ---- 2) 折溢价 ----
+       两个方向都报，但含义相反：溢价是「追高要付的钱」，折价是「便宜买的机会」。
+       文案跟着方向变，不然「溢价 -1.2%」会被读成「溢价很小」。 */
+    if (x.pm != null && isFinite(x.pm)){
+      var thr = ALERT_PMK[cat];
+      if (Math.abs(x.pm) >= thr){
+        var pmTxt = (x.pm > 0 ? '溢价 +' : '折价 ') + x.pm.toFixed(2) + '%';
+        var pmSub = (x.pm > 0
+          ? '场内比净值贵 ' + x.pm.toFixed(2) + '%，追高要付这笔钱'
+          : '场内比净值便宜 ' + Math.abs(x.pm).toFixed(2) + '%，注意流动性与限购')
+          + (x.iopv != null ? ' · IOPV ' + x.iopv.toFixed(3) : '')
+          + ' · 阈值 ' + thr + '%（' + (cat === 'cross' ? '跨境' : cat === 'commodity' ? '商品' : '股票') + '）';
+        if (evAdd('pm', x.pm > 0 ? 'p' : 'd', x, pmTxt, pmSub,
+          x.pm > 0 ? 'up' : 'dn', open && pops < popMax && alertCool('pm|' + x.c, 60))){
+          pops++;
         }
       }
     }
 
-    // 3) 溢价越线：跨境 ETF 最容易出事，折价反而是机会，两个方向都提
-    if (x.pm != null && isFinite(x.pm) && Math.abs(x.pm) >= ALERT.pm){
-      var k3 = 'pm|' + c + '|' + Math.round(x.pm);
-      if (alertCool(k3, 30)){
-        alertPush(x.n + ' 溢价 ' + (x.pm > 0 ? '+' : '') + x.pm.toFixed(2) + '%',
-          (x.pm > 0 ? '场内比净值贵，追高要付溢价' : '场内比净值便宜，注意流动性和限购')
-            + ' · IOPV ' + (x.iopv != null ? x.iopv.toFixed(3) : '—'),
-          x.pm > 0 ? 'up' : 'dn', k3);
+    /* ---- 3) 横截面极端 ----
+       两个条件都要：分位（今天在池子里算不算极端）和绝对值（是否真够大）。
+       只有分位，死水日会把 +0.4% 报成异动；只有绝对值，普跌日等于复读大盘。
+
+       只弹窗、不入列：极端的前 1% 一定已经在上面「前 N 名」里了，
+       再记一条就是同一只票在列表里出现两次。 */
+    if ((x.chg >= p99 && x.chg >= 3) || (x.chg <= p01 && x.chg <= -3)){
+      var ek = 'ext|' + x.c;
+      if (open && pops < popMax && alertCool(ek, 90)){
+        pops++;
+        alertPop(x.n + ' ' + fpc(x.chg),
+          '池内 ' + (x.chg > 0 ? '前 1%' : '后 1%') + '（' + (x.chg > 0 ? p99 : p01).toFixed(2)
+            + '% 分位线）· 成交 ' + fmtAmt(x.amt) + (x.ix ? ' · 跟踪 ' + x.ix : ''),
+          x.chg > 0 ? 'up' : 'dn', ek);
+      }
+    }
+
+    /* ---- 4) 位置 ----
+       全部边沿触发：昨天不在、今天在。位置类单独看没有判断价值——普跌日
+       几十只同时创 20 日新低，那是「市场在跌」不是「这只出事了」。
+       所以它只进列表，从来不弹窗。 */
+    if (b && x.p > 0){
+      var p = x.p, prev = b.prev;
+      if (prev > 0){
+        // 一年新高：含「逼近 1% 以内」，因为 ETF 的创新高常常差一点点就回头
+        if (p >= b.hi250){
+          evAdd('posup', 'yhi', x, '创一年新高 ' + p.toFixed(3),
+            '前 250 日最高 ' + b.hi250.toFixed(3) + ' · 现价高出 '
+              + ((p / b.hi250 - 1) * 100).toFixed(2) + '%', 'up', false);
+        } else if (p >= b.hi250 * 0.99 && prev < b.hi250 * 0.99){
+          evAdd('posup', 'yhi9', x, '逼近一年新高 ' + p.toFixed(3),
+            '距 ' + b.hi250.toFixed(3) + ' 还差 ' + ((b.hi250 / p - 1) * 100).toFixed(2) + '%', 'up', false);
+        }
+        // 20 日新高（已经创一年新高的不再重复记）
+        if (p >= b.up20 && p < b.hi250){
+          evAdd('posup', 'dhi', x, '创 20 日新高 ' + p.toFixed(3),
+            '前 20 日最高 ' + b.up20.toFixed(3), 'up', false);
+        }
+        if (p <= b.lo250){
+          evAdd('posdn', 'ylo', x, '创一年新低 ' + p.toFixed(3),
+            '前 250 日最低 ' + b.lo250.toFixed(3) + ' · 现价低出 '
+              + ((1 - p / b.lo250) * 100).toFixed(2) + '%', 'dn', false);
+        } else if (p <= b.lo250 * 1.01 && prev > b.lo250 * 1.01){
+          evAdd('posdn', 'ylo9', x, '逼近一年新低 ' + p.toFixed(3),
+            '距 ' + b.lo250.toFixed(3) + ' 还差 ' + ((p / b.lo250 - 1) * 100).toFixed(2) + '%', 'dn', false);
+        }
+        if (p <= b.dn20 && p > b.lo250){
+          evAdd('posdn', 'dlo', x, '创 20 日新低 ' + p.toFixed(3),
+            '前 20 日最低 ' + b.dn20.toFixed(3), 'dn', false);
+        }
+        // 站上 / 跌破 MA20：边沿用「昨收在另一侧」判，不是「今天在均线上方」
+        if (p > b.ma20 && prev <= b.ma20){
+          evAdd('posup', 'ma20', x, '站上 MA20 ' + b.ma20.toFixed(3),
+            '昨收 ' + prev.toFixed(3) + ' 在均线下方 · 现价高出 '
+              + ((p / b.ma20 - 1) * 100).toFixed(2) + '%', 'up', false);
+        } else if (p < b.ma20 && prev >= b.ma20){
+          evAdd('posdn', 'ma20', x, '跌破 MA20 ' + b.ma20.toFixed(3),
+            '昨收 ' + prev.toFixed(3) + ' 在均线上方 · 现价低出 '
+              + ((1 - p / b.ma20) * 100).toFixed(2) + '%', 'dn', false);
+        }
+        // 布林轨：同样要边沿，否则贴着上轨走三天会记三条
+        if (p > b.bup && prev <= b.bup){
+          evAdd('posup', 'boll', x, '突破布林上轨 ' + b.bup.toFixed(3),
+            'MA20 ' + b.ma20.toFixed(3) + ' · 2 倍标准差 ' + b.bup.toFixed(3), 'up', false);
+        } else if (p < b.blo && prev >= b.blo){
+          evAdd('posdn', 'boll', x, '跌破布林下轨 ' + b.blo.toFixed(3),
+            'MA20 ' + b.ma20.toFixed(3) + ' · 2 倍标准差 ' + b.blo.toFixed(3), 'dn', false);
+        }
+        // 连阳 / 连阴 ≥3：昨日的连阳根数 <3、今天够 3 才算「刚连上」
+        var st = b.streak || 0;
+        var cur = st > 0 ? (p > prev ? st + 1 : (p < prev ? -1 : 0))
+                : st < 0 ? (p < prev ? st - 1 : (p > prev ? 1 : 0))
+                : (p > prev ? 1 : (p < prev ? -1 : 0));
+        if (cur >= 3 && st < 3){
+          evAdd('posup', 'up3', x, '连阳 ' + cur + ' 根',
+            '累计 ' + ((p / (prev || p) - 1) * 100).toFixed(2) + '% · 今日 ' + fpc(x.chg), 'up', false);
+        } else if (cur <= -3 && st > -3){
+          evAdd('posdn', 'dn3', x, '连阴 ' + Math.abs(cur) + ' 根',
+            '累计 ' + ((p / (prev || p) - 1) * 100).toFixed(2) + '% · 今日 ' + fpc(x.chg), 'dn', false);
+        }
       }
     }
   }
+
+  // 收尾：列表和浮标一起刷新一次，别每加一条就重排一遍 DOM
+  evPaint();
+  evSave();
 }
 
-/* 全市场：只在「极端」和「汇总」两个尺度上说话。
-   单只越 1 倍阈值只是「今天它在动」，400 只里随时有几十只，不构成信息；
-   越 2 倍阈值才是「这只出事了」。中间的交给每 5 分钟一条的汇总。 */
-/* 全市场提醒扫的池子 = 同指数去重后的代表标的，不是 1719 只全量。
-   1719 只里有 1202 只在跟别人跟踪同一个指数（2026-11-07 实测：247 组指数，
-   另 270 只没抓到跟踪标的、判断不了重复），日内涨跌幅几乎一样。
-   全量扫的直接后果是前 3 名被同一指数的克隆占满——20 只 A500 一起涨 3%，
-   榜单等于没给信息。去重后 500 出头，一只一个指数，榜单才是「哪个方向在动」。 */
-function alertPool(){
-  var arr = [], i, x;
-  for (i=0;i<DATA.length;i++){
-    x = DATA[i];
-    // 停牌、无成交、债券货币类不参与：那几类涨跌幅恒定，扫了也是白扫
-    if (!x || !isFinite(x.chg) || !(x.amt > 0) || x.pre) continue;
-    if (x.g === 'bond' || x.g === 'money') continue;
-    if (!isRep(x)) continue;
-    arr.push(x);
-  }
-  return arr;
+/* 线性插值分位。chgs 已升序。 */
+function quantile(arr, q){
+  if (!arr.length) return 0;
+  if (arr.length === 1) return arr[0];
+  var pos = (arr.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
+  if (lo === hi) return arr[lo];
+  return arr[lo] + (arr[hi] - arr[lo]) * (pos - lo);
 }
 
-function alertScanAll(){
-  if (!ALERT.on || ALERT.scope !== 'all' || !isOpen()) return;
-  if (!DATA.length) return;
-
-  var pool = alertPool();
-  var up = [], dn = [], pms = [];
-  for (var i=0;i<pool.length;i++){
-    var x = pool[i];
-    if (x.chg >= ALERT.chg) up.push(x);
-    else if (x.chg <= -ALERT.chg) dn.push(x);
-    if (x.pm != null && isFinite(x.pm) && Math.abs(x.pm) >= ALERT.pm) pms.push(x);
-  }
-  up.sort(function(a,b){ return b.chg - a.chg; });
-  dn.sort(function(a,b){ return a.chg - b.chg; });
-
-  var ext = [];
-  var shout = function(x){
-    var k = 'allex|' + x.c + '|' + ALERT_DAY;
-    if (ALERT_HIT[k]) return;                   // 同一只今天只报一次
-    ALERT_HIT[k] = 1;
-    ext.push(x);
-    alertPush(x.n + ' ' + fpc(x.chg),
-      (x.chg > 0 ? '涨幅' : '跌幅') + '是阈值的 ' + (Math.abs(x.chg)/ALERT.chg).toFixed(1) + ' 倍'
-        + ' · 成交 ' + fmtAmt(x.amt) + (x.ix ? ' · 跟踪 ' + x.ix : ''),
-      x.chg > 0 ? 'up' : 'dn', k);
-  };
-  /* 只认「当下最极端的前 3 名」，不是「所有超过 2 倍阈值的」。
-     差别很大：极端的日子几十只同时超 4%。按「所有」报，每轮弹出前三名，
-     下一轮它们被冷却挡住、就漏出第 4/5/6 名——一路漏到底，等于没上限。
-     限定在前 3 名内，超出的只进记录，浮层才不会被淹。 */
-  var cand = [];
-  for (var a=0;a<up.length && a<3;a++) if (up[a].chg >= ALERT.chg*2) cand.push(up[a]);
-  for (var b=0;b<dn.length && b<3;b++) if (dn[b].chg <= -ALERT.chg*2) cand.push(dn[b]);
-  cand.sort(function(p,q){ return Math.abs(q.chg) - Math.abs(p.chg); });
-  for (var e=0;e<cand.length && ext.length<2;e++) shout(cand[e]);
-
-  // 2) 溢价：跨境最容易出事，全市场只报 1.5 倍以上的偏离，60 分钟冷却
-  for (var c=0;c<pms.length && ext.length<3;c++){
-    var p = pms[c];
-    if (Math.abs(p.pm) < ALERT.pm * 1.5) continue;
-    var kp = 'allpm|' + p.c;
-    if (!alertCool(kp, 60)) continue;
-    ext.push(p);
-    alertPush(p.n + ' 溢价 ' + (p.pm>0?'+':'') + p.pm.toFixed(2) + '%',
-      (p.pm > 0 ? '场内比净值贵，追高要付溢价' : '场内比净值便宜，注意流动性与限购')
-        + (p.iopv != null ? ' · IOPV ' + p.iopv.toFixed(3) : ''),
-      p.pm > 0 ? 'up' : 'dn', kp);
-  }
-
-  // 3) 汇总：每 5 分钟一条。说清「多少只在动、动得最狠的是哪几只」，
-  //    而不是把 40 只逐个念一遍。越线比例过高时改口径——那时「750 只跌超 2%」
-  //    已经不是「哪些在动」，是「全市场在跌」，措辞要跟着变。
-  if (!up.length && !dn.length) return;
-  var now = Date.now();
-  if (ALERT_ALL_TS && now - ALERT_ALL_TS < ALERT_ALL_GAP) return;
-  ALERT_ALL_TS = now;
-
-  var nb = up.length + dn.length;
-  var ratio = pool.length > 0 ? nb / pool.length : 0;
-  var mood = ratio > 0.25 ? (dn.length > up.length ? '普跌' : '普涨') : '';
-  // 带上去重后的池子大小：否则「12 涨 45 跌」会被读成「1719 只里只有 12 只在涨」，
-  // 实际是 517 个指数代表里 12 个在涨——差着一个数量级。
-  var head = (mood ? mood + ' · ' : '') + '全市场 ' + pool.length + ' 只中 '
-    + up.length + ' 涨 ' + dn.length + ' 跌 越过 ' + ALERT.chg + '%';
-  var parts = [];
-  var top = up.slice(0, 3).map(function(x){ return x.n + ' ' + fpc(x.chg); });
-  if (top.length) parts.push('领涨 ' + top.join('、'));
-  var bot = dn.slice(0, 3).map(function(x){ return x.n + ' ' + fpc(x.chg); });
-  if (bot.length) parts.push('领跌 ' + bot.join('、'));
-  alertPush(head, parts.join(' · '), up.length >= dn.length ? 'up' : 'dn', 'allsum');
+/* ---------- 抽屉渲染 ---------- */
+function evCatCount(cat){
+  var d = EVD_STORE[EV_VIEW] || [], n = 0;
+  for (var i = 0; i < d.length; i++) if (cat === 'all' || d[i].cat === cat) n++;
+  return n;
 }
 
+function evPaint(){
+  var f = document.getElementById('evFloat');
+  if (!f) return;
+  var today = (EVD_STORE[dayKey()] || []).length;
+  var nEl = document.getElementById('evN');
+  nEl.textContent = today;
+  nEl.className = today > 0 ? 'hit' : '';
+  var dot = document.getElementById('evDot');
+  dot.className = ALERT.on ? 'live' : '';
+  var sub = document.getElementById('evSub');
+  sub.textContent = ALERT.on ? '盯盘中' : '';
+  if (!EVD_STORE[EV_VIEW]) EVD = null; else EVD = EVD_STORE[EV_VIEW];
+  if (document.getElementById('evPanel').className.indexOf('show') >= 0) evRenderPanel();
+}
+
+function evRenderPanel(){
+  var d = EVD_STORE[EV_VIEW] || [];
+  var head = document.getElementById('evHead');
+  if (head){
+    // 分子是「这轮有行情的」，分母是池子的定义。两个数不等是正常的：
+    // 停牌、当日无成交、以及快照只抓到一部分，都会让分子小一截。
+    var pn = POOL.length || (ETFB ? ETFB.n : 0);
+    head.textContent = (ETFB ? '池 ' + pn + '/' + ETFB.n : (BASE_BAD ? '基线缺' : '池 —'))
+      + ' · ' + (EV_VIEW === dayKey() ? '今天' : fmtDay(EV_VIEW)) + ' ' + d.length + ' 条';
+  }
+
+  // 日期切换：只有存了不止一天才显示——只有今天一天的时候，
+  // 一个孤零零的「今天 53」占掉一整行，什么也没换来。
+  var dd = document.getElementById('evDays');
+  var days = Object.keys(EVD_STORE).sort().reverse();
+  if (days.length <= 1){
+    dd.innerHTML = '';
+  } else {
+    var dh = '';
+    for (var i = 0; i < days.length; i++){
+      var k = days[i], cnt = (EVD_STORE[k] || []).length;
+      dh += '<a data-d="' + k + '" class="' + (k === EV_VIEW ? 'on' : '') + '">'
+        + (k === dayKey() ? '今天' : fmtDay(k)) + ' ' + cnt + '</a>';
+    }
+    dd.innerHTML = dh;
+  }
+
+  // 分类筛选：带上条数，一眼能看出今天哪一类最吵
+  var ch = '';
+  for (i = 0; i < EV_CATS.length; i++){
+    var c = EV_CATS[i];
+    ch += '<a data-c="' + c.k + '" class="' + (c.k === EV_CAT ? 'on' : '') + '">'
+      + c.n + '<i>' + evCatCount(c.k) + '</i></a>';
+  }
+  document.getElementById('evCats').innerHTML = ch;
+
+  // 列表：按时间倒序，最新的在最上面
+  var body = document.getElementById('evBody');
+  var rows = [];
+  for (i = d.length - 1; i >= 0; i--) if (EV_CAT === 'all' || d[i].cat === EV_CAT) rows.push(d[i]);
+  if (!rows.length){
+    body.innerHTML = '<div class="empty">'
+      + (d.length ? '这一类今天还没有条目' : '这个交易日没有异动<br>'
+        + (BASE_BAD ? '基线没取到，量能与位置两类暂时不判' : '池子平静，或者还没到开盘时间'))
+      + '</div>';
+    return;
+  }
+  var h = '';
+  for (i = 0; i < rows.length; i++){
+    var r = rows[i], t = new Date(r.t);
+    var hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
+      + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
+    h += '<div class="ei ' + r.cls + '" title="' + esc(r.sub) + '">'
+      + '<em>' + hm + '</em>'
+      + '<u>' + (EV_CATN[r.cat] || r.cat) + '</u>'
+      + '<s><b>' + esc(r.n) + '</b>' + esc(r.txt)
+      + '<small>' + esc(r.c) + '</small></s></div>';
+  }
+  body.innerHTML = h;
+}
+
+function fmtDay(k){
+  return k.length === 8 ? (k.slice(4, 6) + '-' + k.slice(6, 8)) : k;
+}
+
+function evOpen(){
+  var p = document.getElementById('evPanel');
+  if (!p) return;
+  if (!EVD_STORE[EV_VIEW]) EV_VIEW = dayKey();
+  p.className = 'show';
+  evRenderPanel();
+  var bx = document.getElementById('alertBox');
+  if (bx) bx.innerHTML = '';
+}
+function evClose(){
+  var p = document.getElementById('evPanel');
+  if (p) p.className = '';
+}
+
+/* ---------- 绑定 ---------- */
 (function(){
   var btn = document.getElementById('btnAlert');
   var set = document.getElementById('alertSet');
-  var scp = document.getElementById('btnScope');
   if (!btn) return;
   var paint = function(){
     btn.className = 'abtn' + (ALERT.on ? ' on' : '');
     btn.innerHTML = ALERT.on ? '<i></i>提醒 开' : '提醒 关';
     set.className = 'aset' + (ALERT.on ? ' show' : '');
-    if (scp){
-      scp.className = 'abtn' + (ALERT.scope === 'all' ? ' on' : '');
-      scp.textContent = '范围 ' + (ALERT.scope === 'all' ? '全市场' : '自选');
-    }
+    evPaint();
   };
   paint();
-  var scopeNote = function(){
-    return ALERT.scope === 'all'
-      ? ' · 60 秒一刷，只报极端个股（2 倍阈值）与每 5 分钟汇总。'
-        + '3 分钟急变在全市场不可用——数据 60 秒一刷，算出来的是采样误差不是行情'
-      : ' · 5 秒一刷，逐只报';
-  };
+
   btn.onclick = function(){
     ALERT.on = !ALERT.on;
+    ALERT_MUTE = {}; ALERT_HIT = {};
     paint();
     if (ALERT.on){
-      ALERT_MUTE = {}; ALERT_SPD = {}; ALERT_ALL_TS = 0;
-      var n = ALERT.scope === 'all' ? alertPool().length : (Object.keys(LIVE).length || watch.length);
-      alertPush('盯盘提醒已开启',
-        '监控 ' + n + ' 只' + (ALERT.scope === 'all' ? '（全市场·同指数去重）' : '自选')
-          + ' · 涨跌≥' + ALERT.chg + '% · 溢价≥' + ALERT.pm + '%' + scopeNote(), '', 'on');
-      if (ALERT.scope === 'all') alertScanAll();
+      var n = alertPool().length;
+      alertPop('盯盘提醒已开启',
+        '扫 ' + n + ' 只（全市场同指数去重）· 量能 ≥' + ALERT.evr + '× 且涨跌 ≥'
+          + ALERT.chg + '% · 折溢价按类别 8%/1.8%/1.2% · 横截面前 1%'
+          + (BASE_BAD ? ' · 基线没取到，量能与位置不判' : ''),
+        '', 'on');
+      scanAll();
     }
     if (ALERT.on && window.Notification && Notification.permission === 'default'){
       try { Notification.requestPermission(); } catch(e){}
     }
   };
-  if (scp) scp.onclick = function(){
-    ALERT.scope = ALERT.scope === 'all' ? 'watch' : 'all';
-    ALERT_MUTE = {}; ALERT_SPD = {}; ALERT_ALL_TS = 0; ALERT_HIT = {};
-    alertSave(); paint();
-    if (ALERT.scope === 'all'){
-      toast('范围：全市场 ' + alertPool().length + ' 只（同指数去重）· 只报极端与 5 分钟汇总');
-      if (ALERT.on) alertScanAll();      // 切过去立刻跑一轮，别等 60 秒
-    } else {
-      toast('范围：自选 ' + watch.length + ' 只 · 逐只提醒');
-    }
+
+  // 池子标签：点一下说清池子是怎么来的，不然「212」这个数字没有任何解释力
+  var pt = document.getElementById('poolTag');
+  if (pt) pt.onclick = function(){
+    var pool = alertPool();
+    var msg = ETFB
+      ? '池 ' + ETFB.n + ' 只：全市场同指数去重（一个指数一票，取 20 日均额最大的）'
+        + ' → 剔债券货币 → 20 日均额 ≥5000 万。基线截止 ' + fmtDay(ETFB.d)
+        + '，本轮匹配到 ' + pool.length + ' 只'
+      : '基线 etf_base.json 还没取到（' + (BASE_BAD ? '请求失败' : '加载中') + '），'
+        + '暂用当日成交额去重，量能与位置两类不判';
+    toast(msg);
   };
-  var bind = function(id, key){
+
+  var bind = function(id, key, fx){
     var el = document.getElementById(id);
     if (!el) return;
     el.onchange = function(){
       var v = parseFloat(this.value);
-      if (!isFinite(v) || v <= 0){ this.value = ALERT[key].toFixed(1); return; }
+      if (!isFinite(v) || v <= 0){ this.value = fx(ALERT[key]); return; }
       ALERT[key] = v; alertSave();
-      if (key === 'chg'){ ALERT_HIT = {}; ALERT_ALL_TS = 0; }
+      ALERT_HIT = {}; ALERT_MUTE = {};
+      scanAll();
     };
   };
-  bind('aChg','chg'); bind('aSpd','spd'); bind('aPm','pm');
+  bind('aEvr', 'evr', function(v){ return v.toFixed(1); });
+  bind('aChg', 'chg', function(v){ return v.toFixed(1); });
+  bind('aRank', 'rank', function(v){ return String(Math.round(v)); });
+
   var pb = document.getElementById('btnPerm');
   if (pb) pb.onclick = function(){
     if (!window.Notification){ toast('这台设备的浏览器不支持桌面通知'); return; }
@@ -8969,26 +9363,53 @@ function alertScanAll(){
       toast(r === 'granted' ? '已允许桌面通知' : '通知被拒绝，只能看页面浮层');
     });
   };
-  var lg = document.getElementById('btnLog');
-  var lp = document.getElementById('alertLog');
-  if (lg && lp){
-    lg.onclick = function(e){
-      e.stopPropagation();
-      var on = lp.className.indexOf('show') >= 0;
-      renderAlertLog();
-      lp.className = on ? '' : 'show';
-      // 打开时清掉残留浮层：面板就是浮层的完整版，留着只会遮住列表顶部
-      if (!on){ var bx = document.getElementById('alertBox'); if (bx) bx.innerHTML = ''; }
-    };
-    lp.onclick = function(e){ e.stopPropagation(); };
-    document.addEventListener('click', function(){
-      if (lp.className.indexOf('show') >= 0) lp.className = '';
-    });
-    document.getElementById('logClr').onclick = function(){
-      ALERT_LOG = []; lg.textContent = '0 条'; lg.style.display = 'none';
-      renderAlertLog(); lp.className = '';
-    };
-  }
+
+  // 浮标 / 抽屉。浮标这里必须 stopPropagation：document 上挂着「点空白关抽屉」，
+  // 不拦的话点击会先开、再被同一个 click 冒泡上去关掉，抽屉等于打不开。
+  var fl = document.getElementById('evFloat');
+  if (fl) fl.onclick = function(e){ e.stopPropagation(); evOpen(); };
+  var cl = document.getElementById('evClose');
+  if (cl) cl.onclick = function(e){ e.stopPropagation(); evClose(); };
+  var pc = document.getElementById('evPanel');
+  if (pc) pc.onclick = function(e){ e.stopPropagation(); };
+  document.addEventListener('click', function(){ evClose(); });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape') evClose();
+  });
+
+  var ecl = document.getElementById('evClr');
+  if (ecl) ecl.onclick = function(e){
+    e.stopPropagation();
+    if (!confirm('清空 ' + (EV_VIEW === dayKey() ? '今天' : fmtDay(EV_VIEW)) + ' 的异动记录？')) return;
+    EVD_STORE[EV_VIEW] = [];
+    try { localStorage.setItem('etf_evd_v1', JSON.stringify(EVD_STORE)); } catch(err){}
+    evPaint();
+    evRenderPanel();
+  };
+
+  document.getElementById('evDays').onclick = function(e){
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    e.stopPropagation();
+    EV_VIEW = a.getAttribute('data-d');
+    evRenderPanel();
+  };
+  document.getElementById('evCats').onclick = function(e){
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    e.stopPropagation();
+    EV_CAT = a.getAttribute('data-c');
+    evRenderPanel();
+  };
+
+  // 藏页时补写一次。手机上切走标签页之后进程随时可能被回收，
+  // 光靠定时器不够——那 700ms 的窗口里用户切走，这一轮就丢了。
+  document.addEventListener('visibilitychange', function(){ if (document.hidden) evFlush(); });
+  window.addEventListener('beforeunload', evFlush);
+
+  evLoad();
+  evPaint();
+  loadBase(function(){ evPaint(); if (ALERT.on) scanAll(); });
 })();
 
 document.addEventListener('visibilitychange', function(){
@@ -9219,7 +9640,6 @@ function loadTXQuotes(){
       LIVE = out;
       LIVE_TS = Date.now();
       renderWatch();
-      alertScan(out);
       trigScan(out);
       hRefresh();                    // 自选 5 秒一刷，弹窗里那只也一起动
       var tip = document.getElementById('quoteTip');

@@ -5235,6 +5235,30 @@ async function serveSpeed(ctx, codes) {
   return res;
 }
 
+/* 盯市提醒的日线基线：250 日高低、MA20、布林、20 日均额，一只一组数字。
+   为什么不在页面里逐只拉 /api/hist：池子里 200 多只，一只是 28KB 二进制，
+   全拉一遍 6MB、200 多次请求——提醒是后台持续跑的，这个成本不能接受。
+   这里一份 15KB、一次请求，盘中 10 分钟缓存够用（基线一天只变一次）。 */
+async function serveEtfBase(env) {
+  if (!histSource(env)) {
+    return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
+  }
+  try {
+    const a = await readAsset(env, 'etf_base.json');
+    if (!a) return json({ ok: false, code: 'NOT_FOUND', error: 'data 分支还没有 etf_base.json' });
+    const txt = await a.text();
+    return new Response(txt, {
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=600',
+      },
+    });
+  } catch (e) {
+    return json({ ok: false, code: 'FETCH_ERR', error: String(e.message || e) });
+  }
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -6982,6 +7006,10 @@ export default {
 
     if (p === '/api/research') {
       return serveResearch(env);
+    }
+
+    if (p === '/api/etfbase') {
+      return serveEtfBase(env);
     }
 
     if (p === '/api/events') {

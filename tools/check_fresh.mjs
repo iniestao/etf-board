@@ -141,6 +141,14 @@ const ITEMS = [
     const x = (o.days || []).at(-1);
     return x && /^\d{8}$/.test(x) ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6)}` : x || null;
   } },
+  // 盯市提醒的日线基线。落后一天的影响很轻：250 日高低、MA20、20 日均额
+  // 都是慢变量，差一天只是「昨晚的均线」，不会报出错误的信号。
+  // 所以给 soft：真断了要有人知道，但不该因为它让整条发布链红掉——
+  // 红掉的后果是当天的 K 线和清单也发不出去，那是更严重的事。
+  { key: 'etfbase', name: '盯市基线',       file: 'etf_base.json',   level: 'soft', pick: (o) => {
+    const x = o.d;
+    return x && /^\d{8}$/.test(x) ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6)}` : x || null;
+  } },
 ];
 
 export async function collect({ dir = null, ref = null, nowUtc = new Date() } = {}) {

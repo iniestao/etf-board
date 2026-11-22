@@ -150,6 +150,14 @@ jobs:
       - name: 生成页面用的研究数据（5KB）
         run: node tools/gen_research.mjs
 
+      # 盯市提醒的日线基线：250 日高低、MA20、布林、20 日均额，只覆盖去重池 200 多只（15KB）。
+      # 必须放在 compute.py 之后：它读的是 compute.py 刚写出来的 dist/hist/*.bin，
+      # 也就是页面 K 线用的同一份文件，永远是最新交易日。读 parquet 那份的话会慢一天。
+      # 失败不判红：页面拿不到基线就自动关掉量能与位置两类，其余照常，不至于整块白掉。
+      - name: 生成盯市提醒基线
+        continue-on-error: true
+        run: node pipeline/gen_etf_base.mjs
+
       - name: 输出体积检查
         run: |
           du -sh dist dist/etf dist/hist
@@ -476,7 +484,9 @@ jobs:
           cp dist/manifest.json "$PUB/"
           cp dist/research.json "$PUB/"
           # etfopt_hist.json 千万别漏：少拷一个文件，页面 ETF 组会退回「还没发布」。
-          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json; do
+          # etf_base.json 同理：漏了的话盯市提醒会静默退化成只判横截面和折溢价，
+          # 页面上没有任何可见的错，只是量能和位置两类从此不再出现。
+          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json etf_base.json; do
             if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; continue; fi
             if [ -n "$PREV" ] && git show "$PREV:$f" > "$PUB/$f" 2>/dev/null; then
               echo "::warning::dist/$f 这轮没生成，沿用上一版（$(du -h "$PUB/$f" | cut -f1)）"
