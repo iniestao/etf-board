@@ -9097,9 +9097,9 @@ function evRenderPanel(){
   if (wn){
     if (BASE_BAD){
       wn.className = 'ew on';
-      wn.innerHTML = '基线没取到，量能与走强/走弱两类暂不判，只剩横截面。'
-        + (BASE_TRY >= 3 ? '自动重试已用完，' : '正在重试…')
-        + '<u id="evRetry">立即重试</u>';
+      wn.innerHTML = '基线没取到，量能与走强/走弱暂不判，只剩横截面 · '
+        + (BASE_TRY >= 3 ? '自动重试已用完' : '正在重试…')
+        + ' <u id="evRetry">立即重试</u>';
       var rt = document.getElementById('evRetry');
       if (rt) rt.onclick = function(e){ e.stopPropagation(); BASE_TRY = 0; loadBase(function(ok){ evPaint(); if (ok) scanAll(); }); };
     } else {
