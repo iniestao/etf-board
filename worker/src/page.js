@@ -66,6 +66,9 @@ export const HTML = `<!DOCTYPE html>
 --up:#c62f34;--up-ink:#b02a2a;--up-bg:#fdf2f2;--up-line:#f0d2d4;
 --down:#0b7d55;--down-ink:#0a6b49;--down-bg:#eff8f3;--down-line:#c9e6d8;
 --warn:#96600f;--warn-bg:#fdf6e8;--warn-line:#ecd9b3;
+/* 数据状态点：只表达「这批数怎么来的」，不表达好坏，所以刻意避开涨红跌绿。
+   青＝实时（几秒一刷）、蓝＝快照（一次抓取）、灰＝日频（收盘定住）、橙＝过期。 */
+--st-live:#0d9488;--st-live-g:rgba(13,148,136,.16);--st-snap:#4a72a8;
 --accent:#2563eb;--accent-ink:#1d4ed8;--accent-bg:#eef3fe;--accent-line:#c7d7f7;
 /* 字号只留五档。原先 19 档、257 处声明，其中 10.5px 88 处、11.5px 81 处
    ——主次只差 1px，等于没有层级。 */
@@ -100,6 +103,7 @@ html[data-theme="dark"]{
 --up:#e4636a;--up-ink:#f08b90;--up-bg:#2b1e21;--up-line:#4d2f33;
 --down:#34bf8d;--down-ink:#5cd6a7;--down-bg:#172a24;--down-line:#2b4b3e;
 --warn:#d9a441;--warn-bg:#2a2418;--warn-line:#4a3f28;
+--st-live:#3fd0c0;--st-live-g:rgba(63,208,192,.18);--st-snap:#7ea6de;
 --accent:#5b8cf7;--accent-ink:#82a9ff;--accent-bg:#1b2337;--accent-line:#2f3d66;
 --sh-1:0 1px 2px rgba(0,0,0,.45),0 2px 8px -3px rgba(0,0,0,.55);
 --sh-2:0 2px 6px -1px rgba(0,0,0,.55),0 8px 24px -12px rgba(0,0,0,.75);
@@ -552,8 +556,59 @@ border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface)
 user-select:none;transition:background .15s,border-color .15s,color .15s}
 .sync:hover{color:var(--accent-ink);border-color:var(--accent-line);background:var(--accent-bg)}
 .sync:active{transform:translateY(.5px)}
-/* 模块时间标记：「截至」是数据本身的时刻，「算于」是本地算完的时刻，两者常差几十秒 */
-.sechd .n .tsm{white-space:nowrap;font-variant-numeric:tabular-nums}
+/* ---------- 数据状态槽 ----------
+   时点原来跟在标题后面一起流动，位置随标题长短漂移：一屏十二个区块，时点落在
+   十二个不同横坐标上，扫视时找不到"哪里写了时间"。现在标题后只留业务量
+   （「17 只」「有行情 15 只」），时点单独立成一个靠右的槽，停在每张卡的同一条
+   竖线上（具体靠 margin-left:auto 怎么分配，见下面「有按钮的卡」那段）。
+   槽内两件东西：一个 6px 的状态点，一段「截至 … · 算于 …」。
+   点色不用涨红跌绿——那两个色是行情方向，借来当状态灯会互相干扰：
+     青  实时（几秒到几十秒一刷，自选/涨速/期货）
+     蓝  快照（一分钟或一次抓取的整份数据）
+     灰  日频（收盘就定住，情绪/诊断/收盘榜）
+     橙  过期（盘中该动却没动，或上游明确 stale）
+   呼吸动画只给实时，且被上面的 prefers-reduced-motion 块统一压停。 */
+.stm{margin-left:auto;display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;
+  font-size:var(--fs-2xs);color:var(--txt3);white-space:nowrap}
+.stm .stdot{width:6px;height:6px;border-radius:50%;background:var(--txt3);opacity:.7;
+  flex:0 0 auto;transition:background .3s,box-shadow .3s,opacity .3s}
+.stm[data-k="live"] .stdot{background:var(--st-live);opacity:1;
+  box-shadow:0 0 0 2px var(--st-live-g);animation:stpulse 2.6s ease-in-out infinite}
+.stm[data-k="snap"] .stdot{background:var(--st-snap);opacity:.85}
+.stm[data-k="daily"] .stdot{background:var(--txt3);opacity:.6}
+.stm.stale .stdot{background:var(--warn);opacity:1;box-shadow:0 0 0 2px var(--warn-line);
+  animation:none}
+.stm.stale .tsm{color:var(--warn)}
+/* 尺寸收到 6px 后再缩就看不见了，呼吸只改外圈，不动元素本身——动尺寸会让
+   整行文字跟着抖。 */
+@keyframes stpulse{0%,100%{box-shadow:0 0 0 2px var(--st-live-g)}
+50%{box-shadow:0 0 0 5px rgba(13,148,136,0)}}
+.stm .tsm{white-space:nowrap;font-variant-numeric:tabular-nums}
+/* 资讯条（.onhd）也挂同一个槽，但它的「收起」原来靠 margin-left:auto 顶到右边，
+   现在 auto 归槽，「收起」退回普通排布。 */
+.onhd .stm{margin-left:auto;font-size:var(--fs-xs)}
+.onhd .ofold{margin-left:0}
+/* 有「重算 / 刷新 / 导入导出」的卡：auto 归按钮，按钮吃光空白后槽紧跟在它右边，
+   这样十二个区块的槽都停在同一条竖线上。没有按钮的卡（今日概况、今日变化、
+   全市场清单）仍是槽自己吃 auto。
+   用 :has 而不是给按钮一律加 margin-left:auto——后者会让无按钮的卡把槽留在左边。
+   不支持 :has 的浏览器回落到「槽在按钮左侧」，只是右边缘差几十像素，不影响读。 */
+.sechd:has(>.sync) .stm,.sechd:has(>.io) .stm{margin-left:0}
+.sechd:has(>.sync) >.sync,.sechd:has(>.io) >.io{margin-left:auto}
+/* 700 以下允许章节头折成两行：标题 19px + 业务量 + 槽，390px 屏一行装不下，
+   硬挤会把「全市场异动」压成竖排。折行后槽仍贴第一行右端。 */
+@media (max-width:700px){
+  .sechd{flex-wrap:wrap;row-gap:5px}
+  .stm{font-size:var(--fs-cap)}
+}
+/* 手机竖屏再让一步：业务量（「7/7 只已诊断 · 2 只低位放量…」）经常比标题还长，
+   挤在同一行会把槽顶到第二行、第一行只剩半句灰字。让它整条折到下面独占一行，
+   第一行固定是「标题 + 时点 + 按钮」，时点始终贴在标题右端。 */
+@media (max-width:560px){
+  .sechd .n{order:3;flex:1 1 100%;white-space:normal}
+  /* 业务量为空（短线情绪、板块地图、盘中衍生品）时不留一行 5px 的空隙 */
+  .sechd .n:empty{display:none}
+}
 /* overflow 用 clip 不用 hidden：hidden 会把 .tbl 变成滚动容器，theadd 的
    sticky 就地失效（表头吸顶不出来）；clip 同样裁掉圆角外的内容但不建立滚动盒。 */
 .tbl{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);overflow:clip}
@@ -825,7 +880,9 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 }
 /* 自选标题行右侧的小按钮：上一版这里是「同步」，复制一条带编号的链接，
    谁打开谁能写。换成纯文本导入导出后，只需要一个入口。 */
-.sechd .io{margin-left:auto;font-size:var(--fs-xs);color:var(--txt);background:var(--bg3);
+/* 「导入/导出」原来靠 margin-left:auto 顶到右边。现在 auto 归时点槽那套规则，
+   按钮被推到右端、槽紧随其右——按钮仍在视觉右侧，只是不再是最右的元素。 */
+.sechd .io{font-size:var(--fs-xs);color:var(--txt);background:var(--bg3);
 border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer;
 user-select:none;white-space:nowrap}
 .sechd .io:hover{border-color:#c3cad8}
@@ -2619,13 +2676,15 @@ function repaintSenti(){
   var n = document.getElementById('sentiN');
   if (n){
     var S = SENTI;
-    n.textContent = !S ? '读取中'
-      : !S.ok ? '暂不可用'
-        : S.mode === 'live' ? '截至 ' + (S.snapAt || '')
-          : (S.d || '').slice(5) + ' 收盘' + (S.src === 'hist' ? '（回算）' : '');
+    /* 时点全部交给状态槽：盘中是「截至 10:40」，收盘是「截至 11-20 收盘」。
+       标题里只剩「读取中 / 暂不可用」这类状态词，两个时刻不再挤在一行里。 */
+    n.textContent = !S ? '读取中' : !S.ok ? '暂不可用' : '';
+    var st = (!S || !S.ok) ? null
+      : S.mode === 'live' ? (S.snapAt || '')
+        : (S.d || '').slice(5) + ' 收盘' + (S.src === 'hist' ? '（回算）' : '');
     /* 收盘数据也要交代"什么时候算的"：S.d 是 11-20，但这段文字是今天 10:48 算的。
        不写这一句，读者会以为整块是 11-20 那天生成的。 */
-    stampN('sentiN', null);
+    stampN('sentiN', st, 'daily');
   }
 }
 
@@ -5023,7 +5082,7 @@ function renderCards(){
     var el = document.getElementById('n-'+k);
     if (el) el.textContent = gc[k] || '';
   });
-  stampN('cardsN', DATA_TS);
+  stampN('cardsN', DATA_TS, 'snap');
 }
 
 /* ================= 自选「主要贡献」 =================
@@ -5134,7 +5193,7 @@ function renderWatch(){
   paintTop3();     // tbody 刚被整块重写，单元格是新的，得重画一遍
   diagSync();
   // 自选走腾讯直连（5 秒/30 秒），比全市场快照新，时点要用它自己的
-  stampN('watchN', LIVE_TS || DATA_TS);
+  stampN('watchN', LIVE_TS || DATA_TS, 'live');
 }
 
 /* ================= 位置诊断 =================
@@ -5315,7 +5374,7 @@ function renderEvents(){
   }
   var ev = buildEvents();
   if (nEl) nEl.textContent = ev.length ? (ev.length + ' 只有动作') : '无';
-  stampN('evtN', DATA_TS);
+  stampN('evtN', DATA_TS, 'daily');
   var elSig = document.getElementById('cSig'), elSigs = document.getElementById('cSigs');
   if (elSig){
     elSig.innerHTML = ev.length + '<small>只</small>';
@@ -5593,9 +5652,11 @@ function renderMkt(){
   mktBar(); mktTabs(); mktList();
   if (nEl){
     /* 正则别写 \d：这一整页是一个模板字符串，\d 在这里会被吃掉反斜杠，
-       变成「d{4}」，匹配不上 2026-11-20。用 [0-9] 才是字面量。 */
-    nEl.textContent = MKT.n + ' 个指数 · ' + String(MKT.date || '').replace(/^[0-9]{4}-/, '') + ' 收盘';
-    stampN('mktN', null);
+       变成「d{4}」，匹配不上 2026-11-20。用 [0-9] 才是字面量。
+       日期和数量分两处：数量是业务量留在标题，日期是数据时刻进槽。 */
+    var mday = String(MKT.date || '').replace(/^[0-9]{4}-/, '');
+    nEl.textContent = MKT.n + ' 个指数';
+    stampN('mktN', mday ? (mday + ' 收盘') : null, 'daily');
   }
 }
 
@@ -5704,7 +5765,7 @@ function renderDiag(){
     nEl.textContent = have + '/' + watch.length + ' 只已诊断'
       + (p.length ? ' · ' + p.join(' · ') : '');
     // 诊断读的是日线历史（最后一天是上一交易日），行情部分是今天的快照
-    stampN('diagN', DATA_TS);
+    stampN('diagN', DATA_TS, 'daily');
   }
 }
 
@@ -5865,7 +5926,7 @@ function renderList(){
       : '<tr><td colspan="12" class="empty">该指数今天没有行情</td></tr>';
     document.getElementById('listN').textContent =
       '「' + IXF + '」' + arr.length + ' 只';
-    stampN('listN', DATA_TS);
+    stampN('listN', DATA_TS, 'snap');
     return;
   }
   /* 「国家队」是一个独立维度，不和宽基/跨境/行业主题叠加：名单里全是宽基，
@@ -5914,7 +5975,7 @@ function renderList(){
     ? ('名单 ' + STATE_HOLD.list.length + ' 只 · 有行情 ' + stateLive + ' 只'
        + (matched < stateLive ? ' · 筛出 ' + matched + ' 只' : ''))
     : ('显示 ' + arr.length + ' / 可用 ' + matched + ' 只');
-  stampN('listN', DATA_TS);
+  stampN('listN', DATA_TS, 'snap');
   renderStateHint(stateLive);
 }
 
@@ -6202,14 +6263,11 @@ function renderSpeed(){
   // 「截至」取分时最后一根的时间，不取本地时钟：前者能显示「15:00」，
   // 后者永远显示「刚刚」，就分不出这是不是实时行情
   var t = SPD.rows[0].t || '';
-  var when = SPD.ts ? new Date(SPD.ts) : null;
-  var hhmm = when ? ('0' + when.getHours()).slice(-2) + ':' + ('0' + when.getMinutes()).slice(-2) + ':'
-    + ('0' + when.getSeconds()).slice(-2) : '-';
   if (nEl){
     // 手机上这一行会把「急涨急跌」标题挤到第二行，所以只留最要紧的两个数
-    nEl.innerHTML = '有效 ' + SPD.rows.length + ' 只 · ' + t + ' 扫描 ' + SPD.ask + ' 只'
-      + '<span class="hide-sm"> · 算于 ' + hhmm
-      + (SPD.ms ? ' · ' + SPD.ms + 'ms' : '') + '</span>';
+    nEl.textContent = '有效 ' + SPD.rows.length + ' 只 · 扫描 ' + SPD.ask + ' 只';
+    nEl.title = SPD.ms ? ('本次扫描耗时 ' + SPD.ms + 'ms') : '';
+    stampN('spdN', t || null, 'live');
   }
   if (note){
     // 「收盘了没有」按分时最后一根判断，不能复用 isOpen()——那个函数为了
@@ -8383,9 +8441,14 @@ window.addEventListener('resize', function(){
      算于 HH:MM:SS = 浏览器把它算完的时刻
    分开写是因为它们经常差几十秒：清单快照 09:52 到，位置诊断要串行读几十只历史，
    算完可能 09:52:40。只写「更新 09:52:40」会让人以为行情是 40 秒前的。
-   日频模块（短线情绪、衍生品、全市场异动）的第一段不是时刻而是「11-20 收盘」，
-   那是数据本身的日期，比"截至 15:00"准确——周末打开时前者一看就知道是上周五的。
-   重复渲染先删再插，刷一百次也只有一组。手机竖屏只留前半段，其余 hide-sm。 */
+
+   pointTs 收三种：
+     时间戳 → 「截至 MM-DD HH:MM」，跨日自动补日期（周末打开时 DATA_TS 还是上周五）
+     字符串 → 原样当「截至」的宾语（"11-20 收盘"、"美东 11-21 收盘"）
+     null   → 只写「算于」，给日频模块用：它们的时刻已经写在业务量里了
+
+   kind 表示这批数怎么来的，决定状态点颜色（青实时／蓝快照／灰日频／橙过期）。
+   槽是每个章节头里唯一的 .stm：先找后建，重复渲染不会堆出第二个。 */
 function _p2(n){ return (n < 10 ? '0' : '') + n; }
 function _hms(t){
   var d = new Date(t || Date.now());
@@ -8403,19 +8466,64 @@ function _when(t){
     && d.getDate() === n.getDate();
   return (same ? '' : _p2(d.getMonth() + 1) + '-' + _p2(d.getDate()) + ' ') + _hm(t);
 }
-function stampN(id, pointTs){
+function stampN(id, pointTs, kind){
   var el = typeof id === 'string' ? document.getElementById(id) : id;
   if (!el) return;
-  var old = el.querySelector('.tsm');
-  if (old && old.parentNode) old.parentNode.removeChild(old);
+  // 上游挂掉时调用方会给标题挂 warn（衍生品的 .n.warn），槽跟着一起变橙，
+  // 别出现「文字说有问题、灯还是绿的」这种自相矛盾
+  if (el.classList && el.classList.contains('warn')) kind = 'stale';
+  kind = kind || 'snap';
+  var box = el.parentNode.querySelector('.stm');
+  if (!box){
+    box = document.createElement('span');
+    box.className = 'stm';
+    /* 槽挂在行的最右端，「重算 / 刷新」在它左边。这样十二个区块的时点落在同一条
+       竖线上（按钮宽度不同，若槽排在按钮左边，右边缘会差 30–50px）。
+       资讯条的「收起」是折叠开关，必须留在最右，槽插在它前面。 */
+    var fold = el.parentNode.querySelector('.ofold');
+    if (fold) el.parentNode.insertBefore(box, fold);
+    else el.parentNode.appendChild(box);
+  }
+  // 标题里的占位符「-」清掉，否则「- 截至 15:00」这种看着像负号
   var base = String(el.textContent || '').trim();
   if (base === '-' || base === '—') el.textContent = '';
-  // 前面没有内容时不要留一个孤零零的「·」——板块地图/今日概况的 meta 本来就是空的
-  var dot = String(el.textContent || '').trim() ? ' · ' : '';
-  el.insertAdjacentHTML('beforeend',
-    '<span class="tsm">' + dot + (pointTs ? '截至 ' + _when(pointTs) : '')
-    + '<span class="hide-sm">' + (pointTs ? ' · ' : '') + '算于 ' + _hms() + '</span></span>');
+  var lead = typeof pointTs === 'string' ? ('截至 ' + pointTs)
+    : pointTs ? ('截至 ' + _when(pointTs)) : '';
+  box.setAttribute('data-k', kind);
+  box.setAttribute('data-at', String(Date.now()));
+  // 字符串时刻（"11-20 收盘"、"15:00"）没法换算成毫秒，用本次渲染时刻当基准：
+  // 它跟着这批数到达的时间走，断流时同样能把灯点橙
+  if (typeof pointTs === 'number') box.setAttribute('data-ts', String(pointTs));
+  else if (typeof pointTs === 'string') box.setAttribute('data-ts', String(Date.now()));
+  else box.removeAttribute('data-ts');
+  // 没有「截至」时，算于就是槽里唯一的内容，不能再挂 hide-sm——否则手机上
+  // 只剩一个孤零零的点（衍生品收盘态、情绪暂不可用都是这种情况）
+  box.innerHTML = '<i class="stdot"></i><span class="tsm">' + lead
+    + (lead ? '<span class="hide-sm">' : '<span>') + (lead ? ' · ' : '')
+    + '算于 ' + _hms() + '</span></span>';
+  tickStamps();
 }
+
+/* 过期判定只在「数据本该在动」的时候做：收盘后停在 15:00 是正常的，不该报橙。
+   实时类三分钟没动、快照类十五分钟没动，盘中就一定是哪一环断了。
+   日频不判——它的时点已经写明是哪个交易日，变不变都说得清楚。 */
+var ST_TTL = { live: 180000, snap: 900000 };
+function tickStamps(){
+  var now = Date.now(), open = isOpen();
+  var els = document.querySelectorAll('.stm');
+  for (var i = 0; i < els.length; i++){
+    var b = els[i];
+    var k = b.getAttribute('data-k') || 'snap';
+    var stale = (k === 'stale');
+    if (!stale && open && ST_TTL[k]){
+      var ts = parseInt(b.getAttribute('data-ts') || '0', 10);
+      if (ts && now - ts > ST_TTL[k]) stale = true;
+    }
+    if (stale){ if (b.className.indexOf('stale') < 0) b.className = 'stm stale'; }
+    else if (b.className.indexOf('stale') >= 0) b.className = 'stm';
+  }
+}
+setInterval(tickStamps, 10000);
 
 function setStale(msg, bad){
   var el = document.getElementById('staleBar');
@@ -8462,8 +8570,8 @@ function loadFull(){
 
     renderCards(); renderList(); renderWatch(); renderSectors();
     // 这几块共用同一份快照，「截至」一致；各模块自己也可能再打一次（重算按钮），幂等
-    stampN('secN', DATA_TS);
-    stampN('listN', DATA_TS);
+    stampN('secN', DATA_TS, 'snap');
+    stampN('listN', DATA_TS, 'snap');
     // 全市场提醒跟着全量快照走（60 秒一刷），不能挂在 5 秒的自选行情上——
     // 那个只有自选那几十只，扫出来的「全市场」是假的
     alertScanAll();
@@ -10143,9 +10251,10 @@ function renderOvernight(){
   // 美东日期取任意一条美股记录的（同一次响应里它们一致）
   var d = '';
   for (var k in ON.us){ d = (ON.us[k].d || '').slice(5, 10); break; }
+  /* 「美东 11-21 收盘」是数据时刻，交给状态槽；「点赛道看映射」是操作提示，
+     留在标题旁。两件事原来挤在一句话里，槽建起来之后必须拆开。 */
   var h = '<div class="onhd"><b>隔夜</b>'
-    + (d ? '<span class="n" id="onN">美东 ' + esc(d) + ' 收盘 · 点赛道看映射</span>'
-         : '<span class="n" id="onN">点赛道看映射</span>')
+    + '<span class="n" id="onN">点赛道看映射</span>'
     + '<span class="ofold" id="onFold">' + (ON_FOLD ? '展开' : '收起') + '</span></div>';
 
   var fut = '', i, q;
@@ -10203,11 +10312,9 @@ function renderOvernight(){
   }
   el.innerHTML = h;
   el.style.display = '';
-  // 美股是最近一个完整交易日，期货/亚太是实时——统一按「这次抓取的时刻」标，
-  // 别再让人猜这张卡是五分钟前还是半小时前的
-  /* 不传时刻：ON.ts 是「今天上午几点抓的」，而这张卡的数据时刻是「美东 11-20 收盘」，
-     标题里已经写了。再挂一个「截至 10:49」只会让人以为美股行情是今天 10:49 的。 */
-  stampN('onN', null);
+  // 美股是最近一个完整交易日：时刻写「美东 11-21 收盘」，不写抓取时间。
+  // ON.ts 是「今天上午几点抓的」，挂上去只会让人以为美股行情是今天 10:49 的。
+  stampN('onN', d ? ('美东 ' + d + ' 收盘') : null, 'daily');
 
   // 亚太卡：独立一块，排在隔夜下面。今天已经在交易（或刚收盘）的市场，
   // 和隔夜（昨晚美股）正好互补；点条目看最近一个完整时段的分时。
@@ -10220,17 +10327,19 @@ function renderOvernight(){
       ap += ovChip(q.n, q.chg, q.sid, q.old);
     }
     // 服务端三档（主源/备源/KV 上次值）也可能全是旧的，那就如实标出来，
-    // 别让「几分钟前抓的数」顶着「今日实时」的名头
-    var asub = ON.asiaStale ? '未刷新 · 上次抓取的值' : '今日实时 · 点看分时 / 日线';
-    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">' + asub + '</span></div>'
+    // 别让「几分钟前抓的数」顶着「今日实时」的名头。状态词留在标题，时刻进槽。
+    ac.innerHTML = '<div class="onhd"><b>亚太</b><span class="n" id="asN">'
+      + (ON.asiaStale ? '未刷新 · ' : '') + '点看分时 / 日线</span></div>'
       + '<div class="onfut">' + ap + '</div>';
     ac.style.display = '';
-    stampN('asN', ON.asiaStale ? (ON.asiaTs || ON.ts) : ON.ts);
+    stampN('asN', ON.asiaTs || ON.ts || null, ON.asiaStale ? 'stale' : 'live');
   } else if (ac.querySelector && ac.querySelector('.onfut')){
     // 空数组＝这一轮抓取失败（主源整批断连，备源也没中）。已经有上一轮的值就留着，
     // 只把副标题改掉——把内容抹掉会让整块凭空消失，比给旧值更糟
     var asn = document.getElementById('asN');
     if (asn) asn.textContent = '未刷新 · 显示上次的值';
+    var asb = ac.querySelector('.stm');
+    if (asb){ asb.setAttribute('data-k', 'stale'); asb.className = 'stm stale'; }
   } else {
     ac.style.display = 'none';
   }
@@ -10862,12 +10971,18 @@ function renderFutAll(){
     var miss = (FUT.partial || []).map(function (k) {
       return PN[k] || (k.length <= 2 ? k + ' 期货' : k);
     }).join('、');
-    n.textContent = futStatus() + (miss ? ' · 缺 ' + miss : '');
+    /* 日期进状态槽，状态词（降级 / 缺哪一段）留在标题——一句话里不能同时
+       有时刻和状态，否则槽里会出现「截至 降级 · 11-20 收盘」这种。 */
+    var fs = futStatus();
+    var deg = fs.indexOf('降级') >= 0;
+    n.textContent = (deg ? '降级' : '') + (miss ? (deg ? ' · ' : '') + '缺 ' + miss : '');
     n.className = 'n' + (FUT.stale ? ' warn' : '');
   }
-  /* 收盘时 futStatus() 已经写了「11-20 收盘」，再挂截至就是两个时点；
-     盘中它是空串，这时才需要「截至 11:17」交代这批报价的时点。 */
-  stampN('futN', isOpen() ? DATA_TS : null);
+  /* 收盘时把「11-20 收盘」放进槽；盘中那一段没有日期，槽才挂「截至 11:17」。
+     点色跟着走：收盘定住是灰的日频，盘中才亮青。 */
+  var fday = String(FUT.td || '').slice(5);
+  stampN('futN', (isOpen() && !deg) ? DATA_TS : (fday ? fday + ' 收盘' : null),
+    FUT.stale ? 'stale' : ((isOpen() && !deg) ? 'live' : 'daily'));
 }
 
 function renderFutBasis(){
