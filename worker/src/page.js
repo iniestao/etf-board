@@ -1660,6 +1660,12 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
   color:var(--txt3);border:1px solid transparent}
 #evPanel .ed a:hover{background:var(--bg3)}
 #evPanel .ed a.on{background:var(--sunken);border-color:var(--line);color:var(--txt)}
+/* 降级横幅：基线没取到时量能与位置两类整块不判，清单看上去只是「今天没事」。
+   这种事必须在列表顶上明说，藏在池子标签的 title 里等于没说。 */
+#evPanel .ew{display:none;padding:6px 12px;font-size:var(--fs-2xs);line-height:1.55;
+  color:var(--warn);background:var(--warn-bg);border-bottom:1px solid var(--warn-line);flex:none}
+#evPanel .ew.on{display:block}
+#evPanel .ew u{text-decoration:none;cursor:pointer;border-bottom:1px dashed currentColor}
 #evPanel .ec{display:flex;gap:5px;padding:8px 12px;flex-wrap:wrap;flex:none;
   border-bottom:1px solid var(--line)}
 #evPanel .ec a{cursor:pointer;padding:2px 8px;border-radius:12px;font-size:var(--fs-2xs);
@@ -1995,6 +2001,7 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
 </div>
 <div id="evPanel">
   <div class="eh"><b>今日异动</b><span id="evHead"></span><u id="evClr">清空</u><u id="evClose">关闭</u></div>
+  <div class="ew" id="evWarn"></div>
   <div class="ed" id="evDays"></div>
   <div class="ec" id="evCats"></div>
   <div class="eb" id="evBody"><div class="empty">正在读取…</div></div>
@@ -8526,6 +8533,8 @@ var EV_VIEW = '';             // 正在看的交易日
 var EV_CAT = 'all';
 var EV_SAVE_T = 0;            // 排程中的写盘定时器
 var EV_DIRTY = false;         // 有未落盘的变化
+var EV_PICK = '';             // 用户手动点过哪一天；空 = 跟着最新交易日走
+var BASE_TRY = 0;             // 基线取失败过几次（用于退避重试）
 
 try {
   var aj = localStorage.getItem('etf_alert');
@@ -8557,6 +8566,28 @@ function dayKey(d){
 }
 ALERT_DAY = dayKey();
 
+/* 「交易日」不等于「日历日」。
+   周六早上打开页面，行情快照还是周五 15:00 收盘那一刻，但 dayKey() 已经是新的
+   日历日：按日历日分桶会凭空开一个空桶，浮标显示 0 或几条零星记录，而周五那天的
+   收盘状态躺在日期切换里——用户看到的就是「记录全没了」。
+
+   所以桶按「这份数据属于哪个交易日」分，两条规则：
+   1) 快照时间落后当前 20 分钟以上，就认快照那一刻的日期（上游停了、缓存了，
+      页面显示的其实还是那天的收盘）；
+   2) 周六周日没有交易，一律退回上一个周五。
+   两个条件都不满足（盘中、盘后不久）就是今天。 */
+function tradeDay(){
+  var now = new Date(), d = now;
+  if (typeof DATA_TS === 'number' && DATA_TS > 0 && (now - DATA_TS) > 20 * 60000){
+    var s = new Date(DATA_TS);
+    if (s.getTime() < now.getTime()) d = s;
+  }
+  var w = d.getDay();
+  if (w === 0) d = new Date(d.getTime() - 2 * 86400000);
+  else if (w === 6) d = new Date(d.getTime() - 86400000);
+  return dayKey(d);
+}
+
 /* ---------- 基线 ---------- */
 function baseGet(code){
   if (!ETFB || !ETFB_IDX) return null;
@@ -8573,23 +8604,30 @@ function baseGet(code){
 
 function loadBase(done){
   fetch('/api/etfbase').then(function(r){ return r.json(); }).then(function(j){
-    if (!j || !j.c || !j.data || !j.data.length){
-      BASE_BAD = true;
-      if (done) done(false);
-      return;
-    }
+    if (!j || !j.c || !j.data || !j.data.length) throw new Error('基线为空');
     ETFB = j;
     ETFB_IDX = {};
     for (var i = 0; i < j.c.length; i++) ETFB_IDX[j.c[i]] = i;
     BASE_BAD = false;
+    BASE_TRY = 0;
     paintPoolN();
     if (done) done(true);
   }).catch(function(){
     // 基线取不到不报错：横截面和折溢价不依赖它，页面照常提醒。
-    // 但量能和位置这两类会静默消失——所以标题上要挂个「基线缺」的提示。
+    // 但量能和位置这两类会静默消失——所以面板顶上要挂横幅，池子标签上也有提示。
     BASE_BAD = true;
     paintPoolN();
     if (done) done(false);
+    /* 这个文件只有 15KB，一次冷启动抖动就永久降级太亏：位置类整块消失，清单只剩
+       横截面那十条，看上去就像「今天没事」，而真相是「没算」。退避重试三次
+       （5s / 20s / 60s），取到后立刻补扫一轮，位置类自己会长回来。 */
+    if (BASE_TRY < 3){
+      var wait = [5000, 20000, 60000][BASE_TRY] || 60000;
+      BASE_TRY++;
+      setTimeout(function(){
+        loadBase(function(ok){ evPaint(); if (ok) scanAll(); });
+      }, wait);
+    }
   });
 }
 
@@ -8650,9 +8688,12 @@ function evLoad(){
   // 留最近 5 个交易日。再长就开始吃容量，而两周前的异动本来也没人回看。
   var ks = Object.keys(EVD_STORE).sort();
   while (ks.length > 5) delete EVD_STORE[ks.shift()];
-  EV_VIEW = EVD_STORE[dayKey()] ? dayKey() : (ks.length ? ks[ks.length - 1] : dayKey());
-  if (!EVD_STORE[EV_VIEW]) EVD_STORE[EV_VIEW] = [];
-  EVD = EVD_STORE[EV_VIEW];
+  /* 默认看「最新那个交易日」，而不是「今天」：周末和节假日没有今天这一桶，
+     硬指向它只会造出一个空页面，把最后一天的收盘状态藏到切换条后面。 */
+  var td = tradeDay();
+  EV_VIEW = EVD_STORE[td] ? td : (ks.length ? ks[ks.length - 1] : td);
+  if (!EVD_STORE[EV_VIEW] && !ks.length) EVD_STORE[EV_VIEW] = [];
+  EVD = EVD_STORE[EV_VIEW] || [];
 }
 
 /* 存盘合并写：一次扫描可能连着加十几条，每条都写 localStorage 会在弱机上
@@ -8676,8 +8717,9 @@ function evFlush(){
 }
 
 function evToday(){
-  if (!EVD_STORE[dayKey()]) EVD_STORE[dayKey()] = [];
-  return EVD_STORE[dayKey()];
+  var k = tradeDay();
+  if (!EVD_STORE[k]) EVD_STORE[k] = [];
+  return EVD_STORE[k];
 }
 
 /* 入列。tag 区分同类别下的不同形态（新高 / 站上 MA20 …），否则一只票
@@ -8792,11 +8834,26 @@ function scanAll(){
   var n = pool.length;
   if (!n) return;
 
-  var today = dayKey();
+  /* 开盘前什么都不判：9:30 之前快照里的「现价」还是昨收，位置类会把昨天的
+     收盘状态原样重记一遍到「今天」这个新桶里，看起来就像今天已经走出了一整
+     套行情；横截面的涨跌幅也全是 0，前 N 名等于随机排。这段保持上一交易日的
+     视图不动，等第一笔成交再说。 */
+  var prog = dayProgress();
+  var open = isOpen();
+  if (prog <= 0 && !open) return;
+
+  /* 桶按「快照属于哪个交易日」走（周末、节假日都不翻页），
+     并且只在用户没手动翻日期的时候把视图拉回最新那天。 */
+  var today = tradeDay();
   if (today !== ALERT_DAY){
     ALERT_DAY = today; ALERT_HIT = {}; ALERT_MUTE = {};
-    EV_VIEW = today; EVD = evToday();
+    /* 清掉「未来桶」：旧版按日历日分桶，周末会凭空造出一个只装了几条
+       横截面的假日期。现在桶跟交易日走，比最新交易日还新的桶一定是那个残渣。 */
+    for (var dk in EVD_STORE){ if (dk > today) delete EVD_STORE[dk]; }
+    if (!EVD_STORE[EV_VIEW]) EV_PICK = '';
   }
+  if (!EV_PICK || EV_PICK === today) EV_VIEW = today;
+  EVD = evToday();
 
   var i, x, b;
   var posSnap = {};        // 本轮位置类的全量，扫完整批替换进记录
@@ -8836,9 +8893,8 @@ function scanAll(){
       '倒数第 ' + (i + 1) + ' · 成交 ' + fmtAmt(x.amt) + (x.ix ? ' · 跟踪 ' + x.ix : ''), 'dn', false);
   }
 
-  var prog = dayProgress();
   var pops = 0, popMax = 2;      // 一轮最多弹两条：池子 200 只，同时触发的概率不低
-  var open = isOpen();
+  var settled = prog >= 0.999;   // 收盘了：amt 就是全天额，不需要按进度折算
 
   for (i = 0; i < n; i++){
     x = pool[i];
@@ -8847,8 +8903,13 @@ function scanAll(){
 
     /* ---- 1) 放量 ----
        早盘 25% 进度内不判：分母是「已交易分钟」，10 点前 prog 只有 0.12，
-       今日累计额除以它会放大 8 倍，任何一只都在「放量 5 倍」。 */
-    if (b && b.amt20 > 0 && prog >= 0.25 && isOpen()){
+       今日累计额除以它会放大 8 倍，任何一只都在「放量 5 倍」。
+
+       收盘后要再判一次：prog=1、amt 就是全天成交额，此时的「放量 X 倍」是当天
+       最干净的那一个读数，没有折算误差。不判的话，下午两点半以后才放出来的量、
+       以及那些页面当时没开着的时段，收盘一看清单就是空的——而盘后要看的恰恰
+       就是「今天谁真的放量了」。 */
+    if (b && b.amt20 > 0 && prog >= 0.25 && (open || settled)){
       /* 判定和显示用同一个数：直接拿原始 evr 判、用 toFixed(2) 显示，
          会出现「界面写着 2.00 倍、却没弹窗」——实际是 1.9996。
          先四舍五入到显示精度再判，两处永远一致。 */
@@ -9002,27 +9063,49 @@ function evCatCount(cat){
 function evPaint(){
   var f = document.getElementById('evFloat');
   if (!f) return;
-  var today = (EVD_STORE[dayKey()] || []).length;
+  /* 浮标上的数字跟「抽屉正在看的那一天」一致，而不是硬绑今天：
+     周末/节假日没有今天这一桶，硬绑上去就是个 0，用户以为记录丢了。 */
+  var cur = EVD_STORE[EV_VIEW] || [];
   var nEl = document.getElementById('evN');
-  nEl.textContent = today;
-  nEl.className = today > 0 ? 'hit' : '';
+  nEl.textContent = cur.length;
+  nEl.className = cur.length > 0 ? 'hit' : '';
   var dot = document.getElementById('evDot');
   dot.className = ALERT.on ? 'live' : '';
   var sub = document.getElementById('evSub');
-  sub.textContent = ALERT.on ? '盯盘中' : '';
-  if (!EVD_STORE[EV_VIEW]) EVD = null; else EVD = EVD_STORE[EV_VIEW];
+  sub.textContent = ALERT.on ? '盯盘中'
+    : (EV_VIEW !== tradeDay() ? fmtDay(EV_VIEW) : (isOpen() ? '' : '收盘'));
+  if (!EVD_STORE[EV_VIEW]) EVD = []; else EVD = EVD_STORE[EV_VIEW];
   if (document.getElementById('evPanel').className.indexOf('show') >= 0) evRenderPanel();
 }
 
 function evRenderPanel(){
   var d = EVD_STORE[EV_VIEW] || [];
+  var td = tradeDay();
   var head = document.getElementById('evHead');
   if (head){
     // 分子是「这轮有行情的」，分母是池子的定义。两个数不等是正常的：
     // 停牌、当日无成交、以及快照只抓到一部分，都会让分子小一截。
     var pn = POOL.length || (ETFB ? ETFB.n : 0);
     head.textContent = (ETFB ? '池 ' + pn + '/' + ETFB.n : (BASE_BAD ? '基线缺' : '池 —'))
-      + ' · ' + (EV_VIEW === dayKey() ? '今天' : fmtDay(EV_VIEW)) + ' ' + d.length + ' 条';
+      + ' · ' + (EV_VIEW === td ? (isOpen() ? '今天' : '收盘') : fmtDay(EV_VIEW) + ' 收盘')
+      + ' ' + d.length + ' 条';
+  }
+
+  /* 降级横幅。基线缺的时候量能、走强、走弱三类一条都不会有，清单里只剩横截面
+     那十来条——不说明的话，看起来就是「盘后没什么好看的」，而实际是「没算」。 */
+  var wn = document.getElementById('evWarn');
+  if (wn){
+    if (BASE_BAD){
+      wn.className = 'ew on';
+      wn.innerHTML = '基线没取到，量能与走强/走弱两类暂不判，只剩横截面。'
+        + (BASE_TRY >= 3 ? '自动重试已用完，' : '正在重试…')
+        + '<u id="evRetry">立即重试</u>';
+      var rt = document.getElementById('evRetry');
+      if (rt) rt.onclick = function(e){ e.stopPropagation(); BASE_TRY = 0; loadBase(function(ok){ evPaint(); if (ok) scanAll(); }); };
+    } else {
+      wn.className = 'ew';
+      wn.innerHTML = '';
+    }
   }
 
   // 日期切换：只有存了不止一天才显示——只有今天一天的时候，
@@ -9036,7 +9119,7 @@ function evRenderPanel(){
     for (var i = 0; i < days.length; i++){
       var k = days[i], cnt = (EVD_STORE[k] || []).length;
       dh += '<a data-d="' + k + '" class="' + (k === EV_VIEW ? 'on' : '') + '">'
-        + (k === dayKey() ? '今天' : fmtDay(k)) + ' ' + cnt + '</a>';
+        + (k === td ? '今日' : fmtDay(k)) + ' ' + cnt + '</a>';
     }
     dd.innerHTML = dh;
   }
@@ -9099,12 +9182,16 @@ var POS_ORDER = {
 };
 
 function evRowsHtml(rows){
-  var h = '', i, r, t, hm;
+  var h = '', i, r, t, hm, view = EV_VIEW;
   for (i = 0; i < rows.length; i++){
     r = rows[i];
     t = new Date(r.t);
-    hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
-      + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
+    /* 收盘后补判出来的条目（比如周六才打开页面，用周五的全天成交额判出的放量），
+       时间戳是「打开页面的那一刻」，写 22:15 会被误读成夜里发生的异动。
+       时间戳不落在这一天里的，统一写「收盘」——它们说的都是收盘那个状态。 */
+    hm = dayKey(t) !== view ? '收盘'
+      : (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
+        + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
     h += '<div class="ei ' + r.cls + '" title="' + esc(r.sub) + '">'
       + '<em>' + hm + '</em>'
       + '<u>' + (EV_CATN[r.cat] || r.cat) + '</u>'
@@ -9118,7 +9205,7 @@ function evRowsHtml(rows){
    时间戳是昨天的，直接渲染会显示成昨天下午 15:00 这种看不懂的东西，
    所以不是今天就统一写「持续」。 */
 function posGroupsHtml(rows){
-  var by = {}, h = '', i, j, r, cat, grp, today = dayKey();
+  var by = {}, h = '', i, j, r, cat, grp, today = EV_VIEW;
 
   /* 每组默认只铺 12 条。普跌日「布林下轨下方」能有 79 只，全铺出来
      抽屉第一屏就是 79 行同一件事。折叠不是砍数据——组头的数字是真实的
@@ -9179,7 +9266,7 @@ function fmtDay(k){
 function evOpen(){
   var p = document.getElementById('evPanel');
   if (!p) return;
-  if (!EVD_STORE[EV_VIEW]) EV_VIEW = dayKey();
+  if (!EVD_STORE[EV_VIEW]) EV_VIEW = tradeDay();
   p.className = 'show';
   evRenderPanel();
   var bx = document.getElementById('alertBox');
@@ -9273,7 +9360,7 @@ function evClose(){
   var ecl = document.getElementById('evClr');
   if (ecl) ecl.onclick = function(e){
     e.stopPropagation();
-    if (!confirm('清空 ' + (EV_VIEW === dayKey() ? '今天' : fmtDay(EV_VIEW)) + ' 的异动记录？')) return;
+    if (!confirm('清空 ' + (EV_VIEW === tradeDay() ? '今天' : fmtDay(EV_VIEW)) + ' 的异动记录？')) return;
     EVD_STORE[EV_VIEW] = [];
     try { localStorage.setItem('etf_evd_v1', JSON.stringify(EVD_STORE)); } catch(err){}
     evPaint();
@@ -9284,7 +9371,8 @@ function evClose(){
     var a = e.target.closest ? e.target.closest('a') : null;
     if (!a) return;
     e.stopPropagation();
-    EV_VIEW = a.getAttribute('data-d');
+    EV_PICK = a.getAttribute('data-d');
+    EV_VIEW = EV_PICK;
     evRenderPanel();
   };
   document.getElementById('evCats').onclick = function(e){
@@ -9309,7 +9397,10 @@ function evClose(){
 
   evLoad();
   evPaint();
-  loadBase(function(){ evPaint(); if (ALERT.on) scanAll(); });
+  /* 基线回来后无条件补扫一轮。原来这里写的是 if (ALERT.on) scanAll()——
+     可是位置类是「状态」，跟提醒开关没关系：提醒关着、基线又比首轮扫描晚到，
+     这一整块就一直空着，等到下一个 60 秒快照才补上，用户看到的就是「只剩十条」。 */
+  loadBase(function(ok){ evPaint(); if (ok) scanAll(); });
 })();
 
 document.addEventListener('visibilitychange', function(){
