@@ -8797,13 +8797,21 @@ var EV_DIRTY = false;         // 有未落盘的变化
 try {
   var aj = localStorage.getItem('etf_alert');
   if (aj){ var ao = JSON.parse(aj);
-    if (+ao.evr > 0) ALERT.evr = +ao.evr;
-    if (+ao.chg > 0) ALERT.chg = +ao.chg;
-    if (+ao.rank > 0) ALERT.rank = +ao.rank; }
+    /* 只认 v=2。旧版存的是 {chg:2.0, spd:0.8, pm:2.0, scope:'all'}，那个 chg 是
+       「绝对涨跌幅阈值」，语义跟现在的「配量能用的涨跌门槛」不是一回事——
+       照读会让老用户一直卡在 2%，而新阈值默认是 1.5%，他改都没地方改。
+       宁可让他重设一次，也不要静默沿用一套已经失效的口径。 */
+    if (ao.v === 2){
+      if (+ao.evr > 0) ALERT.evr = +ao.evr;
+      if (+ao.chg > 0) ALERT.chg = +ao.chg;
+      if (+ao.rank > 0) ALERT.rank = +ao.rank;
+    }
+  }
 } catch(e){}
 
 function alertSave(){
   try { localStorage.setItem('etf_alert', JSON.stringify({
+    v:2,
     evr:ALERT.evr, chg:ALERT.chg, rank:ALERT.rank })); } catch(e){}
 }
 
