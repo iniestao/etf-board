@@ -552,7 +552,7 @@ border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface)
 user-select:none;transition:background .15s,border-color .15s,color .15s}
 .sync:hover{color:var(--accent-ink);border-color:var(--accent-line);background:var(--accent-bg)}
 .sync:active{transform:translateY(.5px)}
-/* 模块时间标记：「数据时点」是数据本身的时刻，「算于」是本地算完的时刻，两者常差几十秒 */
+/* 模块时间标记：「截至」是数据本身的时刻，「算于」是本地算完的时刻，两者常差几十秒 */
 .sechd .n .tsm{white-space:nowrap;font-variant-numeric:tabular-nums}
 /* overflow 用 clip 不用 hidden：hidden 会把 .tbl 变成滚动容器，theadd 的
    sticky 就地失效（表头吸顶不出来）；clip 同样裁掉圆角外的内容但不建立滚动盒。 */
@@ -2621,8 +2621,11 @@ function repaintSenti(){
     var S = SENTI;
     n.textContent = !S ? '读取中'
       : !S.ok ? '暂不可用'
-        : S.mode === 'live' ? '盘中 ' + (S.snapAt || '')
+        : S.mode === 'live' ? '截至 ' + (S.snapAt || '')
           : (S.d || '').slice(5) + ' 收盘' + (S.src === 'hist' ? '（回算）' : '');
+    /* 收盘数据也要交代"什么时候算的"：S.d 是 11-20，但这段文字是今天 10:48 算的。
+       不写这一句，读者会以为整块是 11-20 那天生成的。 */
+    stampN('sentiN', null);
   }
 }
 
@@ -5589,7 +5592,9 @@ function renderMkt(){
   }
   mktBar(); mktTabs(); mktList();
   if (nEl){
-    nEl.textContent = MKT.n + ' 个指数 · ' + MKT.date + ' 收盘';
+    /* 正则别写 \d：这一整页是一个模板字符串，\d 在这里会被吃掉反斜杠，
+       变成「d{4}」，匹配不上 2026-11-20。用 [0-9] 才是字面量。 */
+    nEl.textContent = MKT.n + ' 个指数 · ' + String(MKT.date || '').replace(/^[0-9]{4}-/, '') + ' 收盘';
     stampN('mktN', null);
   }
 }
@@ -6194,17 +6199,17 @@ function renderSpeed(){
 
   box.innerHTML = colHtmlOf(up, 1) + colHtmlOf(dn, -1);
 
-  // 数据时点用分时最后一根的时间，不用本地时钟：一个显示「刚刚」，另一个
-  // 显示「15:00」，用户才知道这是不是实时的
+  // 「截至」取分时最后一根的时间，不取本地时钟：前者能显示「15:00」，
+  // 后者永远显示「刚刚」，就分不出这是不是实时行情
   var t = SPD.rows[0].t || '';
   var when = SPD.ts ? new Date(SPD.ts) : null;
   var hhmm = when ? ('0' + when.getHours()).slice(-2) + ':' + ('0' + when.getMinutes()).slice(-2) + ':'
     + ('0' + when.getSeconds()).slice(-2) : '-';
   if (nEl){
     // 手机上这一行会把「急涨急跌」标题挤到第二行，所以只留最要紧的两个数
-    nEl.innerHTML = '有效 ' + SPD.rows.length + ' 只 · 数据时点 ' + t
-      + '<span class="hide-sm"> · 扫描 ' + SPD.ask + ' 只 · 算于 ' + hhmm
-      + (SPD.ms ? '（' + SPD.ms + 'ms）' : '') + '</span>';
+    nEl.innerHTML = '有效 ' + SPD.rows.length + ' 只 · ' + t + ' 扫描 ' + SPD.ask + ' 只'
+      + '<span class="hide-sm"> · 算于 ' + hhmm
+      + (SPD.ms ? ' · ' + SPD.ms + 'ms' : '') + '</span>';
   }
   if (note){
     // 「收盘了没有」按分时最后一根判断，不能复用 isOpen()——那个函数为了
@@ -8373,13 +8378,14 @@ window.addEventListener('resize', function(){
 });
 
 /* ---------- 数据加载 ---------- */
-/* ---------- 模块时间标记 ----------
-   每个模块右上角标两个时刻：
-     数据时点 = 这批数据本身是什么时候的（快照 ts / 美股收盘 / 分时最后一根）
-     算于     = 浏览器把这批数据算完的时刻
+/* 模块时间标记。两个时刻用同一套写法：
+     截至 HH:MM  = 这批数据本身是什么时候的（快照 ts / 美股收盘 / 分时最后一根）
+     算于 HH:MM:SS = 浏览器把它算完的时刻
    分开写是因为它们经常差几十秒：清单快照 09:52 到，位置诊断要串行读几十只历史，
    算完可能 09:52:40。只写「更新 09:52:40」会让人以为行情是 40 秒前的。
-   重复渲染先删再插，刷一百次也只有一组。手机竖屏只留「数据时点」，其余 hide-sm。 */
+   日频模块（短线情绪、衍生品、全市场异动）的第一段不是时刻而是「11-20 收盘」，
+   那是数据本身的日期，比"截至 15:00"准确——周末打开时前者一看就知道是上周五的。
+   重复渲染先删再插，刷一百次也只有一组。手机竖屏只留前半段，其余 hide-sm。 */
 function _p2(n){ return (n < 10 ? '0' : '') + n; }
 function _hms(t){
   var d = new Date(t || Date.now());
@@ -8388,6 +8394,14 @@ function _hms(t){
 function _hm(t){
   var d = new Date(t || Date.now());
   return _p2(d.getHours()) + ':' + _p2(d.getMinutes());
+}
+/* 跨日的快照必须带日期：周末打开页面时 DATA_TS 还是上周五 15:00，
+   只写「截至 15:00」会让人以为这是今天尾盘的数据。 */
+function _when(t){
+  var d = new Date(t), n = new Date();
+  var same = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth()
+    && d.getDate() === n.getDate();
+  return (same ? '' : _p2(d.getMonth() + 1) + '-' + _p2(d.getDate()) + ' ') + _hm(t);
 }
 function stampN(id, pointTs){
   var el = typeof id === 'string' ? document.getElementById(id) : id;
@@ -8399,7 +8413,7 @@ function stampN(id, pointTs){
   // 前面没有内容时不要留一个孤零零的「·」——板块地图/今日概况的 meta 本来就是空的
   var dot = String(el.textContent || '').trim() ? ' · ' : '';
   el.insertAdjacentHTML('beforeend',
-    '<span class="tsm">' + dot + (pointTs ? '数据时点 ' + _hm(pointTs) : '')
+    '<span class="tsm">' + dot + (pointTs ? '截至 ' + _when(pointTs) : '')
     + '<span class="hide-sm">' + (pointTs ? ' · ' : '') + '算于 ' + _hms() + '</span></span>');
 }
 
@@ -8447,7 +8461,7 @@ function loadFull(){
     void hasPm;
 
     renderCards(); renderList(); renderWatch(); renderSectors();
-    // 这几块共用同一份快照，数据时点一致；各模块自己也可能再打一次（重算按钮），幂等
+    // 这几块共用同一份快照，「截至」一致；各模块自己也可能再打一次（重算按钮），幂等
     stampN('secN', DATA_TS);
     stampN('listN', DATA_TS);
     // 全市场提醒跟着全量快照走（60 秒一刷），不能挂在 5 秒的自选行情上——
@@ -10191,7 +10205,9 @@ function renderOvernight(){
   el.style.display = '';
   // 美股是最近一个完整交易日，期货/亚太是实时——统一按「这次抓取的时刻」标，
   // 别再让人猜这张卡是五分钟前还是半小时前的
-  stampN('onN', ON.ts);
+  /* 不传时刻：ON.ts 是「今天上午几点抓的」，而这张卡的数据时刻是「美东 11-20 收盘」，
+     标题里已经写了。再挂一个「截至 10:49」只会让人以为美股行情是今天 10:49 的。 */
+  stampN('onN', null);
 
   // 亚太卡：独立一块，排在隔夜下面。今天已经在交易（或刚收盘）的市场，
   // 和隔夜（昨晚美股）正好互补；点条目看最近一个完整时段的分时。
@@ -10746,8 +10762,10 @@ var FQ_TIP = {
 
 function futStatus(){
   if (!FUT) return '';
-  if (FUT.stale || FUT.src === 'daily') return '降级 · 收盘值 ' + String(FUT.td || '').slice(5);
-  return isOpen() ? '盘中' : '收盘 ' + String(FUT.td || '').slice(5);
+  if (FUT.stale || FUT.src === 'daily') return '降级 · ' + String(FUT.td || '').slice(5) + ' 收盘';
+  /* 盘中返回空串，让 stampN 只写「截至 HH:MM」。原来这里返回「盘中」，
+     后面再挂「截至」就成了「盘中 · 截至 11:17」，同一句话说两遍。 */
+  return isOpen() ? '' : String(FUT.td || '').slice(5) + ' 收盘';
 }
 
 /** p 到 t 之间隔了几个交易日（含 t，不含 p）。用来判「昨收基准是不是掉了队」 */
@@ -10847,7 +10865,9 @@ function renderFutAll(){
     n.textContent = futStatus() + (miss ? ' · 缺 ' + miss : '');
     n.className = 'n' + (FUT.stale ? ' warn' : '');
   }
-  stampN('futN', FUT.asof || FUT.ts);
+  /* 收盘时 futStatus() 已经写了「11-20 收盘」，再挂截至就是两个时点；
+     盘中它是空串，这时才需要「截至 11:17」交代这批报价的时点。 */
+  stampN('futN', isOpen() ? DATA_TS : null);
 }
 
 function renderFutBasis(){
