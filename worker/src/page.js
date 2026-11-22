@@ -301,15 +301,8 @@ white-space:nowrap;flex:0 0 auto}
   letter-spacing:var(--ls-n)}
 .card .v small{font-size:var(--fs-xs);font-weight:400;color:var(--txt3);margin-left:3px}
 .card .s{font-size:var(--fs-2xs);color:var(--txt3);margin-top:2px}
-/* ---------- 全市场异动 ---------- */
-.mktwrap{display:block}
+/* ---------- 卡片外壳 ---------- */
 .mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);padding:12px 14px}
-.wbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:9px 0 7px;
-  background:#eef1f5;box-shadow:inset 0 0 0 1px #e3e6eb}
-.wbar i{display:block;height:8px}
-.wstat{display:flex;justify-content:space-between;gap:8px;font-size:var(--fs-2xs);
-  color:var(--txt3);font-family:var(--mono);flex-wrap:wrap}
-.wstat b{color:var(--txt);font-weight:600}
 .mtabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
 .mtab{font-size:var(--fs-xs);padding:2px 8px;border-radius:5px;border:1px solid var(--line);
   background:var(--bg3);color:var(--txt2);cursor:pointer;user-select:none;white-space:nowrap}
@@ -383,39 +376,6 @@ padding:5px 9px!important;border-bottom:1px solid var(--line)}
 .qcell i{display:block;font-style:normal;font-size:var(--fs-cap);color:var(--txt3);margin-top:3px;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sechd .n.warn{color:#a9660a}
-.mhead,.mrow{display:grid;grid-template-columns:minmax(0,1fr) 44px 48px 46px 58px;
-  gap:8px;align-items:center}
-/* 宽屏两栏：13 行铺满 1376px 时，第一列会被 1fr 撑到 1148px，
-   名称只有 120px，中间一大条空白，看着像错行。分两栏后每行 ~660px，
-   名称和数字挨得上，同样高度还能多放一倍。表头跟着每栏各出一份。 */
-.mcols{display:grid;grid-template-columns:1fr 1fr;gap:0 34px;align-items:start}
-@media(max-width:1100px){.mcols{grid-template-columns:1fr;gap:0}}
-@media(max-width:560px){
-  /* 手机上一行放五列本来就紧，指数名让位给 ETF 名称，名称被截断更伤 */
-  .mn em{display:none}
-  .mhead,.mrow{grid-template-columns:minmax(0,1fr) 38px 34px 32px 50px;gap:5px}
-}
-.mhead{padding:0 0 5px;font-size:var(--fs-2xs);color:var(--txt3);border-bottom:1px solid var(--line);
-  font-family:var(--mono);letter-spacing:.3px}
-.mhead span:not(:first-child){text-align:right}
-.mrow{padding:5px 0;border-bottom:1px dashed var(--line);cursor:pointer;font-size:var(--fs-sm)}
-.mtag{font-size:var(--fs-2xs);padding:1px 0;border-radius:4px;text-align:center;white-space:nowrap;
-  font-weight:600;letter-spacing:var(--ls-t)}
-/* 「类型」是分类信息，不是涨跌信号。原来五套彩色并行、一行挂一块，
-   30 行铺开就是 30 段彩色胶带，红绿反而被稀释得认不出来。统一成浅灰底，
-   只用字色微差区分语义，色彩预算全部留给涨跌数字本身。 */
-.mtag{background:var(--bg1);border:1px solid var(--line);color:var(--txt3)}
-.mtag.t-up{background:#fbf2f2;border-color:#efdcde;color:#a05055}
-.mtag.t-warn{background:#fbf8f1;border-color:#eee4d0;color:#8a6a3a}
-.mtag.t-down{background:#f2f8f5;border-color:#dcebe3;color:#3a7a63}
-.mtag.t-info{background:#f3f6fa;border-color:#e1e7f0;color:#4f6891}
-.mtag.t-mute{background:var(--bg1);border-color:var(--line);color:var(--txt3)}
-.mrow:last-child{border-bottom:none}
-.mrow:hover .mn{color:#1d4ed8}
-.mn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.mn em{font-style:normal;font-size:var(--fs-2xs);color:var(--txt3);margin-left:5px;font-family:var(--mono)}
-.mnum{font-family:var(--mono);font-size:var(--fs-xs);text-align:right}
-.mnum small{font-size:var(--fs-2xs);color:var(--txt3);margin-right:2px}
 /* ---- 急涨急跌 ---- */
 .spdgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .spdcol{min-width:0}
@@ -471,8 +431,6 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .spdv{flex:0 0 52px;font-size:var(--fs-xs)}
   .spdq{flex:0 0 36px;font-size:var(--fs-2xs)}
 }
-.mfoot{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);
-  font-size:var(--fs-2xs);color:var(--txt3);line-height:1.6}
 
 /* ---------- 今日变化 + 组合体检 ---------- */
 .split{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:9px;align-items:start}
@@ -1947,24 +1905,6 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
   </div>
 </div>
 
-<div class="sec" id="mktSec">
-  <div class="sechd"><b>全市场异动</b>
-    <span class="n" id="mktN" title="剔除债券货币，一个指数只留流动性最好的一只 ETF；上市不满半年、当日无成交的不计入">-</span>
-    <span class="sync" id="btnMkt" title="重新读一遍收盘快照">刷新</span></div>
-  <div class="dnote">跳出自己的自选池：全部指数今天谁创新高、谁在放量、谁在破位。一个指数只留流动性最好的那只 ETF。</div>
-  <div class="mkbox" style="margin-bottom:9px">
-    <div class="wstat" id="mktWidth"><span>读取中…</span></div>
-    <div class="wbar" id="mktBar"></div>
-    <div class="wstat" id="mktWidth2"></div>
-  </div>
-  <div class="mktwrap">
-    <div class="mkbox">
-      <div class="mtabs" id="mktTabs"></div>
-      <div id="mktList"><div class="empty">读取中…</div></div>
-    </div>
-  </div>
-</div>
-
 <div class="sec" id="futSec">
   <div class="sechd"><b>衍生品</b><span class="n" id="futN"></span>
     <span class="sync" id="btnFut" title="重新读一遍中金所实时行情">刷新</span></div>
@@ -2215,9 +2155,6 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
 
         <div class="hm"><h3>急涨急跌</h3>
         <p>用分钟线回溯涨速。样本池按成交额取前 40 只并按指数去重——涨速榜的增量信息在于可交易标的的异动，同指数多只重复上榜没有意义。</p></div>
-
-        <div class="hm"><h3>全市场异动</h3>
-        <p>覆盖范围不限于自选。收盘后生成快照，同一指数只保留流动性最好的一只，分七类：创新高、上穿 80 分位、距新高 1% 以内、创新低、下破 20 分位、放量、缩量。分位口径与位置诊断一致，两组数字可直接比较。</p></div>
 
         <div class="hm"><h3>衍生品</h3>
         <p>股指期货基差 = 期货 − 现货，负值为贴水。期权按 <b>K + 认购 − 认沽</b> 合成期货价格，与同月份期货对照，覆盖三个股指期权与九个 ETF 期权标的。年化收益按自然日折算，剩余期限不足 3 日不给值。三张表的 <b>Δ基差率</b> 口径一致：相对上一交易日同一合约的基差率变化，单位百分点，正为贴水收窄。四象限由持仓量变化与价格方向推断；中金所公布的是双边合计持仓，不构成多空归属。</p></div>
@@ -5607,219 +5544,6 @@ function renderPort(){
     + '；最不像的：<b>' + esc(wn) + '</b> × <b>' + esc(wb) + '</b>，' + p.worst.r.toFixed(2)
     + '，想加分散度往这对的方向找。</div>';
   box.innerHTML = h;
-}
-
-/* ================= 全市场异动 =================
-   自选是「我关心的」，这一栏是「市场发生了什么」。两者的区别不在于数量，
-   而在于**发现**：只看自选，永远只能在自己已经知道的池子里找机会。
-
-   数据来自收盘后算好的快照（alpha/events.py → /api/events），26KB，
-   一个指数只留流动性最好的那只 ETF。位置和量能的口径与自选里的诊断完全一致，
-   所以两块的数字可以直接横向比较。
-
-   盘中打开时用实时价就地重算位置——快照里带着一年高低点（已换算到原始价格
-   尺度），拿实时价一减就得到当下的位置，不用重新拉历史。
-*/
-var MKT = null, MKT_ERR = '', MKT_TAB = 'all';
-
-/* 顺序即重要性：突破和破位排在量能前面，因为前者有价格确认 */
-var MKT_TYPES = [
-  ['hi', '创新高'], ['up80', '上穿80'], ['near', '贴新高'],
-  ['lo', '创新低'], ['dn20', '跌破20'], ['vol', '放量'], ['dry', '缩量']
-];
-
-/* 「全部」把各类型按上面的优先级合并。同一只标的同时创新高又放量时只留一次，
-   留的是优先级更高的那条（突破比放量更值得先看）。 */
-var MKT_LABEL = {
-  hi:['新高', 't-up'], up80:['上穿', 't-up'], near:['贴高', 't-warn'],
-  lo:['新低', 't-down'], dn20:['跌破', 't-down'],
-  vol:['放量', 't-info'], dry:['缩量', 't-mute']
-};
-
-function mktRows(){
-  if (!MKT || !MKT.ev) return [];
-  if (MKT_TAB !== 'all'){
-    var one = MKT.ev[MKT_TAB] || [];
-    return one.map(function(r){ return { t:MKT_TAB, r:r }; });
-  }
-  var seen = {}, out = [];
-  for (var i = 0; i < MKT_TYPES.length; i++){
-    var k = MKT_TYPES[i][0], arr = MKT.ev[k] || [];
-    for (var j = 0; j < arr.length; j++){
-      if (seen[arr[j][0]]) continue;
-      seen[arr[j][0]] = 1;
-      out.push({ t:k, r:arr[j] });
-    }
-  }
-  return out;
-}
-
-function mktPos(r){
-  /* r = [code,name,idx,pos,posPrev,evr,r20,r1,hh,ll,amt] */
-  var hh = r[8], ll = r[9];
-  var it = findItem(r[0]);
-  var p = it && it.p > 0 ? it.p : null;
-  if (p && hh > ll && ll > 0){
-    return Math.max(0, Math.min(100, (p - ll) / (hh - ll) * 100));
-  }
-  return r[3];
-}
-
-function mktEvr(r){
-  // 盘中用实时成交额重算：快照里的量能是「昨天收盘时」的读数，今天已经变了。
-  // 分母（20 日均额）用快照成交额反推，不用再拉数据。
-  var it = findItem(r[0]);
-  if (it && it.amt > 0 && r[10] > 0 && r[5] > 0){
-    var pr = dayProgress();
-    if (pr > 0.12 && pr < 1){
-      var base = r[10] / r[5];
-      if (base > 0) return (it.amt / 1e8) / pr / base;
-    }
-  }
-  return r[5];
-}
-
-function mktBar(){
-  var b = MKT.breadth, n = b.n || 1;
-  var hiPct = b.p80 / n * 100, loPct = b.p20 / n * 100;
-  var midPct = Math.max(0, 100 - hiPct - loPct);
-  document.getElementById('mktBar').innerHTML =
-    '<i style="width:' + hiPct.toFixed(1) + '%;background:#e8a0a0"></i>'
-    + '<i style="width:' + midPct.toFixed(1) + '%;background:#dfe4ec"></i>'
-    + '<i style="width:' + loPct.toFixed(1) + '%;background:#8fc9ae"></i>';
-
-  /* 位置是 0–100 的百分位刻度，取整显示：小数点后那位（15.8）在这个尺度上
-     没有意义，只会让人以为是价格或倍数。和左右两边的「只数」并列时，
-     必须把单位写出来才对得上——「中位位置 16%」。
-     口径写进 title：不是涨幅、不是价格，是收盘价落在近一年高低区间的第几成。 */
-  var w1 = document.getElementById('mktWidth');
-  var med = (b.medPos == null || !isFinite(b.medPos)) ? '-' : Math.round(b.medPos) + '%';
-  w1.innerHTML = '<span>一年高位 <b>' + b.p80 + '</b> 只</span>'
-    + '<span title="全部 ETF 的位置中位数：位置 = (现价 − 近一年最低) ÷ (近一年最高 − 近一年最低)。'
-    + '越接近 0% 越贴一年低位，越接近 100% 越贴一年高位">中位位置 <b>'
-    + med + '</b></span>'
-    + '<span>一年低位 <b>' + b.p20 + '</b> 只</span>';
-
-  var w2 = document.getElementById('mktWidth2');
-  w2.innerHTML = '<span>上涨 <b>' + b.up + '</b> · 下跌 <b>' + b.dn + '</b>'
-    + (b.flat ? ' · 平 ' + b.flat : '') + '</span>'
-    + '<span>合计成交 <b>' + b.amt.toFixed(0) + '</b> 亿</span>';
-}
-
-
-function mktList(){
-  var box = document.getElementById('mktList');
-  var rows = mktRows();
-  if (!rows.length){
-    box.innerHTML = '<div class="eempty">今天没有这一类事件。<br>'
-      + '<span>不是数据没加载，是真的没有——这种日子不用动手。</span></div>';
-    return;
-  }
-  var head = '<div class="mhead"><span>名称 / 跟踪指数</span><span>类型</span>'
-    + '<span>位置</span><span>量能</span><span>今日</span></div>';
-  var cap = 14;
-  var shown = Math.min(rows.length, cap);
-  // 6 行以内单栏就够，分两栏会出现「左 3 右 3」而右边那半截没内容支撑
-  var two = shown > 6;
-  var half = two ? Math.ceil(shown / 2) : shown;
-  var colHtml = ['', ''];
-  for (var i = 0; i < shown; i++){
-    var r = rows[i].r, tg = MKT_LABEL[rows[i].t] || ['', ''];
-    var pos = mktPos(r), ev = mktEvr(r);
-    // 最后一列放今日涨幅而不是 20 日：这一栏回答的是「今天发生了什么」，
-    // 20 日累计放进标题提示，鼠标停上去能看到。
-    var tip = r[1] + ' · 20日 ' + fpc(r[6]) + ' · 成交 ' + r[10].toFixed(1) + ' 亿';
-    var row = '<div class="mrow" data-c="' + r[0] + '" title="' + esc(tip) + '">'
-      + '<span class="mn">' + esc(r[1])
-      + (r[2] ? '<em>' + esc(r[2]) + '</em>' : '') + '</span>'
-      + '<span class="mtag ' + tg[1] + '">' + tg[0] + '</span>'
-      + '<span class="mnum">' + pos.toFixed(0) + '</span>'
-      + '<span class="mnum">' + (ev == null ? '-' : ev.toFixed(1)) + '</span>'
-      + '<span class="mnum ' + cc(r[7]) + '">' + fpc(r[7]) + '</span>'
-      + '</div>';
-    colHtml[i < half ? 0 : 1] += row;
-  }
-  var h = two
-    ? '<div class="mcols"><div class="mcol">' + head + colHtml[0] + '</div>'
-      + '<div class="mcol">' + head + colHtml[1] + '</div></div>'
-    : head + colHtml[0];
-  if (rows.length > cap){
-    h += '<div class="mfoot">另有 ' + (rows.length - cap) + ' 只变化更小，没列出来</div>';
-  }
-  box.innerHTML = h;
-}
-
-function mktTabs(){
-  var h = '<span class="mtab' + (MKT_TAB === 'all' ? ' on' : '')
-    + '" data-t="all">全部<u>' + (MKT ? mktRows().length : 0) + '</u></span>';
-  for (var i = 0; i < MKT_TYPES.length; i++){
-    var k = MKT_TYPES[i][0];
-    var n = (MKT.ev && MKT.ev[k]) ? MKT.ev[k].length : 0;
-    h += '<span class="mtab' + (k === MKT_TAB ? ' on' : '') + '" data-t="' + k + '">'
-      + MKT_TYPES[i][1] + '<u>' + n + '</u></span>';
-  }
-  document.getElementById('mktTabs').innerHTML = h;
-}
-
-function renderMkt(){
-  var nEl = document.getElementById('mktN');
-  if (!MKT){
-    document.getElementById('mktList').innerHTML =
-      '<div class="empty">' + esc(MKT_ERR || '还没有收盘快照，等今晚数据管道跑完') + '</div>';
-    document.getElementById('mktTabs').innerHTML = '';
-    if (nEl) nEl.textContent = '';
-    return;
-  }
-  mktBar(); mktTabs(); mktList();
-  if (nEl){
-    /* 正则别写 \d：这一整页是一个模板字符串，\d 在这里会被吃掉反斜杠，
-       变成「d{4}」，匹配不上 2026-11-20。用 [0-9] 才是字面量。
-       日期和数量分两处：数量是业务量留在标题，日期是数据时刻进槽。 */
-    var mday = String(MKT.date || '').replace(/^[0-9]{4}-/, '');
-    nEl.textContent = MKT.n + ' 个指数';
-    stampN('mktN', mday ? (mday + ' 收盘') : null, 'daily');
-  }
-}
-
-function loadMkt(){
-  fetch('/api/events').then(function(r){ return r.json(); }).then(function(j){
-    if (!j || j.ok === false) throw new Error((j && j.error) || '没有数据');
-    MKT = j; MKT_ERR = '';
-    renderMkt();
-  }).catch(function(e){
-    MKT = null; MKT_ERR = (e && e.message) || '读取失败';
-    renderMkt();
-  });
-}
-
-function mktInit(){
-  var t = document.getElementById('mktTabs');
-  if (t){
-    t.addEventListener('click', function(e){
-      var el = e.target;
-      while (el && el !== t && !el.getAttribute('data-t')) el = el.parentNode;
-      if (!el || el === t) return;
-      MKT_TAB = el.getAttribute('data-t');
-      mktTabs(); mktList();
-    });
-  }
-  var l = document.getElementById('mktList');
-  if (l){
-    l.addEventListener('click', function(e){
-      var el = e.target;
-      while (el && el !== l && !el.getAttribute('data-c')) el = el.parentNode;
-      if (!el || el === l) return;
-      var c = el.getAttribute('data-c');
-      var nm = '', rs = mktRows();
-      for (var i = 0; i < rs.length; i++){
-        if (rs[i].r[0] === c){ nm = rs[i].r[1]; break; }
-      }
-      openHist(c, nm || c);
-    });
-  }
-  var b = document.getElementById('btnMkt');
-  if (b) b.addEventListener('click', function(){ toast('正在重读快照…'); loadMkt(); });
-  loadMkt();
 }
 
 function diagCard(code){
@@ -12441,7 +12165,6 @@ if (HELP_MODE){
   futInit();                    // 期指这块不依赖全市场行情，先发出去
   loadFull().then(function(){
     renderCards();
-    mktInit();
     diagInit();
     loadTXQuotes();
     schedule();
