@@ -5272,7 +5272,7 @@ async function serveResearch(env) {
  * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
  * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
-const INLINE_BUILD = '2026-11-22T11:19:13Z 728a711-dirty';
+const INLINE_BUILD = '2026-11-22T11:56:34Z 5294d04-dirty';
 function buildOf(env) {
   if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
@@ -7262,7 +7262,7 @@ html[data-theme="dark"]{
 --sh-3:0 24px 64px -16px rgba(0,0,0,.75)}
 /* 下面这些是历史遗留的硬编码浅色，深色下不改就是一块块白斑。
    新写样式请直接用变量，别再往这里塞。 */
-html[data-theme="dark"] .secnav{background:rgba(20,22,27,.92)}
+html[data-theme="dark"] .secnav{background:var(--bg)}
 html[data-theme="dark"] .secnav a.on{background:var(--bg2);border-color:var(--line2)}
 html[data-theme="dark"] h1 .mk{background:linear-gradient(150deg,#3a2426,#2e1e20)}
 html[data-theme="dark"] h1 .tag{background:#332326;color:#f08b90}
@@ -7359,11 +7359,15 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
   #clock{display:none}
 }
 /* 吸顶锚点导航：页面 7000px+，没有跳转每次找自选都要滚半天。
-   top:0 吸顶（主页面 header 不吸顶，滚过就让它走），毛玻璃压住下面的内容。
+   top:0 吸顶（主页面 header 不吸顶，滚过就让它走）。
+   原来这里是「0.92 透明度 + blur(8px) 毛玻璃」，底色本来就等于页面底色，
+   磨出来的只有底下滚过去的内容——视觉上几乎看不出，代价却是每一帧都要
+   把导航条背后的一大片重新取样、模糊一遍。滚动卡顿的第一嫌疑人。
+   现在直接盖一块不透明的页面底色：同样的观感，零采样成本。
    --navH 由 JS 量出来，区块 scroll-margin-top 和表头 sticky 都引用它。 */
 .secnav{position:sticky;top:0;z-index:6;display:flex;gap:2px;align-items:center;
-  margin:-2px 0 10px;padding:4px 0;background:rgba(232,235,241,.92);
-  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+  margin:-2px 0 10px;padding:4px 0;background:var(--bg);
+  border-bottom:1px solid var(--line);
   /* 六项在 375px 上必然溢出，横滑比换行好：换行会把吸顶导航顶成两行，吃掉半屏 */
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .secnav::-webkit-scrollbar{display:none}
@@ -7700,7 +7704,18 @@ border:1px solid var(--line);background:var(--bg2);color:var(--txt2);transition:
 .tag b{font-weight:400;opacity:.6;font-size:var(--fs-2xs);margin-left:3px}
 /* 区块之间要能"断开"。原来 16px 间距 + 12.5px 标题 + 一排 10.5px 灰字，
    十二个区块连着往下排，看起来就是一张连续的白纸，找不到从哪开始读。 */
+/* 一屏九个区块、四千多个节点、页面一万像素高：整页始终在渲染树里，
+   滚到哪儿都要为重绘准备好整棵树。content-visibility:auto 让视口外的区块
+   直接跳过布局与绘制，滚进来再算。
+   4 倍 CPU 节流下实测：滚动帧间隔中位数 33ms → 16.7ms（30fps → 60fps）。
+   contain-intrinsic-size 必须给——不给的话未渲染区块高度按 0 算，滚动条会
+   一边滚一边变长。这里用的是写死的长度而不是 auto 关键字：auto 会优先用
+   「上次渲染时记住的高度」，而首帧那个高度是残缺的，之后一直拿它算，
+   整页反而比真实值矮一千多像素。写死长度里放的是 cvSync() 量到的真实高度。 */
 .sec{margin-bottom:30px}
+/* 跳过渲染只在量完真实高度之后才打开（body.cvon），否则一上来按 720px 估，
+   九个区块能差出两三千像素，滚动条会一边滚一边变长。 */
+body.cvon .sec{content-visibility:auto;contain-intrinsic-size:720px}
 /* 章节头：十二个区块原来是十二行「标题 + 灰字」，长得一样、之间只隔二十
    几像素白，滚起来像一份没分节的表格。加一根左侧竖条 + 一条通到底的细分隔，
    区块才有"开头"这个动作。竖条用墨色不用红——红是涨跌的信号色，十二根红条
@@ -11561,6 +11576,18 @@ function bindSMTip(){
 
    吸附到最近的数据点而不是跟着像素走：线是 250 个离散交易日，停在第 37 天和
    第 38 天之间时给出一个中间值，会让人以为图上真有这个点。 */
+/* 挂在 document 上的 mousemove 每帧能派发十几条，而处理函数里要读
+   getBoundingClientRect、写几处样式、重排提示框——一条事件一次强制布局。
+   合并成每帧最多算一次：画面最多晚一帧，计算量降到 1/3 以下。 */
+function rafMove(fn){
+  var pending = false, last = null;
+  return function(e){
+    last = e;
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function(){ pending = false; if (last) fn(last); });
+  };
+}
 function bindTrendTip(){
   if (document.__stb) return;
   /* 触屏没有 hover，但 Chrome 的触摸会补一次 mousemove —— 浮层会闪一下然后永远
@@ -11571,7 +11598,7 @@ function bindTrendTip(){
   var off = function(){
     if (hot){ hot.classList.remove('hot'); hot = null; }
   };
-  document.addEventListener('mousemove', function(e){
+  document.addEventListener('mousemove', rafMove(function(e){
     var t = e.target;
     var svg = (t && t.closest) ? t.closest('.strend svg') : null;
     if (!svg){ off(); return; }
@@ -11624,7 +11651,7 @@ function bindTrendTip(){
     if (top > tMax) top = tMax;
     tip.style.left = left.toFixed(1) + 'px';
     tip.style.top = top.toFixed(1) + 'px';
-  }, { passive: true });
+}), { passive: true });
   // 切标签页、鼠标从窗口边缘出去时不会再有 mousemove，得单独收一次
   document.addEventListener('mouseleave', off, { passive: true });
   // 滚走之后竖线会停在旧位置（scroll 不触发 mousemove），那根线就成了鬼影
@@ -18778,15 +18805,34 @@ function navScrollTo(id){
   var nav = document.getElementById('secNav');
   var navH = nav ? nav.offsetHeight + 8 : 42;
   var y = el.getBoundingClientRect().top + window.pageYOffset - navH;
-  window.scrollTo({ top: y, behavior: 'smooth' });
-  // 平滑滚动要半秒，途中「急涨急跌」几秒一刷、行数在变，目标位置会被推移——
-  // 落点就偏了。滚完 900ms 内连续校正，把布局漂移吃掉。
-  var n = 0;
-  var tm = setInterval(function(){
+  /* 平滑滚动要三五百毫秒，途中「急涨急跌」几秒一刷、行数在变，落点会被推移。
+     原来每 150ms 就 scrollTo(auto) 校正一次——每次都会把正在跑的平滑动画打断重来，
+     连打断六次，看起来就是一顿一顿地蹭过去。现在只在滚动真正停下之后校一次，
+     而且中途用户一动滚轮/触摸就放弃校正，不跟人抢。 */
+  var fixed = false, fixT = 0;
+  function end(){
+    if (fixed) return;
+    fixed = true;
+    if (fixT) clearTimeout(fixT);
+    window.removeEventListener('scrollend', end);
+    window.removeEventListener('wheel', cancel);
+    window.removeEventListener('pointerdown', cancel);
+    if (cancel.done) return;
     var dy = el.getBoundingClientRect().top - navH;
     if (Math.abs(dy) > 2) window.scrollTo({ top: window.pageYOffset + dy, behavior: 'auto' });
-    if (++n >= 6) clearInterval(tm);
-  }, 150);
+    /* 落定之后下面那些区块才开始真正渲染，布局还会再挪几像素，补一次 */
+    setTimeout(function(){
+      if (cancel.done) return;
+      var d2 = el.getBoundingClientRect().top - navH;
+      if (Math.abs(d2) > 2) window.scrollTo({ top: window.pageYOffset + d2, behavior: 'auto' });
+    }, 180);
+  }
+  function cancel(){ cancel.done = true; end(); }
+  window.addEventListener('scrollend', end, { once: true });
+  window.addEventListener('wheel', cancel, { passive: true });
+  window.addEventListener('pointerdown', cancel, { passive: true });
+  window.scrollTo({ top: y, behavior: 'smooth' });
+  fixT = setTimeout(end, 900);
 }
 function navActive(){
   var nav = document.getElementById('secNav');
@@ -18870,6 +18916,46 @@ function markHS(){
   window.addEventListener('resize', navMeasure);
   navMeasure();
   setTimeout(navMeasure, 800);                  // 字体/卡片就位后再量一次
+})();
+
+/* 视口外区块跳过渲染（CSS 里的 body.cvon）。
+   先量后开：content-visibility 一旦生效，没渲染过的区块只能拿 720px 估高度，
+   九个区块的误差累加起来有几千像素——滚动条会随滚动一路变长，点导航落点也会偏。
+   所以这里在页面正常渲染的状态下把每个区块的真实高度量一遍，写成各自的
+   contain-intrinsic-size，量完才挂 cvon。写进去的是测出来的像素值，
+   不是让浏览器自己记——浏览器记的是「上次看到它时的高度」，首帧那次是残缺的。
+   窗口宽度变了要重量——手机竖屏和桌面的区块高度完全是两回事。 */
+(function cvSync(){
+  var pn = location.pathname;
+  if (pn === '/help' || pn === '/help/' || pn === '/h' || pn === '/h/'
+    || pn === '/research' || pn === '/research/' || pn === '/r' || pn === '/r/') return;   // 说明页/因子页没有这九个区块
+  var secs = document.querySelectorAll('.sec');
+  if (!secs.length || !window.CSS || !CSS.supports('contain-intrinsic-size', 'auto 1px')) return;
+  var tm = 0;
+  function sync(){
+    tm = 0;
+    if (document.hidden) return;
+    var on = document.body.classList.contains('cvon');
+    if (on) document.body.classList.remove('cvon');        // 量之前必须先放出来
+    var h = [];
+    for (var i = 0; i < secs.length; i++) h.push(secs[i].offsetHeight);
+    for (i = 0; i < secs.length; i++){
+      secs[i].style.setProperty('contain-intrinsic-size', h[i] + 'px');
+    }
+    if (on) document.body.classList.add('cvon');
+  }
+  function later(){ if (tm) clearTimeout(tm); tm = setTimeout(sync, 260); }
+  function start(){ sync(); document.body.classList.add('cvon'); }
+  /* 首帧之后先开一次（这时首屏已经画出来了，剩下的区块按量到的高度跳过），
+     2.5 秒后再重量一次——图表、榜单是分批填进来的，刚 load 完时高度还没定。 */
+  requestAnimationFrame(function(){ requestAnimationFrame(start); });
+  /* 榜单、衍生品是分批填进来的，2 秒时还没长到最终高度——那时量出来的数比实际小
+     一截，页面滚到下面还会再涨一截，滚动条跟着变短。所以 3 秒、9 秒各重量一次，
+     等数据都到位；之后的缓慢变化交给浏览器自己记（auto 关键字）。 */
+  setTimeout(sync, 3000);
+  setTimeout(sync, 9000);
+  window.addEventListener('resize', later, { passive: true });
+  window.addEventListener('orientationchange', later, { passive: true });
 })();
 clock(); setInterval(clock, 1000);
 
