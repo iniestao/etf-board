@@ -742,6 +742,9 @@ transition:.25s;pointer-events:none;z-index:9}
 #histMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:60;display:none;
 align-items:center;justify-content:center;padding:18px}
 #histMask.on{display:flex}
+/* 从「异动抽屉」里点开的 K 线要压在抽屉上面（抽屉是 998）。只在那个入口加
+   这个 class：其他入口保持 60，不然它会盖住份额/指数那些弹层。 */
+#histMask.overEv{z-index:1001}
 .hpanel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;min-width:0;
 max-width:1060px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;
 box-shadow:0 8px 28px rgba(23,32,54,.16)}
@@ -1686,7 +1689,10 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
   padding:7px 12px;background:transparent;user-select:none}
 #evPanel .eg.more:hover{background:var(--bg1);color:var(--txt)}
 #evPanel .ei{padding:6px 12px;border-bottom:1px solid var(--line);font-size:var(--fs-xs);
-  display:flex;gap:8px;align-items:baseline;border-left:2px solid transparent}
+  display:flex;gap:8px;align-items:baseline;border-left:2px solid transparent;
+  cursor:pointer}
+/* 行可点（开 K 线/分时），hover 得给个反馈，否则没人知道它能点 */
+#evPanel .ei:hover{background:var(--bg1)}
 #evPanel .ei.up{border-left-color:var(--up)}
 #evPanel .ei.dn{border-left-color:var(--down)}
 #evPanel .ei em{font-style:normal;color:var(--txt3);font-variant-numeric:tabular-nums;flex:none;
@@ -2000,7 +2006,7 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
   <i id="evDot"></i><b id="evN">0</b><span>异动</span><em id="evSub"></em>
 </div>
 <div id="evPanel">
-  <div class="eh"><b>今日异动</b><span id="evHead"></span><u id="evClr">清空</u><u id="evClose">关闭</u></div>
+  <div class="eh"><b>今日异动</b><span id="evHead"></span><u id="evClose">关闭</u></div>
   <div class="ew" id="evWarn"></div>
   <div class="ed" id="evDays"></div>
   <div class="ec" id="evCats"></div>
@@ -6699,7 +6705,7 @@ function renderHold(j){
   box.innerHTML = buf.join('') + more + note + foot;
 }
 
-function openHist(code, name){
+function openHist(code, name, over){
   H.code = code; H.name = name || code;
   H.d = null; H.m = null; H.hover = -1; H.ok = false; H.ext = false;
   // 展开状态跟着标的走：换一只就回到 20 行，否则上一只的「展开」会让人以为
@@ -6715,7 +6721,13 @@ function openHist(code, name){
   // 上一只的成分表先清掉：不清的话切到分时的瞬间还能看到它
   document.getElementById('hHoldBody').innerHTML = '';
   document.getElementById('hHoldHd').innerHTML = '';
-  document.getElementById('histMask').classList.add('on');
+  var mk = document.getElementById('histMask');
+  /* 从异动抽屉点进来时抬到抽屉上面；其他入口照旧压在页面里。
+     「已经是抬上去的」要保持：K 线面板里点成分股会再进来一次，那一路调用
+     不带 over 参数，不继承的话层级会掉回 60，被抽屉盖住。 */
+  if (over || mk.classList.contains('overEv')) mk.classList.add('overEv');
+  else mk.classList.remove('overEv');
+  mk.classList.add('on');
 
   var x = findItem(code);
   if (x){
@@ -6795,6 +6807,7 @@ function loadK(code){
 
 function closeHist(){
   document.getElementById('histMask').classList.remove('on');
+  document.getElementById('histMask').classList.remove('overEv');
   clearInterval(minTimer); minTimer = null;
   clearInterval(holdTimer); holdTimer = null;
   H.code = ''; H.d = null; H.m = null;
@@ -8146,8 +8159,16 @@ document.getElementById('hOv').onclick = function(e){
   if (H.d){ hDraw(); hLegend(H.hover); }
 };
 
-document.getElementById('hClose').onclick = closeHist;document.getElementById('histMask').onclick = function(e){
-  if (e.target === this) closeHist();
+document.getElementById('hClose').onclick = function(e){
+  // 拦住冒泡：document 上挂着「点空白关抽屉」，不拦的话关掉 K 线顺手把抽屉也关了，
+  // 用户想接着看下一只还得重新点浮标
+  if (e) e.stopPropagation();
+  closeHist();
+};
+document.getElementById('histMask').onclick = function(e){
+  if (e.target !== this) return;
+  e.stopPropagation();          // 同上：点遮罩关 K 线，不该连带关抽屉
+  closeHist();
 };
 /* ↑↓ 缩放 K 线。只认箭头的两种按下（带 Ctrl/Alt/Cmd 的不抢，那是浏览器手势），
    并且避开输入框——自选、搜索里按上下是要翻候选的。
@@ -9128,7 +9149,15 @@ function evRenderPanel(){
   var ch = '';
   for (i = 0; i < EV_CATS.length; i++){
     var c = EV_CATS[i];
-    ch += '<a data-c="' + c.k + '" class="' + (c.k === EV_CAT ? 'on' : '') + '">'
+    /* 横截面两条边各取前 N 名，但都要求 |涨跌| ≥1%：涨的只有两三天，跌的一百多天，
+       所以「涨 2 跌 5」是市场结构，不是漏算。这句话得挂在标签上，否则每次看到
+       不对称都要怀疑一遍。 */
+    var ttl = c.k === 'rank'
+      ? '池内涨跌各取前 ' + Math.round(ALERT.rank) + ' 名，且当日涨跌幅 ≥'
+        + EV_LOW_CHG + '%；两边独立取，涨的少就只列少的那几只'
+      : '';
+    ch += '<a data-c="' + c.k + '" class="' + (c.k === EV_CAT ? 'on' : '') + '"'
+      + (ttl ? ' title="' + esc(ttl) + '"' : '') + '>'
       + c.n + '<i>' + evCatCount(c.k) + '</i></a>';
   }
   document.getElementById('evCats').innerHTML = ch;
@@ -9192,7 +9221,8 @@ function evRowsHtml(rows){
     hm = dayKey(t) !== view ? '收盘'
       : (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
         + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
-    h += '<div class="ei ' + r.cls + '" title="' + esc(r.sub) + '">'
+    h += '<div class="ei ' + r.cls + '" data-c="' + esc(r.c) + '" title="'
+      + esc(r.sub) + '（点开看 K 线）">'
       + '<em>' + hm + '</em>'
       + '<u>' + (EV_CATN[r.cat] || r.cat) + '</u>'
       + '<s><b>' + esc(r.n) + '</b>' + esc(r.txt)
@@ -9222,7 +9252,8 @@ function posGroupsHtml(rows){
         ? (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
           + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes()
         : '持续';
-      out += '<div class="ei ' + it.cls + '" title="' + esc(it.sub) + '">'
+      out += '<div class="ei ' + it.cls + '" data-c="' + esc(it.c) + '" title="'
+        + esc(it.sub) + '（点开看 K 线）">'
         + '<em>' + hm + '</em>'
         + '<s><b>' + esc(it.n) + '</b>' + esc(it.txt)
         + '<small>' + esc(it.c) + '</small></s></div>';
@@ -9275,6 +9306,10 @@ function evOpen(){
 function evClose(){
   var p = document.getElementById('evPanel');
   if (p) p.className = '';
+}
+function histOpen(){
+  var m = document.getElementById('histMask');
+  return !!(m && m.className.indexOf('on') >= 0);
 }
 
 /* ---------- 绑定 ---------- */
@@ -9352,20 +9387,14 @@ function evClose(){
   if (cl) cl.onclick = function(e){ e.stopPropagation(); evClose(); };
   var pc = document.getElementById('evPanel');
   if (pc) pc.onclick = function(e){ e.stopPropagation(); };
-  document.addEventListener('click', function(){ evClose(); });
-  document.addEventListener('keydown', function(e){
-    if (e.key === 'Escape') evClose();
+  document.addEventListener('click', function(){
+    // K 线是从抽屉里点开的，别顺手把抽屉关掉：关掉 K 线还要接着看下一只
+    if (histOpen()) return;
+    evClose();
   });
-
-  var ecl = document.getElementById('evClr');
-  if (ecl) ecl.onclick = function(e){
-    e.stopPropagation();
-    if (!confirm('清空 ' + (EV_VIEW === tradeDay() ? '今天' : fmtDay(EV_VIEW)) + ' 的异动记录？')) return;
-    EVD_STORE[EV_VIEW] = [];
-    try { localStorage.setItem('etf_evd_v1', JSON.stringify(EVD_STORE)); } catch(err){}
-    evPaint();
-    evRenderPanel();
-  };
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape' && !histOpen()) evClose();
+  });
 
   document.getElementById('evDays').onclick = function(e){
     var a = e.target.closest ? e.target.closest('a') : null;
@@ -9383,11 +9412,21 @@ function evClose(){
     evRenderPanel();
   };
   document.getElementById('evBody').onclick = function(e){
-    var a = e.target.closest ? e.target.closest('.more') : null;
-    if (!a) return;
+    var more = e.target.closest ? e.target.closest('.more') : null;
+    if (more){
+      e.stopPropagation();
+      EV_GRP_OPEN[more.getAttribute('data-g')] = 1;
+      evRenderPanel();
+      return;
+    }
+    /* 点条目开 K 线/分时/成分，跟表格里点一行是同一个面板。
+       抽屉本身不关——一只一只顺着看是常态，关掉再开等于每看一只点两次。 */
+    var row = e.target.closest ? e.target.closest('.ei[data-c]') : null;
+    if (!row) return;
     e.stopPropagation();
-    EV_GRP_OPEN[a.getAttribute('data-g')] = 1;
-    evRenderPanel();
+    var c = row.getAttribute('data-c');
+    var it = findItem(c);
+    openHist(c, (it && it.n) || c, true);
   };
 
   // 藏页时补写一次。手机上切走标签页之后进程随时可能被回收，
