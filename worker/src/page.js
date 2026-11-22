@@ -52,15 +52,15 @@ export const HTML = `<!DOCTYPE html>
 /* 表面分三层：页面底、卡片白、卡内凹槽。凹槽用底色区分，不再套第二层边框
    ——原来衍生品区是 .sec > .futgrid > .mkbox(边框) > .tbl(边框) > table，
    三层白底三层灰线，眼睛分不出哪层是哪个。 */
---bg:#ece8e1;--bg2:#ffffff;--surface:#ffffff;
---bg1:#f8f6f2;--bg3:#f8f6f2;--sunken:#f8f6f2;
+--bg:#e8ebf1;--bg2:#ffffff;--surface:#ffffff;
+--bg1:#f4f6fa;--bg3:#f4f6fa;--sunken:#f4f6fa;
 /* 线分三档：卡片边、区块分界、图表网格。原来的 #e3e6eb 对白底只有 1.25:1，
    等于没画——111 处分隔线在多数屏上是消失的，这也是"看着平"的原因之一。 */
---line:#ded7cb;--line2:#cbc2b5;--grid:#ece7de;--cardline:#e7e1d7;
+--line:#d8dde6;--line2:#c6cddb;--grid:#e6e9ef;--cardline:#e3e7ee;
 /* 文本按 WCAG AA 反推，不是凭手感调灰。--txt3 原来 #939aa7 只有 2.77:1
    （bg3 上 2.47:1），却承担了 164 处小标题、注释、表头、坐标轴——
    10.5px 的字配 2.47:1 的灰，是整页"看着累"的第一成因。 */
---txt:#1c1916;--txt1:#1c1916;--txt2:#57514b;--txt3:#6d6760;--axis:#6d6760;
+--txt:#15181d;--txt1:#15181d;--txt2:#4b5565;--txt3:#667080;--axis:#667080;
 /* 语义色一个语义只留一组：主色（数字）、ink（字）、bg（底）、line（边）。
    原来红有 #d93a3a/#c62f34/#b02a2a/#cf2f2f 四套，红底有五种，徽章体系四套并行。 */
 --up:#c62f34;--up-ink:#b02a2a;--up-bg:#fdf2f2;--up-line:#f0d2d4;
@@ -88,9 +88,9 @@ export const HTML = `<!DOCTYPE html>
 --pad-card:10px 12px;--pad-dense:6px 8px;
 /* 阴影只做「贴纸感」，悬浮才抬起。原来 20 多个卡片容器一个阴影都没有，
    彼此之间全靠 1px 灰线，所以看着像一张平铺的白纸。 */
---sh-1:0 1px 2px rgba(62,46,30,.05),0 2px 8px -3px rgba(62,46,30,.09);
---sh-2:0 2px 6px -1px rgba(62,46,30,.06),0 8px 24px -12px rgba(62,46,30,.17);
---sh-3:0 24px 64px -16px rgba(62,46,30,.28);
+--sh-1:0 1px 2px rgba(16,24,40,.05),0 2px 8px -3px rgba(16,24,40,.08);
+--sh-2:0 2px 6px -1px rgba(16,24,40,.06),0 8px 24px -12px rgba(16,24,40,.16);
+--sh-3:0 24px 64px -16px rgba(16,24,40,.28);
 --mono:"SF Mono",Consolas,"Roboto Mono",Menlo,monospace;
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 /* ---------- 深色主题 ----------
@@ -100,9 +100,9 @@ export const HTML = `<!DOCTYPE html>
    红字会糊成一块砖；抬到 #e4636a 之后才回到 4.5:1 以上。
    深浅两套的 --up/--down 都保持"涨红跌绿"，跟 A 股习惯一致。 */
 html[data-theme="dark"]{
---bg:#16130f;--bg2:#201c18;--surface:#201c18;--bg1:#282420;--bg3:#282420;--sunken:#282420;
---line:#332e29;--line2:#423b34;--grid:#2c2823;--cardline:#332e29;
---txt:#eae5de;--txt1:#eae5de;--txt2:#b0a89e;--txt3:#918a80;--axis:#918a80;
+--bg:#14161b;--bg2:#1c1f26;--surface:#1c1f26;--bg1:#23272f;--bg3:#23272f;--sunken:#23272f;
+--line:#2d323d;--line2:#3b4250;--grid:#262a33;--cardline:#2d323d;
+--txt:#e6e9ef;--txt1:#e6e9ef;--txt2:#a9b1c0;--txt3:#7e8798;--axis:#7e8798;
 --up:#e4636a;--up-ink:#f08b90;--up-bg:#2b1e21;--up-line:#4d2f33;
 --down:#34bf8d;--down-ink:#5cd6a7;--down-bg:#172a24;--down-line:#2b4b3e;
 --warn:#d9a441;--warn-bg:#2a2418;--warn-line:#4a3f28;
@@ -113,7 +113,7 @@ html[data-theme="dark"]{
 --sh-3:0 24px 64px -16px rgba(0,0,0,.75)}
 /* 下面这些是历史遗留的硬编码浅色，深色下不改就是一块块白斑。
    新写样式请直接用变量，别再往这里塞。 */
-html[data-theme="dark"] .secnav{background:rgba(22,19,15,.92)}
+html[data-theme="dark"] .secnav{background:rgba(20,22,27,.92)}
 html[data-theme="dark"] .secnav a.on{background:var(--bg2);border-color:var(--line2)}
 html[data-theme="dark"] h1 .mk{background:linear-gradient(150deg,#3a2426,#2e1e20)}
 html[data-theme="dark"] h1 .tag{background:#332326;color:#f08b90}
@@ -125,10 +125,10 @@ html[data-theme="dark"] .onfut span.down{background:#172a24;border-color:#2b4b3e
 html[data-theme="dark"] .ontrk{background:var(--bg1);border-color:var(--line)}
 html[data-theme="dark"] thead th{background:var(--bg2);border-bottom-color:var(--line2)}
 html[data-theme="dark"] tbody td{border-bottom-color:var(--grid)}
-html[data-theme="dark"] tbody tr:hover td{background:#2a2620}
+html[data-theme="dark"] tbody tr:hover td{background:#232833}
 html[data-theme="dark"] .mtab.on{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent-ink)}
-html[data-theme="dark"] .wbar{background:#2c2823;box-shadow:inset 0 0 0 1px #332e29}
-html[data-theme="dark"] .posbar,html[data-theme="dark"] .hhbar{background:#302b25}
+html[data-theme="dark"] .wbar{background:#262a33;box-shadow:inset 0 0 0 1px #2d323d}
+html[data-theme="dark"] .posbar,html[data-theme="dark"] .hhbar{background:#2b303a}
 html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{background:var(--bg1);color:var(--txt);border-color:var(--line)}
 html[data-theme="dark"] .stalebar{background:#2a2418;border-color:#4a3f28;color:#d9a441}
 html[data-theme="dark"] .stalebar.bad{background:#2b1e21;border-color:#4d2f33;color:#f08b90}
@@ -144,8 +144,8 @@ html[data-theme="dark"] .mtag.t-info,html[data-theme="dark"] .fq,html[data-theme
 html[data-theme="dark"] .ixb,html[data-theme="dark"] .scqtip .t3h{background:var(--bg1);border-color:var(--line);color:var(--txt3)}
 html[data-theme="dark"] .tag.on,html[data-theme="dark"] .syn{background:var(--accent-bg);border-color:var(--accent-line);color:var(--accent-ink)}
 html[data-theme="dark"] tr.hr:hover td,html[data-theme="dark"] tbody tr:hover,
-html[data-theme="dark"] .spdrow:hover,html[data-theme="dark"] .hhrow:hover{background:#2a2620}
-html[data-theme="dark"] .lbr>i{background:#3d372f}
+html[data-theme="dark"] .spdrow:hover,html[data-theme="dark"] .hhrow:hover{background:#232833}
+html[data-theme="dark"] .lbr>i{background:#39414f}
 html[data-theme="dark"] .hhmore b:hover{background:var(--accent-bg)}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
@@ -301,7 +301,7 @@ white-space:nowrap;flex:0 0 auto}
 .mktwrap{display:block}
 .mkbox{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);padding:12px 14px}
 .wbar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:9px 0 7px;
-  background:#f0ece5;box-shadow:inset 0 0 0 1px #e6dfd5}
+  background:#eef1f5;box-shadow:inset 0 0 0 1px #e3e6eb}
 .wbar i{display:block;height:8px}
 .wstat{display:flex;justify-content:space-between;gap:8px;font-size:var(--fs-2xs);
   color:var(--txt3);font-family:var(--mono);flex-wrap:wrap}
@@ -900,7 +900,7 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
 .sechd .io{font-size:var(--fs-xs);color:var(--txt);background:var(--bg3);
 border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer;
 user-select:none;white-space:nowrap}
-.sechd .io:hover{border-color:#c8bfb2}
+.sechd .io:hover{border-color:#c3cad8}
 
 /* 板块地图标题下的一行体检：多少格、多少指数、多少只有报价、多少只进不来。
    被「229 个单只指数整组丢掉」坑过一次，覆盖率要写在明面上，不靠人去猜。 */
@@ -1519,7 +1519,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 .sghd{display:flex;align-items:center;gap:3px 10px;flex-wrap:wrap;cursor:pointer;
   padding:5px 9px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;
   background:var(--bg3);font-size:var(--fs-xs);color:var(--txt2);user-select:none}
-.sghd:hover{border-color:#c8bfb2}
+.sghd:hover{border-color:#c3cad8}
 .sghd .sgc{width:0;height:0;flex:none;margin-right:2px;
   border-left:4.5px solid var(--txt3);border-top:3.5px solid transparent;
   border-bottom:3.5px solid transparent;transform:rotate(90deg);transition:transform .12s}
@@ -1546,7 +1546,7 @@ body.rsmode .rsbody{overflow:visible;padding:18px 20px 60px}
 }
 .scell{border:1px solid var(--line);border-radius:7px;padding:7px 9px 6px;background:var(--bg2);
   cursor:pointer;position:relative;overflow:hidden}
-.scell:hover{border-color:#c8bfb2}
+.scell:hover{border-color:#c3cad8}
 .scell.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 /* 主题分界：AI / 新能源是跨行业的，虚线上方是行业格、下方是主题格。
    边框也用虚线，一眼能看出「这两格不能和上面的加在一起」。 */
@@ -1622,7 +1622,7 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
 .alertbar{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .abtn{cursor:pointer;padding:2px 9px;border-radius:20px;border:1px solid var(--line);
   color:var(--txt2);background:var(--bg2);white-space:nowrap;font-size:var(--fs-xs);user-select:none}
-.abtn:hover{border-color:#c8bfb2}
+.abtn:hover{border-color:#c3cad8}
 .abtn.on{background:#fdeeee;border-color:#f3c7c7;color:#b02a2a}
 .abtn.on i{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--up);
   margin-right:4px;vertical-align:1px}
@@ -6341,7 +6341,7 @@ Array.prototype.forEach.call(document.querySelectorAll('#spdTabs .mtab[data-w]')
 
 var HC = {
   up:'#d93a3a', dn:'#0e9a61', ma20:'#d68910', ma60:'#4c8dff',
-  grid:'#ece6de', axis:'#6d6760', cross:'#837c72', vol:'#e2dcd2', rsi:'#7c5cd6',
+  grid:'#e9ecf1', axis:'#939aa7', cross:'#8b93a1', vol:'#dfe4ec', rsi:'#7c5cd6',
   boll:'#98a3b5'
 };
 /* canvas 的 fillStyle 是「画的那一刻取一次」的值，跟 CSS 变量没有绑定关系。
@@ -6351,11 +6351,11 @@ function hcTheme(){
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
   if (dark) {
     HC.up='#e4636a'; HC.dn='#34bf8d'; HC.ma20='#d9a441'; HC.ma60='#6f9fff';
-    HC.grid='#2e2a25'; HC.axis='#918a80'; HC.cross='#6b645b'; HC.vol='#302b25';
+    HC.grid='#282d37'; HC.axis='#7e8798'; HC.cross='#5c6675'; HC.vol='#2b303a';
     HC.rsi='#a78bfa'; HC.boll='#8b95a8';
   } else {
     HC.up='#d93a3a'; HC.dn='#0e9a61'; HC.ma20='#d68910'; HC.ma60='#4c8dff';
-    HC.grid='#ece6de'; HC.axis='#6d6760'; HC.cross='#837c72'; HC.vol='#e2dcd2';
+    HC.grid='#e9ecf1'; HC.axis='#939aa7'; HC.cross='#8b93a1'; HC.vol='#dfe4ec';
     HC.rsi='#7c5cd6'; HC.boll='#98a3b5';
   }
 }
@@ -7131,7 +7131,7 @@ function subName(ctx, name, padL, yR, col){
    是错的：昨收会跑到图边角，一眼看不出此刻是涨是跌。 */
 
 var MC = {
-  line:'#2563eb', avg:'#d68910', base:'#bfb8ad', cross:'#837c72',
+  line:'#2563eb', avg:'#d68910', base:'#b9c0cc', cross:'#8b93a1',
   fillUp:'rgba(217,58,58,.06)', fillDn:'rgba(14,154,97,.06)',
   volUp:'rgba(217,58,58,.42)', volDn:'rgba(14,154,97,.42)'
 };
@@ -7838,16 +7838,16 @@ function labSvg(nav){
     if (y !== lastY){
       lastY = y;
       g += '<line x1="' + X(i).toFixed(1) + '" y1="' + PT + '" x2="' + X(i).toFixed(1)
-        + '" y2="' + (H - PB) + '" stroke="#ebe5dc" stroke-width="1"/>'
+        + '" y2="' + (H - PB) + '" stroke="#e3e6eb" stroke-width="1"/>'
         + '<text x="' + (X(i) + 3).toFixed(1) + '" y="' + (H - 7)
-        + '" fill="#6d6760" font-size="11">' + y + '</text>';
+        + '" fill="#939aa7" font-size="11">' + y + '</text>';
     }
   }
   // 三条水平参考线（净值刻度）
   for (var q = 0; q <= 2; q++){
     var vv = lo + (hi - lo) * q / 2;
     g += '<line x1="' + PL + '" y1="' + Y(vv).toFixed(1) + '" x2="' + (W - PR)
-      + '" y2="' + Y(vv).toFixed(1) + '" stroke="#ebe5dc" stroke-width="1" stroke-dasharray="3 4"/>'
+      + '" y2="' + Y(vv).toFixed(1) + '" stroke="#e3e6eb" stroke-width="1" stroke-dasharray="3 4"/>'
       + '<text x="' + PL + '" y="' + (Y(vv) - 4).toFixed(1)
       + '" fill="#4a5260" font-size="10">' + vv.toFixed(2) + '</text>';
   }
