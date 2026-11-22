@@ -1712,6 +1712,15 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
 #evPanel .ec a.on{background:var(--txt);border-color:var(--txt);color:var(--bg2)}
 #evPanel .ec a i{font-style:normal;opacity:.6;margin-left:3px;font-variant-numeric:tabular-nums}
 #evPanel .eb{flex:1;overflow-y:auto;overscroll-behavior:contain}
+/* 位置类按形态分组的小标题。位置类是「状态」，一次几十条，
+   不分组的话「一年新高 3 条」和「MA20 上方 80 条」混在一起，读不出结构。 */
+#evPanel .eg{padding:8px 12px 4px;font-size:var(--fs-2xs);color:var(--txt3);
+  display:flex;align-items:baseline;gap:6px;background:var(--bg1);
+  border-bottom:1px solid var(--line)}
+#evPanel .eg i{font-style:normal;opacity:.65;font-variant-numeric:tabular-nums}
+#evPanel .eg.more{cursor:pointer;justify-content:center;color:var(--txt2);
+  padding:7px 12px;background:transparent;user-select:none}
+#evPanel .eg.more:hover{background:var(--bg1);color:var(--txt)}
 #evPanel .ei{padding:6px 12px;border-bottom:1px solid var(--line);font-size:var(--fs-xs);
   display:flex;gap:8px;align-items:baseline;border-left:2px solid transparent}
 #evPanel .ei.up{border-left-color:var(--up)}
@@ -8948,16 +8957,63 @@ function evToday(){
 }
 
 /* 入列。tag 区分同类别下的不同形态（新高 / 站上 MA20 …），否则一只票
-   创了新高又站上 MA20 会被并成一条，丢掉一半信息。 */
+   创了新高又站上 MA20 会被并成一条，丢掉一半信息。
+
+   只给「事件」用：量能、折溢价、横截面。这些是「此刻发生了一次」，
+   记下来就不该再变。位置类走 evPosAdd / evPosSync 那套（状态，整批替换）。 */
 function evAdd(cat, tag, x, txt, sub, cls, pop){
   var k = cat + '|' + tag + '|' + x.c;
   if (ALERT_HIT[k]) return false;
+  /* ALERT_HIT 只在内存里，刷新页面就空。记录本身存在 localStorage，
+     空了再扫一轮会把一天前的条目重新 push 一遍——同一只票在列表里出现两次，
+     日期计数也跟着虚高。按「当天已有同 key」再挡一次。 */
+  var day = evToday();
+  for (var i = 0; i < day.length; i++){
+    var e = day[i];
+    if (e.cat === cat && e.tag === tag && e.c === x.c){ ALERT_HIT[k] = 1; return false; }
+  }
   ALERT_HIT[k] = 1;
-  evToday().push({ t: Date.now(), c: x.c, n: x.n, cat: cat, tag: tag,
+  day.push({ t: Date.now(), c: x.c, n: x.n, cat: cat, tag: tag,
     txt: txt, sub: sub, cls: cls || '' });
   evSave();
   if (pop) alertPop(x.n + ' ' + txt, sub, cls, k);
   return true;
+}
+
+/* ---------- 位置类：状态，不是事件 ----------
+   原来按边沿触发（昨天不在、今天在），一天只记「刚进入」那一条。问题是你
+   十点开页面看到的是一只票，下午再看还是那一条，而那些已经在新高 / 已经在
+   MA20 上方的票从头到尾没露过面——「有谁在走强」这件事根本看不到。
+
+   改成快照：每轮扫描重算「此刻处于该状态的全体」，整批替换掉上一轮的位置类
+   条目。掉出状态的自动消失，一直在的持续出现。t 沿用上一轮同 key 的时间，
+   所以「从 10:23 起就在新高」不会每轮都刷新成当前时刻。 */
+function evPosAdd(snap, cat, tag, x, txt, sub, cls){
+  var k = cat + '|' + tag + '|' + x.c;
+  if (snap[k]) return;
+  snap[k] = { t: Date.now(), c: x.c, n: x.n, cat: cat, tag: tag,
+    txt: txt, sub: sub, cls: cls || '' };
+}
+
+function evPosSync(snap){
+  var day = evToday();
+  var oldT = {}, keep = [], i, e, k;
+  for (i = 0; i < day.length; i++){
+    e = day[i];
+    if (e.cat === 'posup' || e.cat === 'posdn') oldT[e.cat + '|' + e.tag + '|' + e.c] = e.t;
+    else keep.push(e);
+  }
+  for (k in snap){
+    e = snap[k];
+    if (oldT[k]) e.t = oldT[k];
+    keep.push(e);
+  }
+  /* 就地改。EVD 指向的就是 EVD_STORE[dayKey()] 这个数组，换引用会让
+     正在看的抽屉指向一块没人再更新的旧数据。 */
+  day.length = 0;
+  for (i = 0; i < keep.length; i++) day.push(keep[i]);
+  if (EVD !== day) EVD = day;
+  return keep.length;
 }
 
 /* ---------- 弹窗 ---------- */
@@ -9019,6 +9075,7 @@ function scanAll(){
   }
 
   var i, x, b;
+  var posSnap = {};        // 本轮位置类的全量，扫完整批替换进记录
 
   /* ---- 横截面：分位与排名 ----
      排序一次，正负两端各取。99 分位用线性插值——200 只的池子里 1% 就是第 2 名，
@@ -9124,73 +9181,80 @@ function scanAll(){
     }
 
     /* ---- 4) 位置 ----
-       全部边沿触发：昨天不在、今天在。位置类单独看没有判断价值——普跌日
-       几十只同时创 20 日新低，那是「市场在跌」不是「这只出事了」。
-       所以它只进列表，从来不弹窗。 */
+       这一类是「状态」不是「事件」：现在有哪些票在新高、在均线上方、连阳几根。
+       所以不按边沿采集，全部写进 posSnap，一轮扫完整批替换。十点看到的和
+       下午看到的都是「此刻的全集」，而不是「这中间变化的那几只」。
+
+       MA20 这条要加偏离门槛（3%）：普跌日池子里 160 只有 131 只在均线下方，
+       不设门槛的话「走弱」栏整栏就是「今天在跌的全体」，等于没有信息。
+       一年/20 日高低、布林轨、连阳连阴本身稀有，不需要门槛。 */
     if (b && x.p > 0){
-      var p = x.p, prev = b.prev;
-      if (prev > 0){
-        // 一年新高：含「逼近 1% 以内」，因为 ETF 的创新高常常差一点点就回头
+      var p = x.p;
+      if (b.hi250 > 0){
         if (p >= b.hi250){
-          evAdd('posup', 'yhi', x, '创一年新高 ' + p.toFixed(3),
+          evPosAdd(posSnap, 'posup', 'yhi', x, '创一年新高 ' + p.toFixed(3),
             '前 250 日最高 ' + b.hi250.toFixed(3) + ' · 现价高出 '
-              + ((p / b.hi250 - 1) * 100).toFixed(2) + '%', 'up', false);
-        } else if (p >= b.hi250 * 0.99 && prev < b.hi250 * 0.99){
-          evAdd('posup', 'yhi9', x, '逼近一年新高 ' + p.toFixed(3),
-            '距 ' + b.hi250.toFixed(3) + ' 还差 ' + ((b.hi250 / p - 1) * 100).toFixed(2) + '%', 'up', false);
+              + ((p / b.hi250 - 1) * 100).toFixed(2) + '%', 'up');
+        } else if (p >= b.hi250 * 0.99){
+          evPosAdd(posSnap, 'posup', 'yhi9', x, '逼近一年新高 ' + p.toFixed(3),
+            '距 ' + b.hi250.toFixed(3) + ' 还差 ' + ((b.hi250 / p - 1) * 100).toFixed(2) + '%', 'up');
         }
-        // 20 日新高（已经创一年新高的不再重复记）
+        // 已经创一年新高的不再重复记 20 日新高
         if (p >= b.up20 && p < b.hi250){
-          evAdd('posup', 'dhi', x, '创 20 日新高 ' + p.toFixed(3),
-            '前 20 日最高 ' + b.up20.toFixed(3), 'up', false);
+          evPosAdd(posSnap, 'posup', 'dhi', x, '创 20 日新高 ' + p.toFixed(3),
+            '前 20 日最高 ' + b.up20.toFixed(3), 'up');
         }
         if (p <= b.lo250){
-          evAdd('posdn', 'ylo', x, '创一年新低 ' + p.toFixed(3),
+          evPosAdd(posSnap, 'posdn', 'ylo', x, '创一年新低 ' + p.toFixed(3),
             '前 250 日最低 ' + b.lo250.toFixed(3) + ' · 现价低出 '
-              + ((1 - p / b.lo250) * 100).toFixed(2) + '%', 'dn', false);
-        } else if (p <= b.lo250 * 1.01 && prev > b.lo250 * 1.01){
-          evAdd('posdn', 'ylo9', x, '逼近一年新低 ' + p.toFixed(3),
-            '距 ' + b.lo250.toFixed(3) + ' 还差 ' + ((p / b.lo250 - 1) * 100).toFixed(2) + '%', 'dn', false);
+              + ((1 - p / b.lo250) * 100).toFixed(2) + '%', 'dn');
+        } else if (p <= b.lo250 * 1.01){
+          evPosAdd(posSnap, 'posdn', 'ylo9', x, '逼近一年新低 ' + p.toFixed(3),
+            '距 ' + b.lo250.toFixed(3) + ' 还差 ' + ((p / b.lo250 - 1) * 100).toFixed(2) + '%', 'dn');
         }
         if (p <= b.dn20 && p > b.lo250){
-          evAdd('posdn', 'dlo', x, '创 20 日新低 ' + p.toFixed(3),
-            '前 20 日最低 ' + b.dn20.toFixed(3), 'dn', false);
+          evPosAdd(posSnap, 'posdn', 'dlo', x, '创 20 日新低 ' + p.toFixed(3),
+            '前 20 日最低 ' + b.dn20.toFixed(3), 'dn');
         }
-        // 站上 / 跌破 MA20：边沿用「昨收在另一侧」判，不是「今天在均线上方」
-        if (p > b.ma20 && prev <= b.ma20){
-          evAdd('posup', 'ma20', x, '站上 MA20 ' + b.ma20.toFixed(3),
-            '昨收 ' + prev.toFixed(3) + ' 在均线下方 · 现价高出 '
-              + ((p / b.ma20 - 1) * 100).toFixed(2) + '%', 'up', false);
-        } else if (p < b.ma20 && prev >= b.ma20){
-          evAdd('posdn', 'ma20', x, '跌破 MA20 ' + b.ma20.toFixed(3),
-            '昨收 ' + prev.toFixed(3) + ' 在均线上方 · 现价低出 '
-              + ((1 - p / b.ma20) * 100).toFixed(2) + '%', 'dn', false);
+      }
+      if (b.ma20 > 0){
+        var dev = (p / b.ma20 - 1) * 100;
+        if (dev >= 3){
+          evPosAdd(posSnap, 'posup', 'ma20', x, 'MA20 上方 ' + dev.toFixed(1) + '%',
+            'MA20 ' + b.ma20.toFixed(3) + ' · 现价 ' + p.toFixed(3), 'up');
+        } else if (dev <= -3){
+          evPosAdd(posSnap, 'posdn', 'ma20', x, 'MA20 下方 ' + Math.abs(dev).toFixed(1) + '%',
+            'MA20 ' + b.ma20.toFixed(3) + ' · 现价 ' + p.toFixed(3), 'dn');
         }
-        // 布林轨：同样要边沿，否则贴着上轨走三天会记三条
-        if (p > b.bup && prev <= b.bup){
-          evAdd('posup', 'boll', x, '突破布林上轨 ' + b.bup.toFixed(3),
-            'MA20 ' + b.ma20.toFixed(3) + ' · 2 倍标准差 ' + b.bup.toFixed(3), 'up', false);
-        } else if (p < b.blo && prev >= b.blo){
-          evAdd('posdn', 'boll', x, '跌破布林下轨 ' + b.blo.toFixed(3),
-            'MA20 ' + b.ma20.toFixed(3) + ' · 2 倍标准差 ' + b.blo.toFixed(3), 'dn', false);
-        }
-        // 连阳 / 连阴 ≥3：昨日的连阳根数 <3、今天够 3 才算「刚连上」
-        var st = b.streak || 0;
+      }
+      if (b.bup > 0 && p > b.bup){
+        evPosAdd(posSnap, 'posup', 'boll', x, '布林上轨上方 ' + p.toFixed(3),
+          '上轨 ' + b.bup.toFixed(3) + ' · MA20 ' + b.ma20.toFixed(3), 'up');
+      } else if (b.blo > 0 && p < b.blo){
+        evPosAdd(posSnap, 'posdn', 'boll', x, '布林下轨下方 ' + p.toFixed(3),
+          '下轨 ' + b.blo.toFixed(3) + ' · MA20 ' + b.ma20.toFixed(3), 'dn');
+      }
+      /* 连阳连阴：b.streak 是截至昨日（锚点退一根）的连阳根数，加上今天
+         就是当前根数。状态口径下只要 ≥3 就一直列，根数逐日累加——「第 5 根
+         连阳」和「刚连上第 3 根」不是一回事，持续本身是信息。 */
+      var prev = b.prev, st = b.streak || 0;
+      if (prev > 0){
         var cur = st > 0 ? (p > prev ? st + 1 : (p < prev ? -1 : 0))
                 : st < 0 ? (p < prev ? st - 1 : (p > prev ? 1 : 0))
                 : (p > prev ? 1 : (p < prev ? -1 : 0));
-        if (cur >= 3 && st < 3){
-          evAdd('posup', 'up3', x, '连阳 ' + cur + ' 根',
-            '累计 ' + ((p / (prev || p) - 1) * 100).toFixed(2) + '% · 今日 ' + fpc(x.chg), 'up', false);
-        } else if (cur <= -3 && st > -3){
-          evAdd('posdn', 'dn3', x, '连阴 ' + Math.abs(cur) + ' 根',
-            '累计 ' + ((p / (prev || p) - 1) * 100).toFixed(2) + '% · 今日 ' + fpc(x.chg), 'dn', false);
+        if (cur >= 3){
+          evPosAdd(posSnap, 'posup', 'up3', x, '连阳 ' + cur + ' 根',
+            '今日 ' + fpc(x.chg) + ' · 现价 ' + p.toFixed(3), 'up');
+        } else if (cur <= -3){
+          evPosAdd(posSnap, 'posdn', 'dn3', x, '连阴 ' + Math.abs(cur) + ' 根',
+            '今日 ' + fpc(x.chg) + ' · 现价 ' + p.toFixed(3), 'dn');
         }
       }
     }
   }
 
-  // 收尾：列表和浮标一起刷新一次，别每加一条就重排一遍 DOM
+  // 收尾：位置类整批替换（存量），再统一刷一次 DOM
+  evPosSync(posSnap);
   evPaint();
   evSave();
 }
@@ -9262,21 +9326,60 @@ function evRenderPanel(){
   }
   document.getElementById('evCats').innerHTML = ch;
 
-  // 列表：按时间倒序，最新的在最上面
+  /* 列表分两种读法：
+     事件类（量能 / 溢价 / 横截面）按时间倒序，最新的在最上面；
+     位置类是「此刻的状态」，按形态分组（一年新高 → 20 日新高 → …），
+     组内按首次进入时间正序——持续最久的排在最前，因为它最可能是「一直在强」，
+     而不是刚被一笔单子打上去的。 */
   var body = document.getElementById('evBody');
-  var rows = [];
-  for (i = d.length - 1; i >= 0; i--) if (EV_CAT === 'all' || d[i].cat === EV_CAT) rows.push(d[i]);
-  if (!rows.length){
-    body.innerHTML = '<div class="empty">'
-      + (d.length ? '这一类今天还没有条目' : '这个交易日没有异动<br>'
-        + (BASE_BAD ? '基线没取到，量能与位置两类暂时不判' : '池子平静，或者还没到开盘时间'))
-      + '</div>';
-    return;
-  }
   var h = '';
+  if (EV_CAT === 'all'){
+    var evs = [];
+    for (i = d.length - 1; i >= 0; i--){
+      if (d[i].cat !== 'posup' && d[i].cat !== 'posdn') evs.push(d[i]);
+    }
+    var pos = [];
+    for (i = 0; i < d.length; i++){
+      if (d[i].cat === 'posup' || d[i].cat === 'posdn') pos.push(d[i]);
+    }
+    h += evRowsHtml(evs);
+    if (pos.length) h += '<div class="eg">当前状态<i>' + pos.length + '</i></div>' + posGroupsHtml(pos);
+  } else if (EV_CAT === 'posup' || EV_CAT === 'posdn'){
+    var one = [];
+    for (i = 0; i < d.length; i++) if (d[i].cat === EV_CAT) one.push(d[i]);
+    h = one.length ? posGroupsHtml(one) : '';
+  } else {
+    var evs2 = [];
+    for (i = d.length - 1; i >= 0; i--) if (d[i].cat === EV_CAT) evs2.push(d[i]);
+    h = evRowsHtml(evs2);
+  }
+  body.innerHTML = h || ('<div class="empty">'
+    + (d.length ? '这一类今天还没有条目' : '这个交易日没有异动<br>'
+      + (BASE_BAD ? '基线没取到，量能与位置两类暂时不判' : '池子平静，或者还没到开盘时间'))
+    + '</div>');
+}
+
+/* 位置类的形态顺序与中文名。顺序即优先级：越罕见的越靠前，
+   用户从上往下看，第一眼看到的就是最值得看的那几条。 */
+var EV_GRP_OPEN = {};      // 展开过的分组，key = cat|tag。内存即可，刷新收起来
+/* 每组默认铺几条。稀有形态（新高新低、连阳连阴）铺满前 12 条就够；
+   MA20 和布林轨在普跌日能占掉整个池子（实测 108 只 / 79 只），它们的
+   价值在「有多少只」，不在「是哪 79 只」——默认只留计数，点开才铺。 */
+var EV_POS_LIMIT = { ma20: 0, boll: 5 };
+var EV_POS_LIMIT_DEF = 12;
+var POS_ORDER = {
+  posup: [['yhi','一年新高'], ['yhi9','逼近一年新高'], ['dhi','20 日新高'],
+          ['boll','布林上轨'], ['up3','连阳'], ['ma20','MA20 上方']],
+  posdn: [['ylo','一年新低'], ['ylo9','逼近一年新低'], ['dlo','20 日新低'],
+          ['boll','布林下轨'], ['dn3','连阴'], ['ma20','MA20 下方']],
+};
+
+function evRowsHtml(rows){
+  var h = '', i, r, t, hm;
   for (i = 0; i < rows.length; i++){
-    var r = rows[i], t = new Date(r.t);
-    var hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
+    r = rows[i];
+    t = new Date(r.t);
+    hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
       + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
     h += '<div class="ei ' + r.cls + '" title="' + esc(r.sub) + '">'
       + '<em>' + hm + '</em>'
@@ -9284,7 +9387,65 @@ function evRenderPanel(){
       + '<s><b>' + esc(r.n) + '</b>' + esc(r.txt)
       + '<small>' + esc(r.c) + '</small></s></div>';
   }
-  body.innerHTML = h;
+  return h;
+}
+
+/* em 位显示「首次进入的时间」。跨天存活的条目（昨天就在新高、今天还在）
+   时间戳是昨天的，直接渲染会显示成昨天下午 15:00 这种看不懂的东西，
+   所以不是今天就统一写「持续」。 */
+function posGroupsHtml(rows){
+  var by = {}, h = '', i, j, r, cat, grp, today = dayKey();
+
+  /* 每组默认只铺 12 条。普跌日「布林下轨下方」能有 79 只，全铺出来
+     抽屉第一屏就是 79 行同一件事。折叠不是砍数据——组头的数字是真实的
+     全量，点一下就展开，想看全随时能看。 */
+  function emit(list, label, key){
+    list.sort(function(a, b2){ return a.t - b2.t; });
+    var all = list.length;
+    var cap = EV_POS_LIMIT.hasOwnProperty(list[0].tag) ? EV_POS_LIMIT[list[0].tag] : EV_POS_LIMIT_DEF;
+    var lim = EV_GRP_OPEN[key] ? all : Math.min(all, cap);
+    var out = '<div class="eg">' + label + '<i>' + all + '</i></div>';
+    for (var q = 0; q < lim; q++){
+      var it = list[q], t = new Date(it.t);
+      var hm = dayKey(t) === today
+        ? (t.getHours() < 10 ? '0' : '') + t.getHours() + ':'
+          + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes()
+        : '持续';
+      out += '<div class="ei ' + it.cls + '" title="' + esc(it.sub) + '">'
+        + '<em>' + hm + '</em>'
+        + '<s><b>' + esc(it.n) + '</b>' + esc(it.txt)
+        + '<small>' + esc(it.c) + '</small></s></div>';
+    }
+    if (all > lim){
+      out += '<div class="eg more" data-g="' + key + '">'
+        + (lim ? '展开其余 ' + (all - lim) + ' 条' : '展开 ' + all + ' 只')
+        + '</div>';
+    }
+    return out;
+  }
+
+  for (i = 0; i < rows.length; i++){
+    r = rows[i];
+    cat = r.cat;
+    if (!by[cat]) by[cat] = {};
+    if (!by[cat][r.tag]) by[cat][r.tag] = [];
+    by[cat][r.tag].push(r);
+  }
+  for (cat in by){
+    var seen = {};
+    var order = POS_ORDER[cat] || [];
+    for (j = 0; j < order.length; j++){
+      seen[order[j][0]] = 1;
+      grp = by[cat][order[j][0]];
+      if (grp && grp.length) h += emit(grp, order[j][1], cat + '|' + order[j][0]);
+    }
+    // 兜底：基线升版后可能出现 order 里没登记的新形态，别让它整组消失
+    for (var k in by[cat]){
+      if (seen[k]) continue;
+      h += emit(by[cat][k], k, cat + '|' + k);
+    }
+  }
+  return h;
 }
 
 function fmtDay(k){
@@ -9407,6 +9568,13 @@ function evClose(){
     if (!a) return;
     e.stopPropagation();
     EV_CAT = a.getAttribute('data-c');
+    evRenderPanel();
+  };
+  document.getElementById('evBody').onclick = function(e){
+    var a = e.target.closest ? e.target.closest('.more') : null;
+    if (!a) return;
+    e.stopPropagation();
+    EV_GRP_OPEN[a.getAttribute('data-g')] = 1;
     evRenderPanel();
   };
 
