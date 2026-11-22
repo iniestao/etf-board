@@ -63,6 +63,32 @@ GitHub Actions 每天收盘后算历史指标，推到仓库的 `data` 分支；
   `dist/hist/` 目录发布到 data 分支，Worker 用 `/api/events` 读取（边缘缓存
   30 分钟）。快照里带着一年高低点（已换算到原始价格尺度），所以盘中打开时
   用实时价就地重算位置，不需要重新拉任何历史。
+### 表头、焦点态与动效降级（2026-11-22）
+
+**资讯条拆成「头 + 体」**。隔夜、亚太两张卡原来整卡共用 `8px 12px` 内边距，标题
+和下面那排 pill 只隔 5px，读起来像一段连续文字、不像一块有表头的面板。现在
+`.oncard` 只留 `0 12px 9px`，`.onhd` 用负 margin 抵掉左右内边距、自带
+`8px 12px 7px` 和一条底线——和 `.sechd` 同一个骨架（底线 + 左右 12px），但不挂
+竖条：资讯条比章节低一级，加竖条会把它抬到和「短线情绪」同级。
+
+对齐用 `baseline` 不用 `center`：窄屏说明折成两行时，`center` 会让「隔夜」落在
+两行正中间，像个孤立的标签；`baseline` 让它贴住第一行，才是标题该在的位置。
+
+**焦点态**。整站是 div + onclick，键盘 Tab 过去原先毫无反馈（4 处 `outline:none`
+把默认框抹了，只有输入框靠 border 变色暗示）。用 `:focus-visible` 而不是
+`:focus`——鼠标点按钮不留框，Tab 进来才有。必须带 `!important`：
+`.aset input:focus` 这类选择器权重 `(0,2,1)`，压得过 `:focus-visible (0,1,0)`，
+"后写胜出"只在同权重时成立。
+
+**动效降级**。`prefers-reduced-motion: reduce` 下把所有 duration 压到 `0.01ms`。
+写 duration 不写 `transition:none`：部分浏览器要等 `transitionend` 才走回调，
+直接 none 会让回调永不触发。`iteration-count:1` 是给脉冲类动画兜底，否则 0.01ms
+的循环会变成高频闪烁，比原来更难受。
+
+> 已知未做：`.ofold`、`.scell`、`.segtab` 这些 div 模拟的按钮没有 `tabindex`，
+> 键盘仍然到不了。要补齐得给一批元素加 `role` + `Enter/Space` 处理，比这一轮的
+> 范围大，先记在这里。
+
 ### 板块地图上的两种读数（2026-11-23）
 
 格子里只放得下「涨跌 / 涨跌家数 / 成交额」三行，而判断钱在往哪条线走靠的是**占比**，

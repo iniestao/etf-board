@@ -236,16 +236,23 @@ display:inline-block;text-decoration:none;background:var(--bg3);border:1px solid
    盘前打开页面第一眼要看的东西，所以放在统计卡上面。
    涨红跌绿是 A 股习惯，美股数据进来也按这个上色——
    页面要迁就读者的眼睛，不是迁就数据源的习惯。 */
+/* 头/体两段：卡片的 padding 拆成"头自己撑满 + 体留白"。
+   原来整张卡共用 8px 12px 的 padding，标题和下面那排 pill 之间只有 5px，
+   看着像一段连续的文字流，不像一张有表头的面板。现在头用负 margin 抵掉
+   左右内边距、自己带 8/12/7 的内边距和一条底线，内容区从底线往下 7px 开始。
+   和 .sechd 同一个骨架（底边线 + 左右 12px），只是不挂竖条——资讯条比章节低
+   一级，加竖条反而把"隔夜"抬成和"短线情绪"同级。 */
 .oncard{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r-card);
-  padding:8px 12px;margin-bottom:12px;font-size:var(--fs-sm)}
-.onhd{display:flex;align-items:baseline;gap:8px;color:var(--txt2)}
+  padding:0 12px 9px;margin-bottom:12px;font-size:var(--fs-sm)}
+.onhd{display:flex;align-items:baseline;gap:8px;color:var(--txt2);
+  margin:0 -12px 7px;padding:8px 12px 7px;border-bottom:1px solid var(--line)}
 /* 窄屏上「隔夜」「收起」会被压成竖排两个字：.onhd 是 flex，中间那句说明
    很长，b 和 .ofold 没有收缩下限，一挤就按字断行。这两个词必须完整。 */
 .onhd b{color:var(--txt1);font-size:var(--fs-sm);white-space:nowrap;flex:0 0 auto}
 .onhd .n{font-size:var(--fs-xs);color:var(--txt3);min-width:0}
 .onhd .ofold{margin-left:auto;cursor:pointer;color:var(--txt3);user-select:none;
 white-space:nowrap;flex:0 0 auto}
-.onfut{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.onfut{display:flex;gap:6px;flex-wrap:wrap}
 /* 每个条目按自己的方向铺一层极淡底：隔夜卡原来是一排一模一样的灰 pill，
    只有末尾那三个数字有颜色，扫一眼分不出「昨晚是普跌还是分化」。整块上色后，
    一片淡绿就是普跌、红绿相间就是分化——不用读数字，形状先说话。
@@ -1643,6 +1650,30 @@ html[data-theme="dark"] .smtip{box-shadow:0 8px 24px rgba(0,0,0,.55)}
 @media (max-width:700px){
   .statehint{gap:2px 8px;font-size:11px;padding:7px 9px}
   .statehint span:last-child{margin-left:0;white-space:normal}
+}
+
+/* ---------- 键盘焦点 ----------
+   整站都是 div + onclick，键盘 Tab 过去原先没有任何可见反馈：全站 4 处
+   outline:none 把默认框抹了，只有输入框靠 border 变色暗示，按钮和卡片完全是
+   黑的。用 :focus-visible 不用 :focus——鼠标点按钮不该留一圈框，Tab 进来才该有。
+   !important 是必须的：.aset input:focus 这类选择器权重 (0,2,1)，压得过
+   :focus-visible (0,1,0)，靠"后写胜出"救不回来（同权重才成立）。
+   outline 不参与盒模型，加粗也不会推挤布局。 */
+:focus-visible{outline:2px solid var(--accent)!important;outline-offset:2px}
+/* 输入框的框线往外扩会顶到相邻格线，改成内缩，看起来是"输入区在发光" */
+input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-1px!important}
+
+/* ---------- 减少动态效果 ----------
+   系统开了「减弱动态效果」（前庭敏感 / 晕动症）时，过渡和动画只保留终态。
+   三处 tooltip 的 opacity 过渡、按钮 .15s、折叠箭头 .12s 全压到 0.01ms。
+   写 duration 而不是 transition:none：部分浏览器要等 transitionend 才走回调，
+   直接 none 会让那些回调永远不触发。iteration-count:1 是给脉冲类动画兜底，
+   否则 0.01ms 的循环会变成高频闪烁，比原来更难受。 */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important;scroll-behavior:auto!important;
+  }
 }
 </style>
 </head>
