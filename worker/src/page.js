@@ -5239,6 +5239,19 @@ function ensureTop3(){
   runTop3(list);
 }
 
+/* 现价必须落在当日 [最低, 最高] 之内——这是唯一一条不用外部数据就能验的
+   自洽性。LIVE（腾讯直连）那条万一字段错位，宁可退回全市场快照里的同一只，
+   也不能把「比当日最高还高」的价格画到表格上。两边都不自洽才用原值，
+   免得因为源端 hi/lo 缺失把整行变空。 */
+function pickRow(c, map){
+  var ok = function(x){ return x && (!(x.hi > 0 && x.lo > 0)
+    || (x.p >= x.lo - 1e-9 && x.p <= x.hi + 1e-9)); };
+  var a = LIVE[c], b = map.get(c);
+  if (ok(a)) return a;
+  if (ok(b)) return b;
+  return a || b;
+}
+
 function renderWatch(){
   var body = document.getElementById('watchBody');
   if (!watch.length){
@@ -5252,7 +5265,7 @@ function renderWatch(){
   var html = '', miss = 0;
   for (var k=0;k<watch.length;k++){
     var c = watch[k];
-    var x = LIVE[c] || map.get(c);      // 东财高频数据优先
+    var x = pickRow(c, map);      // 东财高频数据优先，但不自洽的会被挡掉
     if (!x){
       miss++;
       html += '<tr class="hr" data-c="'+c+'"><td class="l code">'+c+'</td>'
@@ -9676,8 +9689,28 @@ function loadTXQuotes(){
       var p = +a[3];
       if (!p) continue;
       var code = tc.replace(/^(sh|sz)/, '');
-      out[code] = { c:code, n:a[1], p:p, pc:+a[4], chg:+a[32],
-        amt:(+a[37])*1e4, tr:+a[38], hi:+a[33], lo:+a[34], op:+a[5],
+      var hi = +a[33], lo = +a[34], pc = +a[4], chg = +a[32];
+      /* 自洽守门。腾讯这批是 <script> 一次性注入的，任何一只的字段错位都会
+         直接画进表格，而且错得很隐蔽：现价看着像个数，只是比当日最高还高。
+         2026-11-24 用户截图里 510300 现价显示 4.649、同日最高 4.084；513120
+         显示成 513050 的 0.852。两条都是「现价跑到 [最低,最高] 外面」。
+         真实价格不可能在当日区间之外，所以先用区间挡一道，再用 p/pc 反算
+         涨跌% 跟报文里的对一遍——对不上就说明这两个字段不是同一时点的。 */
+      if (hi > 0 && lo > 0 && (p > hi + 1e-9 || p < lo - 1e-9)){
+        console.warn('[quote] ' + code + ' 现价 ' + p + ' 不在当日 ' + lo + '~' + hi
+          + ' 区间内，丢弃这条，回落到全市场快照');
+        continue;
+      }
+      if (pc > 0){
+        var calc = (p - pc) / pc * 100;
+        if (Math.abs(calc - chg) > 0.5){
+          console.warn('[quote] ' + code + ' 涨跌% ' + chg + ' 与现价反算的 '
+            + calc.toFixed(2) + ' 不符，按现价重算');
+          chg = calc;
+        }
+      }
+      out[code] = { c:code, n:a[1], p:p, pc:pc, chg:chg,
+        amt:(+a[37])*1e4, tr:+a[38], hi:hi, lo:lo, op:+a[5],
         iopv:null, pm:null, mc:0, g:group(a[1]), ix: IX_OF[code] || null };
     }
     if (Object.keys(out).length){
