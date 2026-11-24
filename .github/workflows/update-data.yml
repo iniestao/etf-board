@@ -86,6 +86,26 @@ jobs:
             echo "::warning::上一版 etfopt_hist.json 取不到，本轮跳过期权历史"
           fi
 
+      # 交易所当日快照：收盘后从交易所行情存一份，只加不改。
+      # 这一步放在最前面，是因为它才是「当天那一格」的责任人——东财的日线
+      # 按出口 IP 限流，能不能拿到全看运气；交易所的行情接口不看运气。
+      - name: 取回上一版期权快照
+        continue-on-error: true
+        run: |
+          mkdir -p dist
+          if git fetch -q --depth=1 origin data 2>/dev/null \
+             && git show FETCH_HEAD:etfopt_eod.json > dist/etfopt_eod.json 2>/dev/null \
+             && [ -s dist/etfopt_eod.json ]; then
+            echo "上一版 etfopt_eod.json $(wc -c < dist/etfopt_eod.json) 字节"
+          else
+            rm -f dist/etfopt_eod.json
+            echo "没有上一版快照，从今天开始攒"
+          fi
+
+      - name: 存当日期权收盘快照（交易所）
+        continue-on-error: true
+        run: node pipeline/etfopt_eod.mjs
+
       - name: 重建 ETF 期权历史
         if: env.SKIP_ETFOPT != '1'
         continue-on-error: true
@@ -486,7 +506,7 @@ jobs:
           # etfopt_hist.json 千万别漏：少拷一个文件，页面 ETF 组会退回「还没发布」。
           # etf_base.json 同理：漏了的话盯市提醒会静默退化成只判横截面和折溢价，
           # 页面上没有任何可见的错，只是量能和位置两类从此不再出现。
-          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json etf_base.json; do
+          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json etfopt_eod.json etf_base.json; do
             if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; continue; fi
             if [ -n "$PREV" ] && git show "$PREV:$f" > "$PUB/$f" 2>/dev/null; then
               echo "::warning::dist/$f 这轮没生成，沿用上一版（$(du -h "$PUB/$f" | cut -f1)）"

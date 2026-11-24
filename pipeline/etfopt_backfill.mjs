@@ -35,6 +35,15 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/
 const UT = 'fa5fd1943c7b386f172d6893dbfba10b';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const OUT = path.join(ROOT, 'dist', 'etfopt_hist.json');
+/* 交易所当日快照（etfopt_eod.mjs 产出）。有它的日期不再向东财要价——
+   那是交易所原值，比 push2his 的日线更可信，也不占东财那个按 IP 算的配额。 */
+const EOD = (function () {
+  const p = process.env.ETFOPT_EOD_OUT || path.join(ROOT, 'dist', 'etfopt_eod.json');
+  try {
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return j && j.v === 1 && j.days ? j.days : {};
+  } catch (e) { return {}; }
+})();
 const DRY = process.argv.includes('--dry');
 const CONC = 3;
 
@@ -618,7 +627,13 @@ async function main() {
     /* 先补当天，再补历史。当天那一格只有新浪快照能给（约 5 秒），而东财那套
      * 「20 档日线 + 撞限流 + 等 45 秒补抓两轮」在配额用完时要两分半。把最要紧的
      * 那一格放在最后，等于把它的成败交给「前面几只碰巧够快」。 */
-    if (!overBudget(20e3)) {
+    /* 交易所快照已经落了今天，就别再要新浪那一份：省 5 秒是小事，
+       更重要的是把「当天有没有数」的唯一责任交给交易所，而不是快照。 */
+    const eodToday = EOD[targetDay] && EOD[targetDay][code] && !/intraday/.test(EOD[targetDay][code].src || '');
+    if (eodToday) {
+      console.log('  ' + tag + ' ' + targetDay + ' 已有交易所快照 ' + EOD[targetDay][code].bp
+        + '%，不再取新浪');
+    } else if (!overBudget(20e3)) {
       try {
         const fb = await sinaFill(secid, code, tag);
         if (fb && fb.length) {
@@ -673,7 +688,12 @@ async function main() {
   const recalc = process.argv.includes('--recalc');
 
   const newDays = [...new Set(Object.values(res).flatMap((r) => r.map((x) => x.d)))];
-  const allD = [...new Set([...oldDays, ...newDays])].sort();
+  /* EOD 里的日期也要进轴：它可能比东财多出一天（东财全挂时，只有交易所快照
+     留下了今天那一格）。调试用的 intraday 记录一律不算。 */
+  const eodDays = Object.entries(EOD)
+    .filter(([, m]) => Object.values(m).some((v) => v && v.bp != null && !/intraday/.test(v.src || '')))
+    .map(([d]) => d);
+  const allD = [...new Set([...oldDays, ...newDays, ...eodDays])].sort();
   const idx = new Map(allD.map((d, i) => [d, i]));
 
   const KEYS = ['nb', 'na', 'nd', 'nm'];
@@ -702,6 +722,20 @@ async function main() {
       if (i == null) continue;
       const put = (k, v) => { if (recalc || o[k][i] == null) o[k][i] = v; };
       put('nb', r.near.bp); put('na', r.near.ann); put('nd', r.near.dte); put('nm', r.near.mth);
+    }
+    /* 3) 交易所快照最后盖一层。这里是无条件覆盖（老值也盖），因为：
+          · 它只覆盖自己有的那几天，而它有的那几天本来就是「今天/最近几天」；
+          · 价格直接来自交易所行情，比东财日线更可信；
+          · 万一东财那天算出来是个错值（把盘中价当收盘），也该被它纠正。
+        --recalc 反而跳过它：那是「按东财重算」的语义，不该被快照挡住。 */
+    if (!recalc) {
+      for (const [d, m] of Object.entries(EOD)) {
+        const i = idx.get(d);
+        if (i == null) continue;
+        const e = m[code];
+        if (!e || e.bp == null || /intraday/.test(e.src || '')) continue;
+        o.nb[i] = e.bp; o.na[i] = e.ann; o.nd[i] = e.dte; o.nm[i] = e.mth;
+      }
     }
     s[code] = o;
   }
