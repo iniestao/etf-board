@@ -221,6 +221,20 @@ function fourthWed(y, m) {
   return Date.UTC(y, m - 1, firstWed + 21);
 }
 
+/** d 那天、mth 这个到期月的剩余天数（含到期当天）。
+ *
+ *  以前是「东财 f162 + (今天−d)」，f162 不含当天，于是整条口径系统性少一天：
+ *  2026-11-24 复核，162 个格子里 135 个比真值少 1，年化因此虚高 3.7%
+ *  （365/27 对 365/28）。同一到期日还会出现沪市 3、深市 2 两个答案——沪市
+ *  那格是 EOD 快照写的（走 fourthWed），深市那格是东财推的（走 f162）。
+ *  现在两边都按「第四个星期三」算，跟 etfopt_eod.mjs 完全同一套。 */
+function dteByExpiry(mth, dstr) {
+  const y = +dstr.slice(0, 4), m = +dstr.slice(5, 7);
+  const yy = mth < m ? y + 1 : y;      // 1 月合约在 12 月看，到期日在明年
+  const exp = new Date(fourthWed(yy, mth)).toISOString().slice(0, 10);
+  return daysBetween(dstr, exp) + 1;
+}
+
 /** d 那天的「当月合约」是哪个月份。ETF 期权每月都挂，所以这是个确定性判断：
  *  本月第四个星期三没过就是本月，过了就是下个月。 */
 function frontMonth(dstr) {
@@ -390,13 +404,10 @@ async function one(secid, code, tag) {
       groups.push({ mth, n: w.length, syn, bp: (syn - S) / S * 100 });
     }
     if (!groups.length) continue;
-    /* dte 用「当前在市合约的 dte」推到那一天：该合约今天 dte=X，则 d 那天是 X + (today−d)。
-       同一个月内所有合约到期日相同，取该月任一条的 dte 即可。 */
-    const dteOf = new Map();
-    for (const x of ch) if (!dteOf.has(x.mth)) dteOf.set(x.mth, x.dte);
+    /* dte 按到期日推：该月合约在 d 那天还有几天到期（含当天）。
+       以前用「东财 f162 + (今天−d)」，f162 不含当天，整条口径少一天。 */
     for (const gr of groups) {
-      const base = dteOf.get(gr.mth);
-      gr.dte = base == null ? null : base + daysBetween(d, TODAY);
+      gr.dte = dteByExpiry(gr.mth, d);
     }
     groups.sort((a, b) => a.dte - b.dte);
     const near = groups[0];
@@ -544,7 +555,7 @@ async function sinaFill(secid, code, tag) {
   }
   const syn = median(syns);
   const bp = (syn - S) / S * 100;
-  const dte = mthDte.get(mth) + daysBetween(target, TODAY);
+  const dte = dteByExpiry(mth, target);
   console.log('    兜底 ' + tag + ' 新浪 ' + syns.length + '/' + win.length + ' 档'
     + '  S=' + S.toFixed(3) + '  syn=' + syn.toFixed(4) + '  bp=' + bp.toFixed(3) + '%');
   return [{

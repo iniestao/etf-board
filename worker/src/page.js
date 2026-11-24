@@ -727,7 +727,16 @@ transition:.25s;pointer-events:none;z-index:9}
 /* 「主要贡献」列到中等屏就收掉：自选表本来就有 14 列，1280 以下再加一列会把
    成交额和换手挤成一坨，反而更难读 */
 @media(max-width:1280px){.hide-md{display:none}}
-.t3cell{white-space:nowrap;text-align:left}
+/* 「主要贡献」是本表唯一的文字列，也是唯一会被挤到越界的列。
+   table 是 width:100% + 自动列宽：页面稍微挤一点（Windows 125% 缩放下
+   1440 的屏只有 1536 CSS px，14 列一合计就超了），浏览器会按比例压缩每一列，
+   而这一格是 nowrap，压缩后文字不换行也不裁剪，直接压到右边的「涨跌」数字上
+   —— 看起来像两列叠在一起。
+   修法分两层：这里负责「压缩时裁掉并出省略号」，渲染侧把内容包一层 .t3w
+   （td 上直接写 text-overflow 在部分浏览器不生效，得有块级子元素接着）。
+   不改成定宽：宽屏下 353px 正好装三只，定死 250px 反而白丢一档信息。 */
+.t3cell{white-space:nowrap;text-align:left;overflow:hidden}
+.t3cell .t3w{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* 三只成分压成一串小标签。用底色块而不是纯文字：三行名字连在一起时，
    靠颜色块才分得清哪一段是名称、哪一段是贡献数字 */
 .t3{display:inline-block;padding:0 4px;margin-right:3px;border-radius:3px;
@@ -5188,7 +5197,8 @@ function top3Html(c){
       + '，贡献 ' + fpt(x.ctr) + ' 个百分点">'
       + esc(t3short(x.n)) + '<em>' + fpt(x.ctr) + '</em></span>');
   }
-  return buf.join('');
+  /* 包一层 .t3w：列被压窄时由它出省略号，别让标签压到右边的数字上 */
+  return '<span class="t3w">' + buf.join('') + '</span>';
 }
 
 function paintTop3(){
