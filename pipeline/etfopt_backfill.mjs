@@ -68,7 +68,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 const BUDGET_MS = Number(process.env.ETFOPT_BUDGET_MS || 8 * 60e3);
 const T0 = Date.now();
-const overBudget = () => Date.now() - T0 > BUDGET_MS;
+/* need：这一只**至少**要留多少毫秒。带 need 判断是为了别在只剩 40 秒时起动一个
+ * 「20 档日线 + 撞限流 + 等 45 秒补抓两轮」的活——那一定做不完，还会把后面几只
+ * 的兜底一起挤掉。 */
+const overBudget = (need = 0) => Date.now() - T0 > BUDGET_MS - need;
 
 /* 重试 3 次、10 秒超时。原来 5 次 × 20 秒：一次限流要花 100 秒才认输，
    而 100 个合约的失败叠起来就是半小时——重试次数买不到数据，只买到等待。 */
@@ -308,7 +311,9 @@ async function one(secid, code, tag) {
      把整条流水线拖死——这两件事的优先级不一样。 */
   for (let pass = 1; pass <= 2; pass++) {
     const miss = uniq.filter((c) => !kls.has(c));
-    if (!miss.length || overBudget()) break;
+    /* 补抓一轮 = 等 45 秒 + 重打；两轮就是 90 秒起。剩余预算不够 2 分钟时
+       直接放弃补抓——留着预算给后面几只的「当天兜底」，那才是必保的那一格。 */
+    if (!miss.length || overBudget(120e3)) break;
     /* 撞到限流后立刻补，等于继续打——2026-11-20 那轮 159922 从 00:05:56 一直
        被拒到 00:12:53，七分钟里补了两轮、一条没回来，因为窗口一直是满的。
        先停 45 秒把窗口放空，再补，才补得动。 */
@@ -594,44 +599,59 @@ async function main() {
   }
 
   const res = {};
+  /* 主路径连续几只用完都拿不到目标日 = 这一轮东财配额已经被挡死。继续试只是
+   * 每只白等「撞 10 条 + 45 秒补抓 ×2」，而 11-23 的翻车正是这个顺序造成的：
+   * 50ETF 花 2 分半、300ETF 又花 3 分，第三只起预算见底，剩下 7 只连兜底都没轮到。 */
+  let deepFail = 0;
   for (const [secid, code, tag] of LIST) {
     if (already.has(code)) { console.log('  ' + tag + ' ' + targetDay + ' 已有值，跳过'); continue; }
     if (overBudget()) {
       console.log('  ' + tag + ' 起（' + code + '）：时间预算已用完，剩余品种本轮跳过');
       break;
     }
-    console.log('  ' + tag + ' (' + code + ')');
-    try {
-      const rows = await one(secid, code, tag);
-      if (rows && rows.length) {
-        res[code] = rows;
-        console.log('    ' + tag + ' 还原 ' + rows.length + ' 天  ' + rows[0].d + ' ~ ' + rows[rows.length - 1].d);
-      } else {
-        console.log('    ' + tag + ' 无可还原日期');
-      }
-    } catch (e) {
-      console.log('    ' + tag + ' 失败：' + e.message);
-    }
-    /* 目标日还是没值（被限流 / 整只失败）→ 换新浪快照补这一天。
-       只补一天是因为新浪没有历史；更早的洞还是得等东财下轮重抓，合并规则只加不删。 */
-    const gotTarget = (res[code] || []).some((r) => r.d === targetDay);
-    if (!gotTarget && !overBudget()) {
-      console.log('    ' + tag + ' ' + targetDay + ' 仍缺，改走新浪快照兜底');
+
+    /* 先补当天，再补历史。当天那一格只有新浪快照能给（约 5 秒），而东财那套
+     * 「20 档日线 + 撞限流 + 等 45 秒补抓两轮」在配额用完时要两分半。把最要紧的
+     * 那一格放在最后，等于把它的成败交给「前面几只碰巧够快」。 */
+    if (!overBudget(20e3)) {
       try {
         const fb = await sinaFill(secid, code, tag);
         if (fb && fb.length) {
-          res[code] = [...(res[code] || []), ...fb];
-          console.log('    ' + tag + ' 兜底补上 ' + targetDay + '  ' + fb[0].near.bp + '%'
-            + '（' + fb[0].near.n + ' 档）');
+          res[code] = (res[code] || []).concat(fb);
+          console.log('  ' + tag + ' 兜底补上 ' + targetDay + '  ' + fb[0].near.bp
+            + '%（' + fb[0].near.n + ' 档）');
         }
       } catch (e) {
         console.log('    兜底 ' + tag + ' 失败：' + e.message);
       }
     }
-    /* 一只 20~24 档，7 秒打完，9 只连起来就是 3.4 条/秒——东财的阈值大约
-       130 条/分钟，前 5 只能过、第 6 只开始全拒。每只之间停 12 秒，整体压到
-       1 条/秒以内，9 只多花 100 秒，但不用撞墙、不用补抓。 */
-    await sleep(12000);
+
+    /* 历史那十几天只有东财能给：还有配额就试，连续两只拿不到就认输，把剩下的
+     * 预算全留给后面几只的当天兜底。 */
+    if (deepFail < 2 && !overBudget(90e3)) {
+      console.log('  ' + tag + ' (' + code + ')');
+      try {
+        const rows = await one(secid, code, tag);
+        if (rows && rows.length) {
+          res[code] = (res[code] || []).concat(rows);
+          console.log('    ' + tag + ' 还原 ' + rows.length + ' 天  ' + rows[0].d + ' ~ ' + rows[rows.length - 1].d);
+        } else {
+          console.log('    ' + tag + ' 无可还原日期');
+        }
+      } catch (e) {
+        console.log('    ' + tag + ' 失败：' + e.message);
+      }
+      const got = (res[code] || []).some((r) => r.d === targetDay);
+      deepFail = got ? 0 : deepFail + 1;
+      if (deepFail >= 2) {
+        console.log('    东财日线暂停：连续两只拿不到 ' + targetDay
+          + '，这一轮配额已被挡死，剩余品种只走当天兜底');
+      }
+      /* 每只间隔 12 秒是给东财配额留恢复时间；已经不指望它了就别再拖时间。 */
+      await sleep(deepFail >= 2 ? 600 : 12000);
+    } else {
+      await sleep(400);
+    }
   }
 
   /* ---------------- 和上一版合并 ----------------
