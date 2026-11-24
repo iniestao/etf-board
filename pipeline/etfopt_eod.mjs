@@ -250,8 +250,10 @@ async function main() {
 
   const mth = frontMonth(TODAY);
   const y = +TODAY.slice(0, 4);
-  const wantYm = (mth >= 10 ? (y % 100) : (mth === 1 ? (y + 1) % 100 : y % 100)) * 100 + mth;
-  const exp = fourthWed(y, mth);
+  /* 合约年月：1 月的当月合约属于明年，其余都属于今年 */
+  const wantYm = ((mth === 1 ? y + 1 : y) % 100) * 100 + mth;
+  /* 到期日的年份跟合约走，不是跟今天走：1 月看的是明年 1 月的第四个周三 */
+  const exp = fourthWed(mth === 1 ? y + 1 : y, mth);
   const dte = daysBetween(TODAY, new Date(exp).toISOString().slice(0, 10)) + 1;
   console.log('  当月 ' + mth + ' 月  到期日 ' + new Date(exp).toISOString().slice(0, 10)
     + '  dte ' + dte);
@@ -300,10 +302,13 @@ async function main() {
     console.log('  深交所清单取不到：' + e.message + '（深市本轮跳过）');
   }
   if (list.length) {
-    /* 只留当月到期的（xqrq 的年月等于当月） */
+    /* 只留当月到期的（xqrq 的年月等于当月）。
+       注意这里要比的是「合约年月」wantYm，不是「今年」：12 月底跑的时候当月还是
+       12 月，可到了 1 月，当月合约的到期日在**明年**，拿 y 比会一条都筛不出来。 */
+    const wantY = Math.floor(wantYm / 100), wantM = wantYm % 100;
     const want = list.filter((x) => {
       const d = String(x.xqrq || '');
-      return d.slice(0, 4) === String(y) && +d.slice(5, 7) === mth;
+      return +d.slice(0, 4) === wantY && +d.slice(5, 7) === wantM;
     });
     /* 按标的代码分组：新浪回报里第 37 字段是标的代码，先用清单里的 bdmc 粗筛，
        真正落组时再用新浪回报的 ul 校正。 */
