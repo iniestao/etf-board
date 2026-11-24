@@ -129,9 +129,12 @@ const ITEMS = [
   { key: 'etf',      name: 'ETF 行情',      file: 'manifest.json',   level: 'hard', pick: (o) => o.last_trade_date },
   { key: 'fut',      name: '期指日档',      file: 'fut_daily.json',  level: 'hard', pick: (o) => o.last_trade_date || (o._last && o._last.td) },
   { key: 'etfopt',   name: 'ETF 期权近月',  file: 'etfopt_hist.json', level: 'hard', pick: (o) => (o.d || []).at(-1) },
-  /* 交易所当日快照。它是「当天那一格」的第一责任人：有它，期权基差就不必看
-     东财的脸色。硬要求是因为它自己就是兜底——它都缺了，那天就真没了。 */
-  { key: 'etfopteo', name: '期权收盘快照',  file: 'etfopt_eod.json', level: 'hard', pick: (o) => Object.keys(o.days || {}).sort().at(-1) },
+  /* 交易所当日快照。它是「当天那一格」的手段，而「当天有没有数」是结果——
+     结果由上面那条 etfopt（hard）负责，所以这里给 soft：
+       · 白天手动跑时它本来就不落盘（未收盘），不该因此判红；
+       · 首次上线时文件还不存在，也不该红。
+     真要落后了（连续几天没涨），soft 会亮出来，不至于没人知道。 */
+  { key: 'etfopteo', name: '期权收盘快照',  file: 'etfopt_eod.json', level: 'soft', pick: (o) => Object.keys(o.days || {}).sort().at(-1) },
   { key: 'senti',    name: '情绪历史',      file: 'senti_hist.json', level: 'hard', pick: (o) => o.lastDay || (o.d || []).at(-1) },
   { key: 'mkt',      name: '全 A 结构',     file: 'mkt_hist.json',   level: 'hard', pick: (o) => o.last_trade_date || (o.d || []).at(-1) },
   { key: 'sec',      name: '板块日档',      file: 'sec_daily.json',  level: 'hard', pick: (o) => o.last_trade_date },
