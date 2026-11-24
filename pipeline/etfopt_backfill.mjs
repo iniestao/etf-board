@@ -309,7 +309,11 @@ async function one(secid, code, tag) {
      数据，是这一轮抓取被限流（116 条只回来 61 条），而失败被 .catch(()=>null) 吞了。
      现在补一轮、3 条并发、受预算约束：慢一分钟好过留一个静默空档，但不能慢到
      把整条流水线拖死——这两件事的优先级不一样。 */
-  for (let pass = 1; pass <= 2; pass++) {
+  /* --only-missing 时只浅补一轮：这时「当天那一格」已经由上面的新浪快照兜底拿过，
+     东财这一趟只是为了补历史洞，撞上限流就没必要再等 45 秒重打两轮——9 只 ×90 秒
+     正好把 8 分钟预算吃光，而它换回来的往往是 0 条。 */
+  const PASSES = ONLY_MISSING ? 1 : 2;
+  for (let pass = 1; pass <= PASSES; pass++) {
     const miss = uniq.filter((c) => !kls.has(c));
     /* 补抓一轮 = 等 45 秒 + 重打；两轮就是 90 秒起。剩余预算不够 2 分钟时
        直接放弃补抓——留着预算给后面几只的「当天兜底」，那才是必保的那一格。 */
@@ -317,8 +321,9 @@ async function one(secid, code, tag) {
     /* 撞到限流后立刻补，等于继续打——2026-11-20 那轮 159922 从 00:05:56 一直
        被拒到 00:12:53，七分钟里补了两轮、一条没回来，因为窗口一直是满的。
        先停 45 秒把窗口放空，再补，才补得动。 */
-    console.log('    ' + tag + ' 补抓第 ' + pass + ' 轮：' + miss.length + ' 条（先等 45 秒让配额恢复）');
-    await sleep(45000);
+    const wait = ONLY_MISSING ? 8000 : 45000;
+    console.log('    ' + tag + ' 补抓第 ' + pass + ' 轮：' + miss.length + ' 条（先等 ' + (wait / 1000) + ' 秒让配额恢复）');
+    await sleep(wait);
     for (let i = 0; i < miss.length; i += CONC) {
       if (overBudget()) { console.log('    ' + tag + ' 补抓超预算，先收尾'); break; }
       const seg = miss.slice(i, i + CONC);
