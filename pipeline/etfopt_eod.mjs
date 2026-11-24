@@ -160,6 +160,35 @@ async function szList() {
   return out;
 }
 
+/* 深交所连不通时的候补清单。只借它拿「有哪些合约、行权价多少」，
+   价格一律走新浪——东财的 kline 才是那个按 IP 限流的，slist 不是。
+   2026-11-24 在 GitHub runner 上实测：szse.cn fetch failed（Azure 出口连不上），
+   而本沙箱能连——所以两条路都要有，不能只留一条。 */
+async function emChain(secid) {
+  const out = [];
+  for (const spt of [9, 10]) {
+    const u = 'https://push2.eastmoney.com/api/qt/slist/get?spt=' + spt
+      + '&fltt=2&invt=2&fields=f12,f13,f14,f161,f162&secid=' + secid + '&pn=1&pz=200&np=1&fid=f3';
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const d = (j && j.data && j.data.diff) || {};
+      const items = Array.isArray(d) ? d : Object.values(d);
+      for (const x of items) {
+        const m = /([购沽])(\d+)月(\d+)/.exec(x.f14 || '');
+        if (!m) continue;
+        out.push({ code: String(x.f12), side: m[1] === '购' ? 'C' : 'P', mth: +m[2], k: +m[3] / 1000 });
+      }
+    } catch (e) { /* 这一档不通就算了，两档合并 */ }
+    await sleep(120);
+  }
+  return out;
+}
+
 async function sinaCodes(codes) {
   /* 一条请求最多带 50 个，太多会被截断。返回 code -> {last, k, ts, ul} */
   const out = new Map();
@@ -294,41 +323,53 @@ async function main() {
   }
 
   /* ---- 深市 ---- */
-  let list = [];
+  let szItems = [];       // [{code, side, k}]
+  let szSrc = 'szse';
   try {
-    list = await szList();
+    if (process.env.SZSE_DOWN === '1') throw new Error('模拟深交所不可达');
+    const list = await szList();
     console.log('  深交所合约清单 ' + list.length + ' 条');
-  } catch (e) {
-    console.log('  深交所清单取不到：' + e.message + '（深市本轮跳过）');
-  }
-  if (list.length) {
     /* 只留当月到期的（xqrq 的年月等于当月）。
        注意这里要比的是「合约年月」wantYm，不是「今年」：12 月底跑的时候当月还是
        12 月，可到了 1 月，当月合约的到期日在**明年**，拿 y 比会一条都筛不出来。 */
     const wantY = Math.floor(wantYm / 100), wantM = wantYm % 100;
-    const want = list.filter((x) => {
+    szItems = list.filter((x) => {
       const d = String(x.xqrq || '');
       return +d.slice(0, 4) === wantY && +d.slice(5, 7) === wantM;
-    });
-    /* 按标的代码分组：新浪回报里第 37 字段是标的代码，先用清单里的 bdmc 粗筛，
-       真正落组时再用新浪回报的 ul 校正。 */
-    const codes = want.map((x) => String(x.hydm));
+    }).map((x) => ({
+      code: String(x.hydm),
+      side: String(x.hylx).includes('购') ? 'C' : 'P',
+      k: +x.xqj,
+    }));
+  } catch (e) {
+    /* 深交所在 GitHub runner 上连不通（2026-11-24 实测 fetch failed），
+       改从东财拿清单。这条路只取「有哪些合约」，价格还是新浪。 */
+    console.log('  深交所清单取不到：' + e.message + '，改用东财合约链取清单');
+    szSrc = 'szse-em';
+    for (const code of SZ) {
+      const ch = await emChain('0.' + code);
+      szItems.push(...ch.filter((x) => x.mth === mth));
+      await sleep(150);
+    }
+    console.log('  东财清单深市当月合约 ' + szItems.length + ' 条');
+  }
+
+  if (szItems.length) {
+    const codes = szItems.map((x) => x.code);
     console.log('  深市当月合约 ' + codes.length + ' 条');
     const q = await sinaCodes(codes);
     const grp = new Map();      // 标的 -> Map(k -> {C,P})
-    for (const x of want) {
-      const c = String(x.hydm);
-      const z = q.get(c);
+    for (const x of szItems) {
+      const z = q.get(x.code);
       if (!z || !(z.last >= 0)) continue;
       const ul = z.ul || '';
       if (!SZ.includes(ul)) continue;
-      const k = +x.xqj;
-      const side = String(x.hylx).includes('购') ? 'C' : 'P';
+      const k = x.k;
       if (!(k > 0)) continue;
       if (!grp.has(ul)) grp.set(ul, new Map());
       const m = grp.get(ul);
       if (!m.has(k)) m.set(k, {});
-      m.get(k)[side] = z.last;
+      m.get(k)[x.side] = z.last;
     }
     for (const [ul, byK] of grp) {
       try {
@@ -341,7 +382,7 @@ async function main() {
         if (ok) {
           put(TODAY, ul, {
             S: +S.toFixed(4), mth, dte, n: s.n,
-            bp: +s.bp.toFixed(3), ann, src: FORCE ? 'szse-intraday' : (closed ? 'szse' : 'szse-prev'),
+            bp: +s.bp.toFixed(3), ann, src: (FORCE ? szSrc + '-intraday' : (closed ? szSrc : szSrc + '-prev')),
           });
         }
         console.log('  ' + ul + '     S=' + S.toFixed(3) + '  ' + s.n + ' 档  bp='

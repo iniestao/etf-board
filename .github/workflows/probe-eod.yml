@@ -1,0 +1,13 @@
+name: 临时-期权快照自检
+on:
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 跑一遍快照（只打印，不写盘）
+        run: node pipeline/etfopt_eod.mjs --force --dry
