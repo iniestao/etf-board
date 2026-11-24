@@ -5307,7 +5307,7 @@ async function serveResearch(env) {
  * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
  * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
-const INLINE_BUILD = '2026-11-24T20:20:48Z 42a65bb-dirty';
+const INLINE_BUILD = '2026-11-24T20:21:11Z 03e310b-dirty';
 function buildOf(env) {
   if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
