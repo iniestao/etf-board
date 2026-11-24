@@ -4755,8 +4755,19 @@ function pickFromShard(txt, code) {
   const tag = '"' + code + '":';
   const at = txt.indexOf(tag);
   if (at < 0) return null;
-  const s = txt.indexOf('{', at + tag.length);
-  if (s < 0) return null;
+  /* 值必须紧跟着一个对象。中间只要隔了别的东西（null、字符串、数字），说明这
+     个 key 不是我们想的那条，返回 null 让调用方去现场拉。
+     以前直接 indexOf('{') 往右找：碰上 `"510300":null` 这种，会一路滑到
+     **下一只**的对象开头，把它的括号配对成正主返回——于是 510300（沪深300ETF）
+     拿到了 159915（创业板ETF）的成分权重，贡献列画出 中际旭创+0.33 这种
+     沪深300 里不可能存在的数（9% 权重），而且看起来完全正常。 */
+  let s = at + tag.length;
+  while (s < txt.length) {
+    const ch = txt[s];
+    if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t') { s++; continue; }
+    break;
+  }
+  if (txt[s] !== '{') return null;
   let depth = 0, inStr = false;
   for (let j = s; j < txt.length; j++) {
     const c = txt.charCodeAt(j);
@@ -5296,7 +5307,7 @@ async function serveResearch(env) {
  * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
  * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
-const INLINE_BUILD = '2026-11-24T03:47:52Z e7f2df2-dirty';
+const INLINE_BUILD = '2026-11-24T03:49:29Z fdb3539-dirty';
 function buildOf(env) {
   if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
