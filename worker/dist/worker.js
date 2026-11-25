@@ -3384,6 +3384,97 @@ function sentiPackClose(H, note) {
   return out;
 }
 
+/* ---------------------------------------------------------------- 情绪清单的板块
+   三张名单（涨停/炸板/跌停）在 worker 里是拿全 A 快照按涨幅判出来的，新浪那份
+   报价只有价格和成交，没有板块归属。所以：
+     行业 —— 走本地的 EM2016 三级映射（MKT_IND_OF），零请求、比东财池子自带的
+              hybk 更细（「专用计算机设备」而不是截断的「计算机设」）；
+     概念 —— 东财概念接口只能一只一只问，盘中 124 只必然超出子请求上限，所以
+              收盘后由 pipeline/gen_concept_map.mjs 批量算好落成 stk_concept.json
+              （最近 5 个交易日上过榜的票，约 300 只 / 10KB），这里只做 join。
+   表里没有的票（当天新上榜）现场补查，最多 30 只：全市场报价占 8 个子请求
+   （MKT_BATCH=700，5223 只分 8 批），免费版上限 50，剩 42 够用。实测冷启动
+   1 秒内补齐，命中边缘缓存后 6ms；58 只清单里首板票约 25 只，不补的话
+   「概念」一半是空的，一张表看着像坏了。
+   查失败一律留空数组，前端显示「—」，绝不猜。 */
+let _cmAt = 0, _cmVal = null;
+async function conceptMap(env) {
+  if (_cmVal && Date.now() - _cmAt < 600000) return _cmVal;
+  let v = { m: {}, d: '' };
+  try {
+    const a = await readAsset(env, 'stk_concept.json');
+    if (a) {
+      const j = JSON.parse(await a.text());
+      v = { m: (j && j.m) || {}, d: (j && j.d) || '' };
+    }
+  } catch (e) {
+    /* 取不到就退回上次的内存副本；一次都没成功过就返回空表，清单照出，只是没有概念 */
+    v = _cmVal || { m: {}, d: '' };
+  }
+  _cmVal = v;
+  _cmAt = Date.now();
+  return v;
+}
+
+const _cnMemo = new Map();          // code -> [概念]，isolate 内存，进程内有效
+async function fetchConceptLive(code) {
+  if (_cnMemo.has(code)) return _cnMemo.get(code);
+  const url = 'https://datacenter.eastmoney.com/securities/api/data/v1/get'
+    + '?reportName=RPT_F10_CORETHEME_BOARDTYPE'
+    + '&columns=SECURITY_CODE,BOARD_NAME,IS_PRECISE'
+    + '&filter=' + encodeURIComponent('(SECURITY_CODE="' + code + '")')
+    + '&pageNumber=1&pageSize=60&source=HSF10&client=PC';
+  /* 东财这个接口单只 40~200ms，12 个并发 280ms；偶尔会挑一两个返回非 200。
+     重试一次就够——连续两次都失败，说明是限流而不是抖动，留空下次再说。 */
+  for (let tryN = 0; tryN < 2; tryN++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://emweb.securities.eastmoney.com/' },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const out = [];
+      /* IS_PRECISE=1 才留：东财每只票挂 18~25 个板块，一半是「融资融券 / 沪股通 /
+         浙江板块 / 2026中报预增」，不剔就把真题材淹了。剔完按接口顺序取前 3。 */
+      for (const x of (j && j.result && j.result.data) || []) {
+        if (String(x.IS_PRECISE) !== '1') continue;
+        const nm = String(x.BOARD_NAME || '').trim();
+        if (nm && !out.includes(nm)) out.push(nm);
+        if (out.length >= 3) break;
+      }
+      /* 只有真拿到 200 才进缓存：把超时/限流的结果写进去，这只票在 isolate
+         生命周期内就永远是空的了，而 isolate 可能活很久。 */
+      _cnMemo.set(code, out);
+      return out;
+    } catch (e) { /* 下一轮 */ }
+  }
+  return [];
+}
+
+/** 给清单每行补 hy（行业）与 cn（概念）。只处理已经切片过的行，别对 5000 只跑。 */
+async function attachSectors(env, arr, limit) {
+  if (!arr || !arr.length) return arr;
+  const cm = await conceptMap(env);
+  const miss = [];
+  for (const x of arr) {
+    const ix = MKT_IND_OF[x.c];
+    x.hy = ix == null ? '' : (MKT_IND_NAMES[ix] || '');
+    const cn = cm.m[x.c];
+    if (cn && cn.length) x.cn = cn;
+    else if (miss.length < limit) miss.push(x);
+  }
+  /* 分批并发，每批 8 个：一次性打 20 个并发，东财会挑几个返回非 200，
+     实测 58 只清单里 6 只因此落空。三批串起来总耗时仍在 1 秒上下。 */
+  const want = miss.slice(0, limit);
+  for (let i = 0; i < want.length; i += 12) {
+    await Promise.all(want.slice(i, i + 12).map(async (x) => {
+      x.cn = (await fetchConceptLive(x.c)) || [];
+    }));
+  }
+  return arr;
+}
+
 async function serveSenti(env, ctx, url) {
   const clock = mktClock();
   const H = await sentiHist(env);
@@ -3520,7 +3611,11 @@ async function serveSenti(env, ctx, url) {
     // 涨停按封单额降序：真封和虚封一眼分（2 亿封单和 20 万封单不是一件事）
     if (listKind === 'zt') arr.sort((p, q) => q.seal - p.seal);
     else arr.sort((p, q) => q.a - p.a);
-    out.list = { kind: listKind, items: arr.slice(0, 200) };
+    /* 先切片再补板块：只会渲染前 200 行，没必要给后面的票查概念 */
+    const items = arr.slice(0, 200);
+    await attachSectors(env, items, 30);
+    out.list = { kind: listKind, items };
+    out.cd = (await conceptMap(env)).d || '';
   }
 
   const res = json(out, clock.phase === 'live' ? 30 : 120);
@@ -5307,7 +5402,7 @@ async function serveResearch(env) {
  * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
  * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
-const INLINE_BUILD = '2026-11-25T15:35:53Z e0ec7584-dirty';
+const INLINE_BUILD = '2026-11-25T16:16:03Z 16c468c7-dirty';
 function buildOf(env) {
   if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
@@ -8539,6 +8634,8 @@ padding-bottom:7px;margin-bottom:2px;border-bottom:1px solid var(--line)}
 .indtb th{position:sticky;top:0;z-index:1;background:var(--bg2);text-align:right;
 font-weight:500;color:var(--txt3);padding:5px 4px;border-bottom:1px solid var(--line);font-size:var(--fs-2xs)}
 .indtb th:first-child,.indtb td:first-child{text-align:left}
+/* 「板块」列的内容是左对齐的标签，表头跟着左对齐，不然一行里两个基准 */
+.indtb th:last-child,.indtb td:last-child{text-align:left}
 .indtb td{padding:4px;border-bottom:1px solid var(--line);text-align:right;color:var(--txt2)}
 .indtb tbody tr{cursor:pointer}
 .indtb tbody tr:hover td{background:var(--bg3)}
@@ -8552,6 +8649,14 @@ background:var(--line);vertical-align:middle;margin-right:5px}
    整列右对齐会让条形左右浮动，扫一眼像是错位。 */
 .indtb .pv{display:inline-block;min-width:38px;text-align:right;font-weight:400}
 .indbar i{display:block;height:100%;background:var(--txt3)}
+/* 情绪清单的板块：行业跟在简称下面一行小字，概念单独一列放标签。
+   行业是 EM2016 三级（「专用计算机设备」），长度不固定，压在简称下面比单开一列
+   省宽度；概念最多 3 个，超出的不显示（后端就只取 3 个，不在这里截）。 */
+.indtb td.nm i.hy{display:block;color:var(--txt3);font-size:var(--fs-2xs);font-weight:400;
+margin-top:1px;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.indtb td.cn{text-align:left;max-width:210px;white-space:normal;line-height:1.6;color:var(--txt3)}
+.indtb .tg{display:inline-block;padding:0 4px;margin:1px 3px 1px 0;border:1px solid var(--line);
+border-radius:3px;color:var(--txt2);font-size:var(--fs-2xs);white-space:nowrap}
 .indnote{font-size:var(--fs-2xs);color:var(--txt3);line-height:1.65;margin:8px 0 0;
 padding-top:7px;border-top:1px solid var(--line)}
 /* 个股卡：从成分股列表点进来，同一层里换内容，不叠第二个弹窗 */
@@ -8562,8 +8667,23 @@ padding-top:7px;border-top:1px solid var(--line)}
 #indMin svg{display:block;width:100%;height:auto}
 #indBack{margin:0 0 8px}
 @media(max-width:560px){
-  #indMask th:nth-child(4),#indMask td:nth-child(4){display:none}
+  /* 窄屏藏「封单」这一列（按 class 而不是 nth-child：跌停表没有封单列，
+     按序号藏会把「板块」藏掉）。概念列同时收窄，行业小字留在简称下面。 */
+  #indMask .seal{display:none}
   .indtb th,.indtb td{padding:4px 3px}
+  /* 窄屏概念竖排：标签是 nowrap 的，三个并排会把表格撑到屏幕外（实测 390px
+     下「拼多多概念/人工智能/大数据」整列溢出，连表头都被裁成「板」）。 */
+  /* 表格 width:100% 不会自己缩列，各列最小内容宽度之和超过容器就直接溢出。
+     390px 下五个列必须逐列封顶：简称 108 + 涨跌 56 + 连板 32 + 成交额 56 + 板块 80。 */
+  .indtb td.nm{max-width:108px;overflow:hidden}
+  .indtb td.nm .cd{margin-left:3px}
+  /* 窄屏只留前两个概念，字号降到 10px 且不折行：
+     5 个字 10px ≈ 50px，配 84px 的列宽正好一行一个，折成「拼多多/概念」反而更难读。
+     第三个概念不显示——手机上一屏就那么宽，多塞一个只会把行高再顶高一截。 */
+  .indtb td.cn{max-width:84px;line-height:1.5}
+  .indtb td.cn .tg:nth-child(n+3){display:none}
+  .indtb .tg{display:block;padding:0 3px;margin:0 0 2px;max-width:92px;font-size:10px;
+  letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 }
 #ioMask.on{display:flex}
 .iobox{background:var(--bg2);border:1px solid var(--line);border-radius:10px;width:100%;
@@ -17286,7 +17406,7 @@ var IND = null;          // 当前打开的那个行业（服务端原样返回�
 /* 情绪名单复用同一个弹层：SENTI_OPEN 是 'zt'/'zb'/'dt'，SENTI_LIST 是那一份
    items。两者不会同时非空——indClose 会一起清掉，否则关掉行业再点涨停名单，
    委托会按 IND 去找票，找到一个不存在的代码，表现为「点了没反应」。 */
-var SENTI_LIST = null, SENTI_OPEN = null;
+var SENTI_LIST = null, SENTI_OPEN = null, SENTI_CN_D = '';
 
 function indOpen(name){
   var m = document.getElementById('indMask');
@@ -17411,6 +17531,20 @@ function stkOpen(code){
    跌停只有一个数字有意义（跌了多少），所以那张表只有三列。 */
 var SENTI_TITLE = { zt: '今日涨停', zb: '今日炸板', dt: '今日跌停' };
 
+/* 清单里的板块。行业来自 worker 的 EM2016 三级映射（零请求，5223 只全覆盖），
+   概念来自收盘后生成的 stk_concept.json；当天新上榜、表里还没有的票，后端会
+   现场补查，查不到就是空——这里只显示「—」，不拿行业去冒充概念。 */
+function sntHy(x){
+  return x && x.hy ? '<i class="hy">' + esc(x.hy) + '</i>' : '';
+}
+function sntCn(x){
+  var a = (x && x.cn) || [];
+  if (!a.length) return '—';
+  var h = '';
+  for (var i = 0; i < a.length; i++) h += '<span class="tg">' + esc(a[i]) + '</span>';
+  return h;
+}
+
 function sentiOpen(kind){
   var m = document.getElementById('indMask');
   if (!m) return;
@@ -17426,6 +17560,7 @@ function sentiOpen(kind){
     .then(function(j){
       if (!j || !j.ok) throw new Error((j && j.error) || '读取失败');
       SENTI_LIST = (j.list && j.list.items) || [];
+      SENTI_CN_D = j.cd || '';
       sentiRender();
     })
     .catch(function(e){
@@ -17445,26 +17580,30 @@ function sentiRender(){
   var h, i, x;
   if (kind === 'dt'){
     h = '<div class="indwrap"><table class="indtb"><thead><tr>'
-      + '<th>简称</th><th>涨跌幅</th><th>成交额（亿）</th></tr></thead><tbody>';
+      + '<th>简称</th><th>涨跌幅</th><th>成交额（亿）</th><th>板块</th></tr></thead><tbody>';
     for (i = 0; i < arr.length; i++){
       x = arr[i];
       h += '<tr data-stk="' + x.c + '"><td class="nm">' + esc(x.n || x.c)
-        + '<span class="cd">' + x.c + '</span></td>'
+        + '<span class="cd">' + x.c + '</span>' + sntHy(x)
+        + '</td>'
         + '<td class="' + cc(x.p) + '">' + fpc(x.p) + '</td>'
-        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td></tr>';
+        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td class="cn">' + sntCn(x) + '</td></tr>';
     }
   } else {
     h = '<div class="indwrap"><table class="indtb"><thead><tr>'
-      + '<th>简称</th><th>涨跌幅</th><th>连板</th><th>封单（亿）</th><th>成交额（亿）</th>'
+      + '<th>简称</th><th>涨跌幅</th><th>连板</th><th class="seal">封单（亿）</th><th>成交额（亿）</th><th>板块</th>'
       + '</tr></thead><tbody>';
     for (i = 0; i < arr.length; i++){
       x = arr[i];
       h += '<tr data-stk="' + x.c + '"><td class="nm">' + esc(x.n || x.c)
-        + '<span class="cd">' + x.c + '</span></td>'
+        + '<span class="cd">' + x.c + '</span>' + sntHy(x)
+        + '</td>'
         + '<td class="' + cc(x.p) + '">' + fpc(x.p) + '</td>'
         + '<td>' + (x.lb ? x.lb + ' 板' : '—') + '</td>'
-        + '<td>' + (x.seal > 0 ? (x.seal / 1e8).toFixed(2) : '—') + '</td>'
-        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td></tr>';
+        + '<td class="seal">' + (x.seal > 0 ? (x.seal / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td class="cn">' + sntCn(x) + '</td></tr>';
     }
   }
   h += '</tbody></table></div><p class="indnote">'
@@ -17473,7 +17612,10 @@ function sentiRender(){
       : kind === 'zb'
         ? '按成交额降序。炸板数盘中会随回封减少，不是只增不减，别拿它当累计值。'
         : '按成交额降序。跌停家数盘中系统性偏低（14:00 中位才 7 家），不宜与收盘值直接比。')
-    + '　点任意一行看这只票的分时。</p>';
+    + '　板块＝<b>行业</b>（EM2016 三级，一只票一个）＋<b>概念</b>（东财精准题材，取前 3，'
+    + '已剔掉融资融券/沪深股通/地域这类非题材标签）；'
+    + (SENTI_CN_D ? '概念为 ' + esc(SENTI_CN_D) + ' 收盘快照，' : '')
+    + '当日新上榜的票次日补上。　点任意一行看这只票的分时。</p>';
   var body = document.getElementById('indBody');
   body.innerHTML = h;
   body.scrollTop = 0;

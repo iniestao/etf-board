@@ -257,6 +257,11 @@ jobs:
           # 同刻「曾触板」基准：东财涨停池+炸板池，只回溯 ~14 个交易日。
           # 它失败不影响主图，只是盘中的「此刻历史」不更新（卡片会显示旧基准或不显示）。
           node pipeline/gen_senti_base.mjs || echo "::warning::同刻基准回算失败，沿用上一次发布的那份"
+          # 情绪清单的「概念板块」映射（代码 → 东财 IS_PRECISE 前 3 个概念）。
+          # 覆盖最近 10 个交易日上过涨停/炸板/跌停榜的票，约 450 只 / 14KB，两分钟。
+          # 它决定清单里「板块」那一列显示什么；失败就沿用上一版，worker 侧还有
+          # 30 只现场补查兜底，不会整列空掉。
+          node pipeline/gen_concept_map.mjs --days 10 || echo "::warning::概念映射刷新失败，沿用上一次发布的那份"
           python3 - <<'PY'
           import json, pathlib
           d = json.loads(pathlib.Path('dist/sec_daily.json').read_text())
@@ -506,7 +511,7 @@ jobs:
           # etfopt_hist.json 千万别漏：少拷一个文件，页面 ETF 组会退回「还没发布」。
           # etf_base.json 同理：漏了的话盯市提醒会静默退化成只判横截面和折溢价，
           # 页面上没有任何可见的错，只是量能和位置两类从此不再出现。
-          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json fut_daily.json fut_last.json etfopt_hist.json etfopt_eod.json etf_base.json; do
+          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json stk_concept.json fut_daily.json fut_last.json etfopt_hist.json etfopt_eod.json etf_base.json; do
             if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; continue; fi
             if [ -n "$PREV" ] && git show "$PREV:$f" > "$PUB/$f" 2>/dev/null; then
               echo "::warning::dist/$f 这轮没生成，沿用上一版（$(du -h "$PUB/$f" | cut -f1)）"

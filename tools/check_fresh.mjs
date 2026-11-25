@@ -151,6 +151,9 @@ const ITEMS = [
   // 都是慢变量，差一天只是「昨晚的均线」，不会报出错误的信号。
   // 所以给 soft：真断了要有人知道，但不该因为它让整条发布链红掉——
   // 红掉的后果是当天的 K 线和清单也发不出去，那是更严重的事。
+  // 情绪清单的「概念板块」映射。它只在清单弹窗里显示标签，落后一天的影响是
+  // 当天新上榜的票少几个标签（worker 还会现场补查 30 只），所以给 soft。
+  { key: 'stkconcept', name: '概念映射',     file: 'stk_concept.json', level: 'soft', pick: (o) => o.d },
   { key: 'etfbase', name: '盯市基线',       file: 'etf_base.json',   level: 'soft', pick: (o) => {
     const x = o.d;
     return x && /^\d{8}$/.test(x) ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6)}` : x || null;
