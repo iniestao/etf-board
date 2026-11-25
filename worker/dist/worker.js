@@ -5307,7 +5307,7 @@ async function serveResearch(env) {
  * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
  * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
-const INLINE_BUILD = '2026-11-25T15:12:01Z c7f6cffd-dirty';
+const INLINE_BUILD = '2026-11-25T15:29:34Z 7fb09ddb-dirty';
 function buildOf(env) {
   if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
@@ -6631,8 +6631,15 @@ function calcEtfMonths(rows, S) {
     const ks = [...new Set(cand.map((r) => r.k))].sort((a, b) => a - b);
     const gaps = [];
     for (let i = 1; i < ks.length; i++) gaps.push(ks[i] - ks[i - 1]);
-    // 档距的一半；一条链只有一个行权价时拿不到档距，退回现货的 2%
-    const step = gaps.length ? median(gaps) : 0;
+    /* 容差用「平值附近的档距」而不是整条链的中位档距。远月的行权价阶梯往往比近月粗
+       （159901 近月 0.05 一档、链上多数是 0.10），拿整条链的中位数当尺子会让容差
+       正好等于一个平值档距，错配一档的偏差恰好落在边界上被判为"通过"——校验看着有，
+       实际漏了。取两者较小值，保证容差 ≤ 半个平值档距。 */
+    const atmK = ks.slice().sort((a, b) => Math.abs(a - S) - Math.abs(b - S)).slice(0, 2);
+    const atmStep = atmK.length === 2 ? Math.abs(atmK[0] - atmK[1]) : 0;
+    const chainStep = gaps.length ? median(gaps) : 0;
+    const step = atmStep > 0 ? Math.min(chainStep || atmStep, atmStep) : chainStep;
+    // 一条链只有一个行权价时两种档距都拿不到，退回现货的 2%
     const band = step > 0 ? step / 2 : S * 0.02;
     const pairs = [];
     for (const r of cand) {
