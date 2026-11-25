@@ -5307,7 +5307,7 @@ async function serveResearch(env) {
  * 覆盖不动——这类「配置层的静默失败」没法在代码里补救，只能绕开它：
  * 把 sha 写进源码，让它是「代码」而不是「配置」。
  */
-const INLINE_BUILD = '2026-11-25T14:23:14Z c7f6cffd-dirty';
+const INLINE_BUILD = '2026-11-25T15:12:01Z c7f6cffd-dirty';
 function buildOf(env) {
   if (INLINE_BUILD && INLINE_BUILD !== '__BUILD_V__') return INLINE_BUILD;
   const v = env && env.BUILD;
@@ -5955,14 +5955,21 @@ function median(arr) {
 
 /** ATM 附近的配对标的一撮。行权价间距各品种不同：IF 系 50 点一档、
  *  科创 50ETF 是 0.05 一档（占价格 3.8%），固定 ±3% 会只剩一档。
- *  所以窗口逐级放宽，够 3 档就停；实在凑不到就取最近的 2~3 档。 */
+ *  所以窗口逐级放宽，够 3 档就停；实在凑不到就取最近的 2~3 档。
+ *
+ *  最后那一步要设天花板（2026-11-25 补）：上游把平值那几档判掉之后，这里会
+ *  老实取「离现价最近的幸存档」——八只 ETF 里有七只因此退到比现价高
+ *  27%~74% 的深度实值档，510500 更只剩一档（K=10.31，现货 5.92）。
+ *  那已经不叫平值窗口了，算出来的「合成基差」是编的。超过 20% 就当这月没有。 */
 function atmWindow(pairs, S) {
   const byDist = pairs.slice().sort((a, b) => Math.abs(a.k - S) - Math.abs(b.k - S));
   for (const w of [0.03, 0.05, 0.08, 0.12]) {
     const near = byDist.filter((x) => Math.abs(x.k / S - 1) <= w).slice(0, 5);
     if (near.length >= 3) return near;
   }
-  return byDist.slice(0, Math.min(3, byDist.length));
+  const sane = byDist.filter((x) => Math.abs(x.k / S - 1) <= 0.20);
+  if (!sane.length) return [];
+  return sane.slice(0, Math.min(3, sane.length));
 }
 
 /** 一个期权品种 → 每个月一条合成期货基差 */
@@ -6600,17 +6607,37 @@ function calcEtfMonths(rows, S) {
   for (const [dte, g] of byDte) {
     const pm = new Map();
     for (const x of g.p) pm.set(x.k, x);
-    const pairs = [];
+    /* 平价校验要看的是「同一行权价上 C 和 P 是不是同一时刻、同一口径的价」，
+       而这个判据本身有量纲问题：C − P − (S − K) 在同一条链上必然同值，它等于
+       「合成远期 − 现货」，也就是这张表要报的基差。拿 0 当锚就是用基差去检验
+       基差，容差还得比基差小，永远自相矛盾。
+       2026-11-25 收盘实测：近月 dev 依次是 510050 −0.9%、510300 −1.4%、
+       510500 −1.6%、588000 −1.2%、588080 −0.9%——全是真实基差，按 0 锚
+       的容差（近月 ≈1%）把它们连同平值那三档一起判掉，atmWindow 只能退到
+       深度实值档：七只 ETF 的「近月」因此落在比现价高 27%~74% 的行权价上，
+       510500 只剩一档 K=10.31（现货 5.92）。数是有，全是编的。
+       这也正是 11-20 链 A 报 +0.104、链 B 报 −0.135 的原因：链 B 没有这道
+       校验，用的是真平值档。
+       所以锚改成链内中位数——错配一档会让该档 dev 整整跳出一个档距，偏离
+       中位数「半个档距以上」才判掉；真基差是整条链共有的，被中位数吸收。 */
+    const cand = [];
     for (const x of g.c) {
       const p = pm.get(x.k);
       if (!p) continue;
-      // 看涨看跌平价：C − P ≈ S − K（远期要加上折现项，所以容差随 dte 放大）。
-      // 买卖价差最多千分之几，超出这个范围的偏差只有一个解释——两边不是同一
-      // 口径/同一天的价，或者行权价错配了一档。实测：东财只给滞后价时，
-      // 510500 会算出 −4% 的近月基差（一档 0.25 元 ≈ 3.8%），一眼假。
-      const tol = x.k * (0.004 + 0.08 * x.dte / 365);
-      if (Math.abs((x.px - p.px) - (S - x.k)) > tol) continue;
-      pairs.push({ k: x.k, c: x.px, p: p.px });
+      cand.push({ k: x.k, c: x.px, p: p.px, d: (x.px - p.px) - (S - x.k) });
+    }
+    if (!cand.length) continue;
+    const anchor = median(cand.map((r) => r.d));
+    const ks = [...new Set(cand.map((r) => r.k))].sort((a, b) => a - b);
+    const gaps = [];
+    for (let i = 1; i < ks.length; i++) gaps.push(ks[i] - ks[i - 1]);
+    // 档距的一半；一条链只有一个行权价时拿不到档距，退回现货的 2%
+    const step = gaps.length ? median(gaps) : 0;
+    const band = step > 0 ? step / 2 : S * 0.02;
+    const pairs = [];
+    for (const r of cand) {
+      if (Math.abs(r.d - anchor) > band) continue;
+      pairs.push({ k: r.k, c: r.c, p: r.p });
     }
     if (!pairs.length) continue;
     const near = atmWindow(pairs, S);
