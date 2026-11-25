@@ -21,8 +21,9 @@
  *             + 新浪 CON_OP 快照（转发的交易所行情，一条请求拿一档）
  *
  * 口径与 etfopt_backfill.mjs 的 one() 逐字一致：只取当月合约、ATM 附近 ≤5 档、
- * median(K + C − P)。dte 用「到期日 − 今天 + 1」，和东财 f162 的算法对齐，
- * 这样新旧两条路的年化数能接上。
+ * median(K + C − P)。dte 用「到期日 − 数据日期 + 1」，注意基准是**这条数据的
+ * 日期**而不是脚本运行时刻：本脚本常在次日凌晨执行，抓到的其实是上一交易日的
+ * 收盘价，用运行日期会让 dte 少一天。
  *
  * 用法：
  *   node pipeline/etfopt_eod.mjs           # 收盘后跑，写 dist/etfopt_eod.json
@@ -283,9 +284,13 @@ async function main() {
   const wantYm = ((mth === 1 ? y + 1 : y) % 100) * 100 + mth;
   /* 到期日的年份跟合约走，不是跟今天走：1 月看的是明年 1 月的第四个周三 */
   const exp = fourthWed(mth === 1 ? y + 1 : y, mth);
-  const dte = daysBetween(TODAY, new Date(exp).toISOString().slice(0, 10)) + 1;
-  console.log('  当月 ' + mth + ' 月  到期日 ' + new Date(exp).toISOString().slice(0, 10)
-    + '  dte ' + dte);
+  const EXP = new Date(exp).toISOString().slice(0, 10);
+  /* dte 按「这条数据的日期」算，不按「此刻」算。
+     本脚本常在次日凌晨执行（16:35 那批被 GitHub 拖到 04:xx），抓到的其实是上一
+     交易日的收盘价，日历已经翻页。用 TODAY 会让 dte 永远少一天：2026-11-24 沪市
+     5 只被记成 dte=1（真值 2），同一天与深市出现两个答案。 */
+  const dteOf = (d) => daysBetween(d, EXP) + 1;
+  console.log('  当月 ' + mth + ' 月  到期日 ' + EXP + '  dte(今天) ' + dteOf(TODAY));
 
   /* 非收盘时段（早盘、盘中、午休）只接受「日期早于今天」的快照：
      那是上一交易日的收盘价，可以收；当天的盘中价一律不收。 */
@@ -306,11 +311,12 @@ async function main() {
         const x = String(n);
         return x.slice(0, 4) + '-' + x.slice(4, 6) + '-' + x.slice(6, 8);
       })(r.date);
-      const ann = dte >= 3 ? +(s.bp * 365 / dte).toFixed(2) : null;
+      const dteD = dteOf(d);
+      const ann = dteD >= 3 ? +(s.bp * 365 / dteD).toFixed(2) : null;
       const ok = okToPut(d);
       if (ok) {
         put(d, code, {
-          S: +r.S.toFixed(4), mth, dte, n: s.n,
+          S: +r.S.toFixed(4), mth, dte: dteD, n: s.n,
           bp: +s.bp.toFixed(3), ann, src: FORCE ? 'sse-intraday' : (closed ? 'sse' : 'sse-prev'),
         });
       }
@@ -330,9 +336,11 @@ async function main() {
     const list = await szList();
     console.log('  深交所合约清单 ' + list.length + ' 条');
     /* 只留当月到期的（xqrq 的年月等于当月）。
-       注意这里要比的是「合约年月」wantYm，不是「今年」：12 月底跑的时候当月还是
-       12 月，可到了 1 月，当月合约的到期日在**明年**，拿 y 比会一条都筛不出来。 */
-    const wantY = Math.floor(wantYm / 100), wantM = wantYm % 100;
+       注意这里要比的是「合约年月」，不是「今年」：12 月底跑的时候当月还是
+       12 月，可到了 1 月，当月合约的到期日在**明年**，拿 y 比会一条都筛不出来。
+       也不能拿 wantYm（YYMM，如 2611）去拆年——拆出来是 26，与 xqrq 的 2026
+       永远不等，深市会一条都筛不到（2026-11-24 前一直如此，深市快照从没落过盘）。 */
+    const wantY = mth === 1 ? y + 1 : y, wantM = mth;
     szItems = list.filter((x) => {
       const d = String(x.xqrq || '');
       return +d.slice(0, 4) === wantY && +d.slice(5, 7) === wantM;
@@ -359,9 +367,14 @@ async function main() {
     console.log('  深市当月合约 ' + codes.length + ' 条');
     const q = await sinaCodes(codes);
     const grp = new Map();      // 标的 -> Map(k -> {C,P})
+    /* 快照里的时间戳就是这条数据的时刻，日期部分拿来当「数据日期」。
+       深市原来用 TODAY 落盘：凌晨那批 closed=false、TODAY 又已是新的一天，
+       okToPut(TODAY) 恒假 —— 所以深市快照一次都没写进去过，11-24 只有沪市 5 只。 */
+    let szDate = '';
     for (const x of szItems) {
       const z = q.get(x.code);
       if (!z || !(z.last >= 0)) continue;
+      if (!szDate && /^\d{4}-\d{2}-\d{2}/.test(z.ts || '')) szDate = z.ts.slice(0, 10);
       const ul = z.ul || '';
       if (!SZ.includes(ul)) continue;
       const k = x.k;
@@ -377,16 +390,18 @@ async function main() {
         if (!(S > 0)) { console.log('  ' + ul + ' 标的价取不到'); continue; }
         const s = synth(byK, S);
         if (s.err) { console.log('  ' + ul + ' ' + s.err); continue; }
-        const ann = dte >= 3 ? +(s.bp * 365 / dte).toFixed(2) : null;
-        const ok = okToPut(TODAY);
+        const d = /^\d{4}-\d{2}-\d{2}$/.test(szDate) ? szDate : TODAY;
+        const dteD = dteOf(d);
+        const ann = dteD >= 3 ? +(s.bp * 365 / dteD).toFixed(2) : null;
+        const ok = okToPut(d);
         if (ok) {
-          put(TODAY, ul, {
-            S: +S.toFixed(4), mth, dte, n: s.n,
+          put(d, ul, {
+            S: +S.toFixed(4), mth, dte: dteD, n: s.n,
             bp: +s.bp.toFixed(3), ann, src: (FORCE ? szSrc + '-intraday' : (closed ? szSrc : szSrc + '-prev')),
           });
         }
         console.log('  ' + ul + '     S=' + S.toFixed(3) + '  ' + s.n + ' 档  bp='
-          + s.bp.toFixed(3) + '%' + (ok ? '' : '  （盘中，不落盘）'));
+          + s.bp.toFixed(3) + '%  ' + d + (ok ? '' : '  （盘中，不落盘）'));
       } catch (e) {
         console.log('  ' + ul + ' 失败：' + e.message);
       }
