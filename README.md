@@ -855,6 +855,18 @@ XML 还没生成。若直接拿它当「今天」，末尾那天必然 404 跳�
 `spotMap` 每行都会 push 进 `hist.spot`，多 9 列 ETF 之后，只要某天某个标的停牌，
 那列长度就和 `hist.d` 对不上，「等长」校验会整个炸掉。
 - **一天都没落地时会 `exit 2` 不写盘**：宁可这条链报红，也不要拿空表盖掉已攒的 200 多天。
+
+**2026-11-25 起，ETF 期权不再往 `fut_daily.json` 的 `opt` 里记历史**。原因是同一件事被
+两套口径各算了一遍：`opt[ETF]` 这边取「dte 最小的当月档、不做任何平价校验」，Worker 实时
+那条链则有自己的筛档逻辑，11-20 就出现过 588080 一边 −0.135、一边 +0.104。而
+`opt[ETF]` 从来没有读者——前端的 ETF 期权曲线走 `etfopt_hist.json`（`renderFutHistEtf`）。
+所以：ETF 行只进当天的 `day.opt`（`fut_last` 的 Δ 基准靠它），历史数组只留 `IO/MO/HO`，
+旧文件里的 9 个键由 `gen_fut_daily.mjs` 在装载后直接 `delete`。要改 ETF 期权历史口径，
+只改 `etfopt_backfill.mjs` 一处。
+
+配套的还有一个一次性开关：`fut_last.json` 里的 `bpcMute`（品种代码数组）。口径变更那天，
+上一交易日的 bp 是旧口径算的，拿它当 Δ 基准会把「换算法」记成一天的假跳变——名单里的
+品种当天 Δ 直接空着，次日 pipeline 重生成快照时字段自己消失，不需要谁记得回来删。
 - data 分支是 force push，所以生成前要先 `git fetch --depth=1 origin data` 把上一版
   取回来再 upsert，否则每天发布出去的都只有当天一天。
 - **不在 Worker 里解析 539KB 的 index.xml**：免费版 10ms CPU，必超。

@@ -623,6 +623,17 @@ async function main() {
   }
   const have = new Set(hist.d || []);
 
+  /* ETF 那 9 个标的的旧期权历史在这里一次性清掉（2026-11-25）：页面上的 ETF 期权
+     曲线走 etfopt_hist.json（另一条链，见 page.js 的 renderFutHistEtf），
+     FUTHIST.opt[ETF代码] 从来没有读者；而这里的 ETF 值是「dte 最小的当月档、不做
+     平价校验」，和 worker 那条实时链各算各的——两套口径养在一个文件里，2026-11-20
+     就出现过 588080 一边 −0.135、一边 +0.104。ETF 行仍旧进 day.opt（fut_last 的
+     Δ 基准靠它），只是不再进历史数组。 */
+  for (const k of ETF_CODES) if (hist.opt && hist.opt[k]) {
+    delete hist.opt[k];
+    log(`  ${k} 的旧期权历史已清掉（ETF 期权历史统一由 etfopt_hist 负责）`);
+  }
+
   /* 「今天」先探一下再定。中金所的日行情是收盘后才归档的静态文件，而 GitHub 的
      定时任务常被排到次日凌晨（实测 00:10~03:00）。那时 shToday() 已经是新的一天、
      文件还不存在：若直接拿它收尾，末尾那天必然 404 跳过，ETF 期权那段
@@ -759,8 +770,13 @@ async function main() {
       f.cmp.push(cmValue(day.fut.filter((y) => y.p === p)));
       f.oi.push(x.oi == null ? null : x.oi);
     }
-    // ETF 期权老日期没有数据，接口按同一批键推 null 占位，数组长度才和 hist.d 对得上
-    for (const p of OPT_PRODS.concat(ETF_CODES)) {
+    /* 只给 IO/MO/HO 记历史。ETF 那 9 个标的从 2026-11-25 起不写这里：
+       页面上的 ETF 期权历史曲线走的是 etfopt_hist.json（另一条链，见 page.js 的
+       renderFutHistEtf），FUTHIST.opt[ETF代码] 从来没有读者；而这里的 ETF 值取的是
+       dte 最小的当月档、又没有任何平价校验，跟 worker 那条实时链各算各的——两套
+       口径养在一个文件里，2026-11-20 就出现过 588080 一边 −0.135、一边 +0.104。
+       ETF 行仍然要进 day.opt（fut_last 的 Δ 基准靠它），只是不进历史数组。 */
+    for (const p of OPT_PRODS) {
       let o = hist.opt[p];
       if (!o) {
         o = hist.opt[p] = { b: [], bp: [], ann: [], cmp: [], pcr: [] };

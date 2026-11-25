@@ -6081,6 +6081,11 @@ function optBaseFromLast(last, td) {
       }
     }
   }
+  /* bpcMute：口径变更日的一次性开关。2026-11-25 把平价校验从「锚 0」改成「锚链内
+     中位数」，昨日快照里的 bp 是旧口径算的（普遍低估 0.2~1.0 个百分点），拿它当 Δ
+     基准会把这次口径切换记成一天的假跳变。文件里写一张名单，这天这些品种的 Δ 就
+     空着；次日 pipeline 重生成快照，字段自己消失，不需要谁记得回来删。 */
+  if (Array.isArray(last.bpcMute)) for (const p of last.bpcMute) delete byCode[String(p)];
   return { byKey, byCode, baseTd };
 }
 
