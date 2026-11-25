@@ -6055,9 +6055,10 @@ function optBaseFromLast(last, td) {
     for (const o of last.opt) {
       if (o.bp == null) continue;
       byKey[o.p + '|' + o.m] = o.bp;
-      (byCode[o.p] = byCode[o.p] || []).push(o.bp);
+      (byCode[o.p] = byCode[o.p] || []).push({ d: o.dte, bp: o.bp });
     }
-    // day.opt 是排好序写的（同品种按 dte 升序），push 顺序即档位顺序
+    // day.opt 是排好序写的（同品种按 dte 升序）。ETF 那几档的 m 是 D<剩余天数>，
+    // 所以 byCode 要连 dte 一起存，Δ 才能按到期月就近匹配而不是按序号对
   } else if (last.optPrev && typeof last.optPrev === 'object') {
     baseTd = last.optPrevTd || null;
     for (const p of Object.keys(last.optPrev)) {
@@ -6067,7 +6068,9 @@ function optBaseFromLast(last, td) {
       for (const m of Object.keys(g)) {
         if (g[m] == null) continue;
         byKey[p + '|' + m] = g[m];
-        byCode[p].push(g[m]);
+        // 键形如 D2/D30，数字就是那天的剩余自然日
+        const dv = +String(m).replace(/^D/, '');
+        byCode[p].push({ d: dv > 0 ? dv : null, bp: g[m] });
       }
     }
   }
@@ -6561,21 +6564,35 @@ async function fetchEtfSpotAny(secids) {
   return Object.keys(out).length ? out : null;
 }
 
-/** ETF 期权按「第几档」对齐 Δ 基准：档位按剩余天数排，今天 8 天、昨天 9 天，
- *  键对不上但合约没变，所以只能按顺序对。档数不一致就不给——某一档今天没配出来
- *  时按索引对会整体错位，宁可空着。 */
+/** ETF 期权按「到期月」对齐 Δ 基准。
+ *
+ *  不能按第几档对：到期日当天，有的标的还能取到当月合约（dte=0）、有的已经只剩
+ *  下个月，档位序号就整体错开一格，减出来是「12 月 − 11 月」这种跨月差。
+ *  改成按剩余天数就近匹配——同一个合约隔一个交易日 dte 只差 1~3 天（周末），
+ *  超过 4 天必然是另一个到期月，等距两档也判不了，这两种情况都空着。 */
 function applyEtfBpc(months, code, optB) {
   const base = optB && optB.byCode && optB.byCode[code];
-  if (!base || base.length !== months.length) return;
-  for (let k = 0; k < months.length; k++) {
-    months[k].bpc = (base[k] != null && months[k].bp != null)
-      ? +(months[k].bp - base[k]).toFixed(3) : null;
+  if (!base || !base.length) return;
+  for (const m of months) {
+    let best = null, bestD = Infinity, tie = false;
+    for (const b of base) {
+      if (!b || b.bp == null || !(b.d >= 1)) continue;
+      const dd = Math.abs(b.d - m.dte);
+      if (dd < bestD) { bestD = dd; best = b; tie = false; }
+      else if (dd === bestD) tie = true;
+    }
+    m.bpc = (best && !tie && bestD <= 4 && m.bp != null)
+      ? +(m.bp - best.bp).toFixed(3) : null;
   }
 }
 
 function calcEtfMonths(rows, S) {
   const byDte = new Map();
   for (const r of rows) {
+    /* dte=0 是「今天到期」那一档，收盘后它已经摘牌，盘中时间价值也归零——基差必然
+       贴着 0，年化按定义不给（dte<3），摆成「近月」只会让这张表的近月一栏有的标
+       的是 11 月、有的是 12 月。直接不进候选，全表统一从下一个到期月开始看。 */
+    if (!(r.dte >= 1)) continue;
     let g = byDte.get(r.dte);
     if (!g) { g = { c: [], p: [] }; byDte.set(r.dte, g); }
     (r.side === 'C' ? g.c : g.p).push(r);

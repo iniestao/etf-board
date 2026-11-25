@@ -76,7 +76,9 @@ function frontMonth(dstr) {
   const t = Date.parse(dstr + 'T00:00:00Z');
   const dt = new Date(t);
   const y = dt.getUTCFullYear(), m = dt.getUTCMonth() + 1;
-  if (t <= fourthWed(y, m)) return m;
+  /* 到期日当天就归下月（严格小于）：那天合约已摘牌，快照该记下一个月的合约，
+     否则与页面实时那条（worker 从当天起就切月）对不上。 */
+  if (t < fourthWed(y, m)) return m;
   return m === 12 ? 1 : m + 1;
 }
 

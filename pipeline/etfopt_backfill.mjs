@@ -241,7 +241,10 @@ function frontMonth(dstr) {
   const t = Date.parse(dstr + 'T00:00:00Z');
   const dt = new Date(t);
   const y = dt.getUTCFullYear(), m = dt.getUTCMonth() + 1;
-  if (t <= fourthWed(y, m)) return m;
+  /* 到期日**当天**就归下月，用严格小于。原来的 <= 会让 11-25 这天仍记 11 月合约：
+     那天它已经摘牌、时间价值归零，基差贴着 0，而页面（worker 实时那条）从当天
+     起就已经切到 12 月，两边同一天两个月份，看图会以为数据错位。 */
+  if (t < fourthWed(y, m)) return m;
   return m === 12 ? 1 : m + 1;
 }
 
