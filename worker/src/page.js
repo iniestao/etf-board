@@ -1310,11 +1310,11 @@ background:var(--line);vertical-align:middle;margin-right:5px}
    整列右对齐会让条形左右浮动，扫一眼像是错位。 */
 .indtb .pv{display:inline-block;min-width:38px;text-align:right;font-weight:400}
 .indbar i{display:block;height:100%;background:var(--txt3)}
-/* 情绪清单的板块：行业跟在简称下面一行小字，概念单独一列放标签。
-   行业是 EM2016 三级（「专用计算机设备」），长度不固定，压在简称下面比单开一列
-   省宽度；概念最多 3 个，超出的不显示（后端就只取 3 个，不在这里截）。 */
-.indtb td.nm i.hy{display:block;color:var(--txt3);font-size:var(--fs-2xs);font-weight:400;
-margin-top:1px;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 情绪清单的板块：行业与概念各占一列，都是左对齐的文本/标签。
+   行业是 EM2016 三级（「专用计算机设备」）长度不固定，给个上限 + 省略号，
+   不让长名字把概念列挤到只剩一个字。 */
+.indtb td.hy{text-align:left;color:var(--txt3);max-width:112px;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .indtb td.cn{text-align:left;max-width:210px;white-space:normal;line-height:1.6;color:var(--txt3)}
 .indtb .tg{display:inline-block;padding:0 4px;margin:1px 3px 1px 0;border:1px solid var(--line);
 border-radius:3px;color:var(--txt2);font-size:var(--fs-2xs);white-space:nowrap}
@@ -1328,22 +1328,28 @@ padding-top:7px;border-top:1px solid var(--line)}
 #indMin svg{display:block;width:100%;height:auto}
 #indBack{margin:0 0 8px}
 @media(max-width:560px){
-  /* 窄屏藏「封单」这一列（按 class 而不是 nth-child：跌停表没有封单列，
-     按序号藏会把「板块」藏掉）。概念列同时收窄，行业小字留在简称下面。 */
-  #indMask .seal{display:none}
+  /* 窄屏藏「封单」「成交额」两列（按 class 而不是 nth-child：跌停表本来就没有
+     封单列，按序号藏会把「板块」藏掉）。391px 实测：七列全放会溢出 43px，
+     行业列挤到「其他专用…」、涨跌幅连符号都看不见；砍掉成交额刚好放得下，
+     而成交额在手机上本来就只是扫一眼的量级。概念列同时收窄，行业只留一行。 */
+  #indMask .seal,#indMask .amt{display:none}
   .indtb th,.indtb td{padding:4px 3px}
   /* 窄屏概念竖排：标签是 nowrap 的，三个并排会把表格撑到屏幕外（实测 390px
      下「拼多多概念/人工智能/大数据」整列溢出，连表头都被裁成「板」）。 */
   /* 表格 width:100% 不会自己缩列，各列最小内容宽度之和超过容器就直接溢出。
-     390px 下五个列必须逐列封顶：简称 108 + 涨跌 56 + 连板 32 + 成交额 56 + 板块 80。 */
-  .indtb td.nm{max-width:108px;overflow:hidden}
+     390px 下六列（封单已藏）逐列封顶：简称 92 + 涨跌 48 + 连板 28 + 成交额 46
+     + 行业 58 + 板块 72 ≈ 344，加 padding 42 正好卡进一屏。 */
+  .indtb td.nm{max-width:100px;overflow:hidden}
   .indtb td.nm .cd{margin-left:3px}
+  /* 行业列在窄屏只给一行，超出的省略：三级行业名最长的有 8 个字，
+     10px 下 58px 装得下 5 个，剩下的靠点开个股卡看全名。 */
+  .indtb td.hy{max-width:70px;font-size:10px;line-height:1.5}
   /* 窄屏只留前两个概念，字号降到 10px 且不折行：
-     5 个字 10px ≈ 50px，配 84px 的列宽正好一行一个，折成「拼多多/概念」反而更难读。
+     5 个字 10px ≈ 50px，配 72px 的列宽正好一行一个，折成「拼多多/概念」反而更难读。
      第三个概念不显示——手机上一屏就那么宽，多塞一个只会把行高再顶高一截。 */
-  .indtb td.cn{max-width:84px;line-height:1.5}
+  .indtb td.cn{max-width:72px;line-height:1.5}
   .indtb td.cn .tg:nth-child(n+3){display:none}
-  .indtb .tg{display:block;padding:0 3px;margin:0 0 2px;max-width:92px;font-size:10px;
+  .indtb .tg{display:block;padding:0 3px;margin:0 0 2px;max-width:78px;font-size:10px;
   letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 }
 #ioMask.on{display:flex}
@@ -10067,7 +10073,7 @@ var IND = null;          // 当前打开的那个行业（服务端原样返回�
 /* 情绪名单复用同一个弹层：SENTI_OPEN 是 'zt'/'zb'/'dt'，SENTI_LIST 是那一份
    items。两者不会同时非空——indClose 会一起清掉，否则关掉行业再点涨停名单，
    委托会按 IND 去找票，找到一个不存在的代码，表现为「点了没反应」。 */
-var SENTI_LIST = null, SENTI_OPEN = null, SENTI_CN_D = '';
+var SENTI_LIST = null, SENTI_OPEN = null;
 
 function indOpen(name){
   var m = document.getElementById('indMask');
@@ -10194,10 +10200,8 @@ var SENTI_TITLE = { zt: '今日涨停', zb: '今日炸板', dt: '今日跌停' }
 
 /* 清单里的板块。行业来自 worker 的 EM2016 三级映射（零请求，5223 只全覆盖），
    概念来自收盘后生成的 stk_concept.json；当天新上榜、表里还没有的票，后端会
-   现场补查，查不到就是空——这里只显示「—」，不拿行业去冒充概念。 */
-function sntHy(x){
-  return x && x.hy ? '<i class="hy">' + esc(x.hy) + '</i>' : '';
-}
+   现场补查，查不到就是空——这里只显示「—」，不拿行业去冒充概念。
+   行业单开一列而不是压在简称下面：压在下面时行高翻倍，一屏少看三只票。 */
 function sntCn(x){
   var a = (x && x.cn) || [];
   if (!a.length) return '—';
@@ -10221,7 +10225,6 @@ function sentiOpen(kind){
     .then(function(j){
       if (!j || !j.ok) throw new Error((j && j.error) || '读取失败');
       SENTI_LIST = (j.list && j.list.items) || [];
-      SENTI_CN_D = j.cd || '';
       sentiRender();
     })
     .catch(function(e){
@@ -10241,42 +10244,35 @@ function sentiRender(){
   var h, i, x;
   if (kind === 'dt'){
     h = '<div class="indwrap"><table class="indtb"><thead><tr>'
-      + '<th>简称</th><th>涨跌幅</th><th>成交额（亿）</th><th>板块</th></tr></thead><tbody>';
+      + '<th>简称</th><th>涨跌幅</th><th class="amt">成交额（亿）</th><th>行业</th><th>板块</th></tr></thead><tbody>';
     for (i = 0; i < arr.length; i++){
       x = arr[i];
       h += '<tr data-stk="' + x.c + '"><td class="nm">' + esc(x.n || x.c)
-        + '<span class="cd">' + x.c + '</span>' + sntHy(x)
+        + '<span class="cd">' + x.c + '</span>'
         + '</td>'
         + '<td class="' + cc(x.p) + '">' + fpc(x.p) + '</td>'
-        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td class="amt">' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td class="hy">' + (x.hy ? esc(x.hy) : '—') + '</td>'
         + '<td class="cn">' + sntCn(x) + '</td></tr>';
     }
   } else {
     h = '<div class="indwrap"><table class="indtb"><thead><tr>'
-      + '<th>简称</th><th>涨跌幅</th><th>连板</th><th class="seal">封单（亿）</th><th>成交额（亿）</th><th>板块</th>'
+      + '<th>简称</th><th>涨跌幅</th><th>连板</th><th class="seal">封单（亿）</th><th class="amt">成交额（亿）</th><th>行业</th><th>板块</th>'
       + '</tr></thead><tbody>';
     for (i = 0; i < arr.length; i++){
       x = arr[i];
       h += '<tr data-stk="' + x.c + '"><td class="nm">' + esc(x.n || x.c)
-        + '<span class="cd">' + x.c + '</span>' + sntHy(x)
+        + '<span class="cd">' + x.c + '</span>'
         + '</td>'
         + '<td class="' + cc(x.p) + '">' + fpc(x.p) + '</td>'
         + '<td>' + (x.lb ? x.lb + ' 板' : '—') + '</td>'
         + '<td class="seal">' + (x.seal > 0 ? (x.seal / 1e8).toFixed(2) : '—') + '</td>'
-        + '<td>' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td class="amt">' + (x.a > 0 ? (x.a / 1e8).toFixed(2) : '—') + '</td>'
+        + '<td class="hy">' + (x.hy ? esc(x.hy) : '—') + '</td>'
         + '<td class="cn">' + sntCn(x) + '</td></tr>';
     }
   }
-  h += '</tbody></table></div><p class="indnote">'
-    + (kind === 'zt'
-      ? '按连板高度降序，同高度再按封单额降序。封单＝买一价 × 买一量：2 亿以上通常是真封，几十万的随时会开。'
-      : kind === 'zb'
-        ? '按成交额降序。炸板数盘中会随回封减少，不是只增不减，别拿它当累计值。'
-        : '按成交额降序。跌停家数盘中系统性偏低（14:00 中位才 7 家），不宜与收盘值直接比。')
-    + '　板块＝<b>行业</b>（EM2016 三级，一只票一个）＋<b>概念</b>（东财精准题材，取前 3，'
-    + '已剔掉融资融券/沪深股通/地域这类非题材标签）；'
-    + (SENTI_CN_D ? '概念为 ' + esc(SENTI_CN_D) + ' 收盘快照，' : '')
-    + '当日新上榜的票次日补上。　点任意一行看这只票的分时。</p>';
+  h += '</tbody></table></div>';
   var body = document.getElementById('indBody');
   body.innerHTML = h;
   body.scrollTop = 0;
