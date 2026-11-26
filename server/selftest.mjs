@@ -1234,10 +1234,15 @@ async function runContracts(base, pass) {
     } else ok('/api/senti?list=' + kind + ' ' + items.length + ' 条，与卡片一致');
     const noPx = items.filter((x) => !x.c || !(x.px > 0)).length;
     if (noPx) bad('/api/senti?list=' + kind + ' 有 ' + noPx + ' 条缺代码或价格，点开是空卡');
-    const sortKey = kind === 'zt' ? 'seal' : 'a';
-    for (let i = 1; i < Math.min(items.length, 40); i++) {
-      if ((items[i][sortKey] || 0) > (items[i - 1][sortKey] || 0) + 1e-9) {
-        bad('/api/senti?list=' + kind + ' 没按 ' + sortKey + ' 降序（第 ' + i + ' 条）');
+    /* 涨停是复合键：先连板高度降序、同高度再封单额降序；炸板/跌停只看成交额。 */
+    const keyOf = kind === 'zt'
+      ? (x) => [x.lb || 0, x.seal || 0]
+      : (x) => [0, x.a || 0];
+    for (let i = 1; i < items.length; i++) {
+      const a = keyOf(items[i - 1]), b = keyOf(items[i]);
+      if (b[0] > a[0] || (b[0] === a[0] && b[1] > a[1] + 1e-9)) {
+        bad('/api/senti?list=' + kind + ' 排序不对（第 ' + i + ' 条：'
+          + (kind === 'zt' ? '应先连板再封单' : '应按成交额') + '）');
         break;
       }
     }

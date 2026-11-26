@@ -1054,7 +1054,7 @@ async function fetchSoxEm() {
   const r = await fetch('https://push2delay.eastmoney.com/api/qt/stock/get?fltt=2&invt=2'
     + '&secid=' + SOX_SECID + '&fields=f43,f58,f60,f170,f86', {
     headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
-    signal: AbortSignal.timeout(6000),
+    signal: AbortSignal.timeout(3000),
   });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const j = await r.json();
@@ -1091,7 +1091,7 @@ async function fetchSoxSina() {
 /* Nasdaq 官方报价。指数页的 primaryData 里 lastSalePrice / percentageChange /
    lastTradeTimestamp 一次给全，字段名是死的，不会随页面改版变。
    它和另外两家同一个上游（费城交易所），9919.72 这种数不会出现口径差。 */
-async function fetchSoxNasdaq() {
+async function fetchSoxNasdaqOnce() {
   const r = await fetch('https://api.nasdaq.com/api/quote/SOX/info?assetclass=index', {
     headers: { 'User-Agent': UA, Accept: 'application/json' },
     signal: AbortSignal.timeout(7000),
@@ -1106,18 +1106,42 @@ async function fetchSoxNasdaq() {
   return { s: 'SOX', n: '费城半导体', p, chg, d: usDateOfText(d.lastTradeTimestamp) };
 }
 
-/* 三档串行，谁先给出有效值就用谁。串行而不是并行，是因为这张卡每次刷新都会
-   打上游（没有边缘缓存），正常情况第一档 1 秒内就回；并行等于每次多打两次
-   没人看的请求，把限流养得更严重。 */
+/* 一次抖动就重试一次。这一档是数据中心出口唯一稳定的源（东财对 251.SOX 基本
+   必空、新浪对机房 IP 常年 403），而一次失败会让卡片上的费半格消失整整 55 秒
+   ——响应是带 Cache-Control 缓存的。多打一个请求换「不再整格消失」很划算。 */
+async function fetchSoxNasdaq(tries = 2) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return await fetchSoxNasdaqOnce(); } catch (e) {
+      last = e;
+      if (i + 1 < tries) await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  throw last;
+}
+
+/* 东财和 Nasdaq 同时发，谁先给出有效值用谁；两家都挂才试新浪。
+   原来的串行版本看起来更省请求，其实一点没省：东财对数据中心出口几乎每次都
+   立刻断（实测 0.09 秒空回复），所以每轮本来也会打到 Nasdaq。串行唯一的后果是
+   Nasdaq 那一档的耗时被东财白白垫高，遇到它自己抖一下就整格消失。 */
 async function fetchSox() {
   const errs = [];
-  for (const [name, fn] of [['em', fetchSoxEm], ['nasdaq', fetchSoxNasdaq], ['sina', fetchSoxSina]]) {
-    try {
-      const v = await fn();
-      if (v && v.p > 0) return { ...v, src: name };
-    } catch (e) {
-      errs.push(name + ':' + String((e && e.message) || e).slice(0, 24));
-    }
+  const race = (name, p) => p.then((v) => {
+    if (!(v && v.p > 0)) throw new Error('空值');
+    return { ...v, src: name };
+  }).catch((e) => {
+    errs.push(name + ':' + String((e && e.message) || e).slice(0, 24));
+    throw e;
+  });
+
+  try {
+    return await Promise.any([race('em', fetchSoxEm()), race('nasdaq', fetchSoxNasdaq())]);
+  } catch (e) { /* 两家都失败，往下走新浪 */ }
+  try {
+    const v = await fetchSoxSina();
+    if (v && v.p > 0) return { ...v, src: 'sina' };
+  } catch (e) {
+    errs.push('sina:' + String((e && e.message) || e).slice(0, 24));
   }
   throw new Error('费半三源均不可用（' + errs.join(' / ') + '）');
 }
@@ -3609,8 +3633,9 @@ async function serveSenti(env, ctx, url) {
 
   if (listKind && agg.list) {
     const arr = (agg.list[listKind] || []).slice();
-    // 涨停按封单额降序：真封和虚封一眼分（2 亿封单和 20 万封单不是一件事）
-    if (listKind === 'zt') arr.sort((p, q) => q.seal - p.seal);
+    /* 涨停先按连板高度降序，同高度再按封单额降序：梯队是主线，封单只决定同梯队
+       里谁更硬。上一版只按封单排，一字板（封单大）会把 5 板的换手龙压到下面去。 */
+    if (listKind === 'zt') arr.sort((p, q) => (q.lb || 0) - (p.lb || 0) || q.seal - p.seal);
     else arr.sort((p, q) => q.a - p.a);
     /* 先切片再补板块：只会渲染前 200 行，没必要给后面的票查概念 */
     const items = arr.slice(0, 200);
