@@ -1315,11 +1315,17 @@ background:var(--line);vertical-align:middle;margin-right:5px}
 /* 情绪清单的板块：行业与概念各占一列，都是左对齐的文本/标签。
    行业是 EM2016 三级（「专用计算机设备」）长度不固定，给个上限 + 省略号，
    不让长名字把概念列挤到只剩一个字。 */
-.indtb td.hy{text-align:left;color:var(--txt3);max-width:112px;
+/* 这两列是「这只票是什么」的全部信息，扫清单时先看它们，比成交额更该被
+   一眼看到。原来的 --txt3 是给轴标签用的灰，放在七列的表格里等于没有，
+   所以都提到正文级 --txt1，概念再多一层淡底把标签块显出来。 */
+.indtb td.hy{text-align:left;color:var(--txt1);font-weight:500;max-width:126px;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.indtb td.cn{text-align:left;max-width:340px;white-space:normal;line-height:1.6;color:var(--txt3)}
-.indtb .tg{display:inline-block;padding:0 4px;margin:1px 3px 1px 0;border:1px solid var(--line);
-border-radius:3px;color:var(--txt2);font-size:var(--fs-2xs);white-space:nowrap}
+.indtb td.cn{text-align:left;max-width:340px;white-space:normal;line-height:1.7;color:var(--txt2)}
+.indtb .tg{display:inline-block;padding:1px 6px;margin:1px 3px 1px 0;border:1px solid var(--line2);
+border-radius:4px;background:var(--sunken);color:var(--txt1);font-weight:500;
+font-size:var(--fs-2xs);white-space:nowrap}
+/* 行 hover 的背景等于 --sunken，标签底会跟行底糊成一片，翻成白底保住块感 */
+.indtb tbody tr:hover .tg{background:var(--bg2)}
 .indnote{font-size:var(--fs-2xs);color:var(--txt3);line-height:1.65;margin:8px 0 0;
 padding-top:7px;border-top:1px solid var(--line)}
 /* 个股卡：从成分股列表点进来，同一层里换内容，不叠第二个弹窗 */
@@ -1347,11 +1353,14 @@ padding-top:7px;border-top:1px solid var(--line)}
      10px 下 58px 装得下 5 个，剩下的靠点开个股卡看全名。 */
   .indtb td.hy{max-width:70px;font-size:10px;line-height:1.5}
   /* 窄屏只留前两个概念，字号降到 10px 且不折行：
-     5 个字 10px ≈ 50px，配 72px 的列宽正好一行一个，折成「拼多多/概念」反而更难读。
-     第三个概念不显示——手机上一屏就那么宽，多塞一个只会把行高再顶高一截。 */
-  .indtb td.cn{max-width:72px;line-height:1.5}
+     5 个字 10px ≈ 50px，配 80px 的列宽（含 3px×2 内边距与边框）正好一行一个，
+     折成「拼多多/概念」反而更难读。第三个概念不显示——手机上一屏就那么宽，
+     多塞一个只会把行高再顶高一截。 */
+  .indtb td.cn{max-width:80px;line-height:1.5}
   .indtb td.cn .tg:nth-child(n+3){display:none}
-  .indtb .tg{display:block;padding:0 3px;margin:0 0 2px;max-width:78px;font-size:10px;
+  /* max-width 用 100%（不是定值）：加了内边距和边框后 78px 已经顶破 72px 的列宽，
+     标签会横着溢出去被裁成「医疗器械概…」。border-box 下 100% 正好等于列宽。 */
+  .indtb .tg{display:block;padding:0 3px;margin:0 0 2px;max-width:100%;font-size:10px;
   letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 }
 #ioMask.on{display:flex}
