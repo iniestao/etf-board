@@ -1285,7 +1285,9 @@ margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
 #indMask{position:fixed;inset:0;background:rgba(23,28,38,.42);z-index:82;display:none;
 align-items:center;justify-content:center;padding:18px}
 #indMask.on{display:flex}
-#indMask .iobox{max-width:640px;flex:0 1 640px}
+/* 比默认的 470 宽得多：这张表有七列，概念列要能并排放下三个标签。
+   640 那版一行放不全，三个标签折成两行，整表行高忽高忽低。 */
+#indMask .iobox{max-width:860px;flex:0 1 860px}
 .indhd{display:flex;gap:5px 15px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--txt3);
 padding-bottom:7px;margin-bottom:2px;border-bottom:1px solid var(--line)}
 .indhd b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
@@ -1315,7 +1317,7 @@ background:var(--line);vertical-align:middle;margin-right:5px}
    不让长名字把概念列挤到只剩一个字。 */
 .indtb td.hy{text-align:left;color:var(--txt3);max-width:112px;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.indtb td.cn{text-align:left;max-width:210px;white-space:normal;line-height:1.6;color:var(--txt3)}
+.indtb td.cn{text-align:left;max-width:340px;white-space:normal;line-height:1.6;color:var(--txt3)}
 .indtb .tg{display:inline-block;padding:0 4px;margin:1px 3px 1px 0;border:1px solid var(--line);
 border-radius:3px;color:var(--txt2);font-size:var(--fs-2xs);white-space:nowrap}
 .indnote{font-size:var(--fs-2xs);color:var(--txt3);line-height:1.65;margin:8px 0 0;
