@@ -125,25 +125,32 @@ async function writeState(obj) {
  * 2026-11-18 又发现漏了 sentiment 那两份：senti_hist.json 停在 11-13，
  * 而 worker/src/senti_hist.js 已经到 11-17。页面走 readAsset 先读 json，
  * 读到了就用它——于是内联那份新、运行时那份旧，谁也没报错。
+ *
+ * 2026-11-28 补三份：stk_concept / etf_base / etfopt_eod。它们本地停在 11-26，
+ * 而 data 分支上三份都已经是 11-27 —— 清单天天在刷、这三块一直冻在前一天，
+ * 页面上表现为「涨停清单有 27 号、行业/概念列和期权隐含分红还是 26 号」。
+ * 当时是手工重下覆盖的，根因就是这张表里没有它们，这次一并补齐。
  */
 const TOP_FILES = [
   'manifest.json', 'research.json', 'hist/events.json',
   'sec_daily.json', 'mkt_hist.json',
   'senti_hist.json', 'senti_base.json',
   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json',
+  'stk_concept.json', 'etf_base.json', 'etfopt_eod.json',
   'shares/last.json', 'shares/ix.json',
 ];
 
-async function pullTops(cdn, dist) {
+async function pullTops(cdn, raw, dist) {
   for (const f of TOP_FILES) {
+    const dst = path.join(dist, f);
     try {
-      const r = await fetch(cdn + '/' + f, { signal: AbortSignal.timeout(40000) });
-      if (r.ok) {
-        const dst = path.join(dist, f);
-        await fsp.mkdir(path.dirname(dst), { recursive: true });
-        await fsp.writeFile(dst, Buffer.from(await r.arrayBuffer()));
-      }
-    } catch { /* 拿不到就保留旧的 */ }
+      /* 单走 jsDelivr 不够：2026-11-28 实测 stk_concept.json / etf_base.json
+         在 @sha 路径上直接 403（etfopt_eod 同路径 200），而 raw 上三份都是最新的。
+         403 又被 try 静默吞掉，症状就是「同步说已是最新，本地这三份还停在昨天」。
+         加 raw 兜底：CDN 拿不到就退回 raw.githubusercontent，两路都失败才保留旧文件。 */
+      await fsp.mkdir(path.dirname(dst), { recursive: true });
+      await fetchOne([cdn + '/' + f, raw + '/' + f], dst);
+    } catch { /* 两路都拿不到就保留旧的 */ }
   }
 }
 
@@ -174,7 +181,14 @@ async function pullShares(cdn, raw, dist, codes, conc, log) {
     [cdn + '/shares/' + code + '.json', raw + '/shares/' + code + '.json'],
     path.join(dir, code + '.json'),
   ), () => {});
-  if (full && !r.fail.length) await fsp.writeFile(stampF, day).catch(() => {});
+  if (full && (r.fail.length === 0 || r.fail.length <= Math.max(8, Math.round(need.length * 0.02)))) {
+    /* 戳不能要求「零失败」：511xxx 那 24 只货币/债券 ETF 上游本来就不发份额文件
+       （raw 直接 404），只要有一只永久缺失，戳就永远写不下去 —— 于是每天全量重下
+       1744 个，白跑三分钟，日志里也天天挂一行「24 个没拉到」。
+       真正需要重来的是「大面积失败」（网络/CDN 抽风），那才不写戳。
+       写戳后 full=false，need 只剩本地真缺的那几只，重试成本可以忽略。 */
+    await fsp.writeFile(stampF, day).catch(() => {});
+  }
   if (r.fail.length) log('  ! ' + r.fail.length + ' 个份额文件没拉到（保留本地旧的）');
   return need.length;
 }
@@ -189,7 +203,14 @@ async function fetchOne(urls, dst) {
           headers: { 'user-agent': 'etf-board-sync' },
           signal: AbortSignal.timeout(40000),
         });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
+        if (!r.ok) {
+          const e = new Error('HTTP ' + r.status);
+          /* 4xx 是「这个文件本来就没有」，重试三次、退避两次纯属浪费：
+             511xxx 那 24 只每天固定 404，按老逻辑每个走 2 路 × 3 次 + 退避，
+             一次同步白等 90 秒。5xx / 超时才是真该重试的。 */
+          if (r.status >= 400 && r.status < 500) e.fatal = true;
+          throw e;
+        }
         const buf = Buffer.from(await r.arrayBuffer());
         if (buf.length < 32) throw new Error('内容过短(' + buf.length + 'B)');
         const tmp = dst + '.' + process.pid + '.tmp';
@@ -198,6 +219,7 @@ async function fetchOne(urls, dst) {
         return buf.length;
       } catch (e) {
         lastErr = e;
+        if (e.fatal) break;                 /* 4xx：这路没有就是没有，换下个基址 */
         if (t < 2) await sleep(400 * (t + 1));
       }
     }
@@ -261,7 +283,7 @@ export async function syncData(opts = {}) {
        卡片比行情少几天，没有任何地方会报错。
        顶层 12 份一共几百 KB，无条件刷一遍最省心：判断写错一次就再也不会自愈，
        而重复下载是幂等的。hist 那 45MB 仍然按 mark 跳过。 */
-    await pullTops(cdn, dist);
+    await pullTops(cdn, raw, dist);
     /* 顶层刷完还要看份额单只：mark 相同＝交易日没变，但那批文件可能从没跟上过
        （沙箱里曾经停在 11-12）。pullShares 自己按 last.json 的 d 判，不额外花时间。 */
     await pullShares(cdn, raw, dist, codes, 16, log).catch(() => 0);
@@ -292,7 +314,7 @@ export async function syncData(opts = {}) {
   const conc = Math.max(1, Math.min(32, Number(process.env.SYNC_CONCURRENCY || 16)));
 
   if (!opts.force && !opts.hist && haveHist && !missingTops.length && sameDay) {
-    await pullTops(cdn, dist);
+    await pullTops(cdn, raw, dist);
     await pullShares(cdn, raw, dist, codes, conc, log).catch(() => 0);
     const files = (await fsp.readdir(histDir)).length;
     await writeState({
@@ -332,7 +354,7 @@ export async function syncData(opts = {}) {
   //
   // etfopt_hist.json 是 ETF 期权那段历史。它每天都在合并新一天，沙箱不跟着换
   // 就是「线上 131 天、本地还停在发布那天」，越差越远。
-  await pullTops(cdn, dist);
+  await pullTops(cdn, raw, dist);
   await pullShares(cdn, raw, dist, codes, conc, log).catch(() => 0);
 
   const sec = ((Date.now() - t0) / 1000).toFixed(0);
