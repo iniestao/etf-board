@@ -136,7 +136,7 @@ const TOP_FILES = [
   'sec_daily.json', 'mkt_hist.json',
   'senti_hist.json', 'senti_base.json',
   'fut_last.json', 'fut_daily.json', 'etfopt_hist.json',
-  'stk_concept.json', 'etf_base.json', 'etfopt_eod.json',
+  'stk_concept.json', 'etf_base.json', 'etfopt_eod.json', 'idx_pe.json',
   'shares/last.json', 'shares/ix.json',
 ];
 
@@ -190,6 +190,38 @@ async function pullShares(cdn, raw, dist, codes, conc, log) {
     await fsp.writeFile(stampF, day).catch(() => {});
   }
   if (r.fail.length) log('  ! ' + r.fail.length + ' 个份额文件没拉到（保留本地旧的）');
+  return need.length;
+}
+
+/**
+ * 逐指数的 PE 曲线（弹窗「估值」tab 用）。324 个 txt，每个 10~30KB。
+ *
+ * 不能「本地有就跳过」：曲线每天都在末尾追加一个点，跳过就永远停在第一次
+ * 同步的那天，而汇总表里的分位是新的——同一页两个日期，和份额那次一模一样。
+ * 所以按 idx_pe.json 的 d 打戳，日期变了整批重下（约 3MB，几秒）。
+ */
+async function pullIdxPe(cdn, raw, dist, conc, log) {
+  const dir = path.join(dist, 'idxpe');
+  await fsp.mkdir(dir, { recursive: true });
+  let j = null;
+  try { j = JSON.parse(await fsp.readFile(path.join(dist, 'idx_pe.json'), 'utf8')); } catch { return 0; }
+  const day = j.d || '';
+  const stampF = path.join(dir, '.stamp');
+  let stamp = '';
+  try { stamp = (await fsp.readFile(stampF, 'utf8')).trim(); } catch { /* 首次 */ }
+  const codes = (j.items || []).filter((x) => x.pe != null).map((x) => x.c);
+  const full = !day || stamp !== day;
+  const need = full ? codes : codes.filter((c) => !fs.existsSync(path.join(dir, c + '.txt')));
+  if (!need.length) return 0;
+  log('  ' + (full ? '全量刷新' : '补') + ' ' + need.length + ' 个指数 PE 曲线（截至 ' + (day || '?') + '）');
+  const r = await pool(need, conc, (code) => fetchOne(
+    [cdn + '/idxpe/' + code + '.txt', raw + '/idxpe/' + code + '.txt'],
+    path.join(dir, code + '.txt'),
+  ), () => {});
+  if (full && r.fail.length <= Math.max(8, Math.round(need.length * 0.05))) {
+    await fsp.writeFile(stampF, day).catch(() => {});
+  }
+  if (r.fail.length) log('  ! ' + r.fail.length + ' 个曲线没拉到（保留本地旧的）');
   return need.length;
 }
 
@@ -355,6 +387,7 @@ export async function syncData(opts = {}) {
   // etfopt_hist.json 是 ETF 期权那段历史。它每天都在合并新一天，沙箱不跟着换
   // 就是「线上 131 天、本地还停在发布那天」，越差越远。
   await pullTops(cdn, raw, dist);
+  await pullIdxPe(cdn, raw, dist, conc, log).catch(() => 0);
   await pullShares(cdn, raw, dist, codes, conc, log).catch(() => 0);
 
   const sec = ((Date.now() - t0) / 1000).toFixed(0);

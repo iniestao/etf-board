@@ -243,6 +243,21 @@ jobs:
       # 这两步是「锦上添花」，不能因为它失败把整个数据发布带下来——
       # 东财的板块接口限流比 ETF 行情狠，被限一次就红掉，等于当天的 K 线也没了。
       # 失败就沿用 data 分支上上一次的那份，页面照常显示（只是那天的点不动）。
+      # 估值曲线是增量生成的：先把上一版从 data 分支取回来，后面只补最近 10 天。
+      # 取不到也没关系，gen_idx_pe.mjs 发现本地没有历史就会退回全量重抓。
+      - name: 取回上一版指数估值曲线
+        continue-on-error: true
+        run: |
+          mkdir -p dist
+          if git fetch -q --depth=1 origin data 2>/dev/null; then
+            git archive FETCH_HEAD idxpe 2>/dev/null | tar -x -C dist \
+              || echo "::warning::data 分支上没有 idxpe 目录，本轮按全量抓"
+            git show FETCH_HEAD:idx_pe.json > dist/idx_pe.json 2>/dev/null \
+              || echo "::warning::data 分支上没有 idx_pe.json"
+          else
+            echo "::warning::取不到 data 分支，估值本轮按全量抓（约 15 分钟）"
+          fi
+
       - name: 回算板块日档与全 A 结构
         continue-on-error: true
         run: |
@@ -262,6 +277,11 @@ jobs:
           # 它决定清单里「板块」那一列显示什么；失败就沿用上一版，worker 侧还有
           # 30 只现场补查兜底，不会整列空掉。
           node pipeline/gen_concept_map.mjs --days 10 || echo "::warning::概念映射刷新失败，沿用上一次发布的那份"
+          # 指数 PE 分位（弹窗里的「估值」tab）。增量：上一版的曲线已在 dist/idxpe，
+          # 这里只补最近 10 个交易日再合并，483 个指数约 3~5 分钟；
+          # 没有历史（首次 / data 分支丢了）的指数会自动退回全量。
+          # 中证官网有 WAF，脚本里是 3 并发 + 每请求间隔，不能改成猛并发。
+          node pipeline/gen_idx_pe.mjs --daily --days 10 || echo "::warning::指数估值刷新失败，沿用上一版"
           python3 - <<'PY'
           import json, pathlib
           d = json.loads(pathlib.Path('dist/sec_daily.json').read_text())
@@ -506,12 +526,19 @@ jobs:
           fi
 
           cp -r dist/hist "$PUB/"
+          # 估值曲线：一个指数一个 txt，483 个约 6MB。漏拷的后果是弹窗里的
+          # 「估值」tab 直接空白，所以整目录拷，缺了就用上一版顶。
+          if [ -d dist/idxpe ]; then cp -r dist/idxpe "$PUB/";
+          elif [ -n "$PREV" ] && git cat-file -e "$PREV:idxpe" 2>/dev/null; then
+            git archive "$PREV" idxpe | tar -x -C "$PUB"
+            echo "::warning::dist/idxpe 这轮没生成，沿用上一版"
+          else echo "::warning::dist/idxpe 不存在，这轮不发布估值"; fi
           cp dist/manifest.json "$PUB/"
           cp dist/research.json "$PUB/"
           # etfopt_hist.json 千万别漏：少拷一个文件，页面 ETF 组会退回「还没发布」。
           # etf_base.json 同理：漏了的话盯市提醒会静默退化成只判横截面和折溢价，
           # 页面上没有任何可见的错，只是量能和位置两类从此不再出现。
-          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json stk_concept.json fut_daily.json fut_last.json etfopt_hist.json etfopt_eod.json etf_base.json; do
+          for f in sec_daily.json mkt_hist.json senti_hist.json senti_base.json stk_concept.json fut_daily.json fut_last.json etfopt_hist.json etfopt_eod.json etf_base.json idx_pe.json; do
             if [ -f "dist/$f" ]; then cp "dist/$f" "$PUB/"; continue; fi
             if [ -n "$PREV" ] && git show "$PREV:$f" > "$PUB/$f" 2>/dev/null; then
               echo "::warning::dist/$f 这轮没生成，沿用上一版（$(du -h "$PUB/$f" | cut -f1)）"

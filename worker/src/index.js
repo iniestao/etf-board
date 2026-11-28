@@ -5390,6 +5390,50 @@ async function serveEtfBase(env) {
   }
 }
 
+/**
+ * 指数估值分位：汇总表 + 单指数 PE 曲线
+ * =====================================
+ * 不带 code 时发汇总表（483 个指数，含「无 PE 口径」的那 159 个，约 110KB，
+ * 里面还带一张 ETF→指数的反查表，前端在弹窗里只有 ETF 代码）。
+ * 带 code 时发该指数的 PE 曲线，纯文本「交易日\tPE」一行一条，原样透传——
+ * 324 条曲线合起来 5MB，而用户一次只看一条，按需取才对。
+ *
+ * 曲线用 Cache-Control 6 小时：PE 一天只变一次，没必要每次回源。
+ * 汇总表给 30 分钟：它跟着每日流水线变，但也只在打开估值 tab 时请求一次。
+ */
+async function serveIdxPe(env, url) {
+  if (!histSource(env)) {
+    return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
+  }
+  const code = (url.searchParams.get('code') || '').trim();
+  try {
+    if (code) {
+      if (!/^[0-9A-Za-z]{4,10}$/.test(code)) return json({ ok: false, error: 'code 格式不对' });
+      const a = await readAsset(env, 'idxpe/' + code + '.txt');
+      if (!a) return json({ ok: false, code: 'NOT_FOUND', error: '该指数没有 PE 曲线' });
+      return new Response(a.body, {
+        headers: {
+          ...CORS,
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'public, max-age=21600',
+        },
+      });
+    }
+    const a = await readAsset(env, 'idx_pe.json');
+    if (!a) return json({ ok: false, code: 'NOT_FOUND', error: 'data 分支还没有 idx_pe.json' });
+    const txt = await a.text();
+    return new Response(txt, {
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'public, max-age=1800',
+      },
+    });
+  } catch (e) {
+    return json({ ok: false, code: 'FETCH_ERR', error: String(e.message || e) });
+  }
+}
+
 async function serveResearch(env) {
   if (!histSource(env)) {
     return json({ ok: false, code: 'NO_SOURCE', error: '未配置历史数据源' });
@@ -7197,6 +7241,11 @@ export default {
 
     if (p === '/api/etfbase') {
       return serveEtfBase(env);
+    }
+
+    if (p === '/api/idxpe') {
+      // 指数 PE 分位：不带 code 是汇总表，带 code 是单指数曲线
+      return serveIdxPe(env, url);
     }
 
     if (p === '/api/events') {

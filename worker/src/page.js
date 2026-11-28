@@ -781,6 +781,28 @@ cursor:pointer;border:1px solid transparent;user-select:none}
 color:var(--txt2);cursor:pointer;font-size:var(--fs-md);line-height:1;padding:0}
 .hx:hover{color:var(--txt);background:var(--bg3)}
 #histCv{display:block;width:100%;height:clamp(300px,62vh,430px);flex:0 0 auto;cursor:crosshair;min-width:0;max-width:100%}
+/* ---- 估值分位 ----
+   三档分位各一条刻度尺：底下的渐变条代表「这只指数的历史估值区间」，
+   指针落在当前分位。只给数字不行——「62.7%」单独看没有参照，落在尺子上
+   才有「偏贵还是偏便宜」的直觉。
+   渐变用红黄绿，是「贵/便宜」的语义，和涨跌红绿无关，所以不加箭头也不标涨跌。 */
+.hval{display:none;flex:0 1 auto;min-height:0;overflow:auto;padding:2px 14px 14px}
+.hval.on{display:block}
+.hvalhd{font-size:var(--fs-xs);color:var(--txt3);padding:8px 0 0;line-height:1.6}
+.hvalhd b{color:var(--txt1);font-weight:600;font-size:var(--fs-sm)}
+.hvalbars{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 4px}
+.vbar{flex:1 1 190px;min-width:160px;border:1px solid var(--line);border-radius:8px;padding:9px 11px 10px}
+.vbar .vt{display:flex;align-items:baseline;gap:6px;margin-bottom:8px}
+.vbar .vt b{font-size:var(--fs-xs);color:var(--txt2);font-weight:500}
+.vbar .vt .vv{font-family:var(--mono);font-size:var(--fs-lg);font-weight:600;margin-left:auto;letter-spacing:var(--ls-n)}
+.vbar .vs{position:relative;height:6px;border-radius:3px;
+  background:linear-gradient(90deg,#39a86b 0%,#8fb84f 26%,#dcb43c 50%,#dd8b3c 74%,#d05252 100%)}
+.vbar .vs i{position:absolute;top:50%;width:2px;height:15px;margin-left:-1px;border-radius:1px;
+  background:var(--txt);transform:translateY(-50%);box-shadow:0 0 0 2px var(--bg2)}
+.vbar .vn{font-size:var(--fs-2xs);color:var(--txt3);margin-top:7px}
+#valCv{display:block;width:100%;height:230px;margin:6px 0 0;min-width:0;max-width:100%}
+.hvalnote{font-size:var(--fs-2xs);color:var(--txt3);line-height:1.7;margin-top:8px}
+.hvalnote b{color:var(--txt2);font-weight:500}
 /* 副图 / 叠加选择条：一行 chip，切换只重绘画布，不重新拉数据 */
 .hsbar{display:flex;align-items:center;gap:4px;padding:8px 14px 2px;flex-wrap:wrap}
 .hsbar .lb{font-size:var(--fs-2xs);color:var(--txt3);margin-right:2px}
@@ -874,6 +896,15 @@ font-family:var(--mono);font-weight:400;color:var(--txt2);cursor:pointer;user-se
   .hsbar .lb+.sg+.lb{margin-left:5px}
   .hsbar b{padding:2px 5px;font-size:var(--fs-2xs)}
   #histCv{height:300px}
+  /* 窄屏三档分位竖排，卡片必须压紧：不压的话三张卡吃掉 300px，
+     要滚一屏才能看到曲线，而曲线才是这个 tab 的主体 */
+  .hval{padding:2px 10px 12px}
+  .hvalbars{gap:7px;margin:8px 0 2px}
+  .vbar{flex:1 1 100%;min-width:0;padding:6px 9px 7px}
+  .vbar .vt{margin-bottom:6px}
+  .vbar .vt .vv{font-size:var(--fs-md)}
+  .vbar .vn{margin-top:5px}
+  #valCv{height:190px}
   /* 小屏固定 3 列：auto-fit 在 400px 里会算出 4 列 96px，
      但 canvas 的固有宽度参与 flex 计算会把面板撑宽，导致第 4 列被裁掉 */
   .hind{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -2072,7 +2103,7 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
       <span class="px" id="hPx">-</span>
       <span class="ch" id="hChg"></span>
       <div class="hmodes" id="hMode">
-        <b data-m="min">分时</b><b data-m="k">K线</b><b data-m="hold">成分</b>
+        <b data-m="min">分时</b><b data-m="k">K线</b><b data-m="hold">成分</b><b data-m="val">估值</b>
       </div>
       <div class="htabs" id="hTabs">
         <span data-r="63">3M</span>
@@ -2096,6 +2127,12 @@ input:focus-visible,textarea:focus-visible,select:focus-visible{outline-offset:-
     <div class="hhold" id="hHold">
       <div class="hholdhd" id="hHoldHd"></div>
       <div id="hHoldBody"></div>
+    </div>
+    <div class="hval" id="hVal">
+      <div class="hvalhd" id="hValHd"></div>
+      <div class="hvalbars" id="hValBars"></div>
+      <canvas id="valCv"></canvas>
+      <div class="hvalnote" id="hValNote"></div>
     </div>
     <div class="hleg" id="hLeg"></div>
     <div class="hind" id="hInd"></div>
@@ -6249,7 +6286,7 @@ Array.prototype.forEach.call(document.querySelectorAll('#spdTabs .mtab[data-w]')
 var HC = {
   up:'#d93a3a', dn:'#0e9a61', ma20:'#d68910', ma60:'#4c8dff',
   grid:'#e9ecf1', axis:'#939aa7', cross:'#8b93a1', vol:'#dfe4ec', rsi:'#7c5cd6',
-  boll:'#98a3b5'
+  boll:'#98a3b5', panel:'#ffffff'
 };
 /* canvas 的 fillStyle 是「画的那一刻取一次」的值，跟 CSS 变量没有绑定关系。
    所以切主题必须重画，而重画前要先把这套色换成新主题的——不然深色底上
@@ -6259,10 +6296,11 @@ function hcTheme(){
   if (dark) {
     HC.up='#e4636a'; HC.dn='#34bf8d'; HC.ma20='#d9a441'; HC.ma60='#6f9fff';
     HC.grid='#282d37'; HC.axis='#7e8798'; HC.cross='#5c6675'; HC.vol='#2b303a';
-    HC.rsi='#a78bfa'; HC.boll='#8b95a8';
+    HC.rsi='#a78bfa'; HC.boll='#8b95a8'; HC.panel='#1c1f26';
   } else {
     HC.up='#d93a3a'; HC.dn='#0e9a61'; HC.ma20='#d68910'; HC.ma60='#4c8dff';
     HC.grid='#e9ecf1'; HC.axis='#939aa7'; HC.cross='#8b93a1'; HC.vol='#dfe4ec';
+    HC.panel='#ffffff';
     HC.rsi='#7c5cd6'; HC.boll='#98a3b5';
   }
 }
@@ -6278,7 +6316,7 @@ var H = {
    用户手动切过就记住——K 线是深度分析时才会进的门。 */
 try {
   var _hmode = localStorage.getItem('etf_hmode');
-  if (_hmode === 'k' || _hmode === 'min' || _hmode === 'hold') H.mode = _hmode;
+  if (_hmode === 'k' || _hmode === 'min' || _hmode === 'hold' || _hmode === 'val') H.mode = _hmode;
 } catch (e) { /* 隐私模式下 localStorage 会抛 */ }
 
 /* TypedArray 要求 byteOffset 是元素大小的整数倍，而 JSON header 长度不固定。
@@ -6526,31 +6564,272 @@ function hRefresh(){
   document.getElementById('hNote').textContent = note;
 }
 
-/* 分时 / K线 / 成分 切换。force=true 表示「模式没变也要重新加载」——
+/* ================= 估值分位 =================
+   「这只 ETF 现在贵不贵」——K 线只回答「涨了多少」，回答不了这个。
+   弹窗里加第四个 tab：它跟踪的那只指数，PE 站在过去 3/5/10 年的什么位置。
+
+   数据只有 PE，没有 PB：免费日频 PB 历史实际上不存在（中证官网 index-perf
+   只给 PE，其 indicator.xls 只有 20 个交易日且无 PB，国证接口改版 404，
+   恒生只有当前值，蛋卷只覆盖 47 个指数）。要全量 PB 只能上终端，云端拿不到。
+   所以这张表只有一列，不拿价格分位冒充——两者不是一回事。
+
+   分位高的意思只是「比过去贵」，不是「要跌」。这句话必须写在 tab 里：
+   估值分位最常见的误用就是当择时信号，2020-2021 年半导体分位 95% 之后还涨了半年。
+
+   曲线的纵轴裁掉最高/最低 1%：一只指数从亏损转盈利时 PE 会冲到几百，
+   不裁的话其余十年被压成一条平线，什么形态都看不出来。
+*/
+var VAL = { req:null, j:null, curve:{}, pts:null, meta:null };
+
+/* 分位配色：低=绿(便宜)、高=红(贵)。这里借用涨跌的红绿，但语义不同，
+   所以只染数字和指针，不画箭头、不标「涨」「跌」。 */
+function vcol(p){
+  if (p == null || !isFinite(p)) return 'var(--txt3)';
+  return p <= 30 ? '#2f9e63' : (p >= 70 ? '#cf4f4f' : '#b8860b');
+}
+function vday(k){ return k && k.length === 8 ? k.slice(0, 4) + '-' + k.slice(4, 6) + '-' + k.slice(6) : (k || ''); }
+function vmon(k){ return k && k.length === 8 ? k.slice(0, 4) + '-' + k.slice(4, 6) : (k || ''); }
+
+/* 汇总表只取一次（483 个指数 + ETF 反查表，约 110KB）。失败后清掉 req，
+   下次点开还能重试——网络抖一下不该让这一晚都看不了估值。 */
+function valSummary(){
+  if (!VAL.req){
+    VAL.req = fetch('/api/idxpe').then(function(r){ return r.json(); }).then(function(j){
+      if (!j || !j.items || !j.items.length) throw new Error((j && (j.error || j.code)) || '估值数据未就绪');
+      VAL.j = j;
+      return j;
+    });
+    VAL.req.catch(function(){ VAL.req = null; });
+  }
+  return VAL.req;
+}
+
+function loadVal(code){
+  var hd = document.getElementById('hValHd');
+  var bars = document.getElementById('hValBars');
+  var note = document.getElementById('hValNote');
+  if (!hd) return;
+  hd.textContent = '读取估值…';
+  bars.innerHTML = '';
+  note.innerHTML = '';
+  // 无 PE 的指数不画图，画布必须一起收起来——留着它，弹窗底部会空出 230px
+  // 的白色区域，看着像「图没加载出来」
+  document.getElementById('valCv').style.display = '';
+
+  valSummary().then(function(j){
+    if (H.code !== code || H.mode !== 'val') return;
+    var idx = (j.map || {})[code];
+    if (!idx){ hd.textContent = '这只 ETF 没有跟踪指数代码'; return; }
+    var meta = null;
+    for (var i = 0; i < j.items.length; i++) if (j.items[i].c === idx){ meta = j.items[i]; break; }
+    var nm = (meta && meta.n) || idx;
+
+    if (!meta || meta.pe == null){
+      hd.innerHTML = '<b>' + esc(nm) + '</b> · 无 PE 口径';
+      document.getElementById('valCv').style.display = 'none';
+      note.innerHTML = '该指数没有市盈率：债券、商品、货币类本来就没有盈利，'
+        + '少数境外指数中证未收录。<b>这里不做替代指标</b>——价格分位和估值分位不是一回事，'
+        + '混着给会让人以为「跌得多＝便宜」。';
+      return;
+    }
+    if (VAL.curve[idx]){ renderVal(meta, VAL.curve[idx]); return; }
+    fetch('/api/idxpe?code=' + encodeURIComponent(idx)).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function(t){
+      var pts = parseValCurve(t);
+      VAL.curve[idx] = pts;
+      if (H.code !== code || H.mode !== 'val') return;
+      renderVal(meta, pts);
+    }).catch(function(e){
+      if (H.code !== code || H.mode !== 'val') return;
+      hd.textContent = '估值曲线读取失败：' + (e.message || e);
+    });
+  }).catch(function(e){
+    if (H.code !== code || H.mode !== 'val') return;
+    hd.textContent = '估值数据读取失败：' + (e.message || e);
+  });
+}
+
+function parseValCurve(t){
+  /* 注意这里的 \\n 和 \\t：整份页面是模板字符串，写单反斜杠会被解析成
+     真实的换行/制表符嵌进字符串字面量，整段 JS 直接语法错误（实测:白屏）。 */
+  var out = [], lines = String(t || '').split('\\n');
+  for (var i = 0; i < lines.length; i++){
+    var s = lines[i].split('\\t');
+    if (s.length < 2) continue;
+    var v = parseFloat(s[1]);
+    if (!isFinite(v) || v <= 0) continue;
+    out.push({ d: s[0], pe: v });
+  }
+  return out;
+}
+
+function renderVal(meta, pts){
+  var hd = document.getElementById('hValHd');
+  var bars = document.getElementById('hValBars');
+  var note = document.getElementById('hValNote');
+
+  hd.innerHTML = '<b>' + esc(meta.n) + '</b> '
+    + '<span style="font-family:var(--mono);font-size:var(--fs-xs)">' + esc(meta.c) + '</span>'
+    + ' · 当前 PE ' + meta.pe.toFixed(2) + ' · 截至 ' + vday(meta.l);
+
+  var ws = [['3 年', 'p3', 'n3', 730], ['5 年', 'p5', 'n5', 1215], ['10 年', 'p10', 'n10', 2430]];
+  var html = '';
+  for (var i = 0; i < ws.length; i++){
+    var lb = ws[i][0], p = meta[ws[i][1]], n = meta[ws[i][2]], need = ws[i][3];
+    if (p == null || !isFinite(p)) continue;
+    html += '<div class="vbar"><div class="vt"><b>' + lb + '</b>'
+      + '<span class="vv" style="color:' + vcol(p) + '">' + p.toFixed(1) + '%</span></div>'
+      + '<div class="vs"><i style="left:' + Math.max(0, Math.min(100, p)) + '%"></i></div>'
+      + '<div class="vn">样本 ' + n + ' 个交易日'
+      + (n < need * 0.9 ? '（成立不足 ' + lb + '，按成立以来）' : '') + '</div></div>';
+  }
+  bars.innerHTML = html;
+
+  note.innerHTML = '分位 = 历史上涨跌到当前 PE 或更低的天数占比，含当日。'
+    + '<b>低分位是比过去便宜，高分位是比过去贵</b>，不代表接下来会涨会跌——'
+    + '估值分位最常见的误用就是当择时信号，高分位可以更高，低分位可以更低。'
+    + '<br>PE 的软肋：盈利暴涨时 PE 会自己掉下来。券商、半导体、资源这类周期或高增长行业，'
+    + '在业绩爆发期反而显示低分位——它衡量价格相对盈利，不衡量盈利能不能持续。'
+    + '要看穿这一点需要 PB，而公开源拿不到日频 PB 历史，所以这张表只有 PE。'
+    + '<br>曲线是中证指数公布的 PE-TTM（总股本口径），绝对值较官方估值表低约 5%，看形态即可；'
+    + '纵轴裁掉了最高和最低各 1% 的极值，否则一次由亏转盈会把整条线压平。';
+
+  VAL.pts = pts; VAL.meta = meta;
+  drawVal(pts);
+}
+
+function drawVal(pts){
+  var cv = document.getElementById('valCv');
+  if (!cv || !pts || pts.length < 2) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.clientWidth || 860, Ht = cv.clientHeight || 230;
+  if (!W) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(Ht * dpr)){
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(Ht * dpr);
+  }
+  var g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, Ht);
+
+  var PL = 46, PR = 10, PT = 10, PB = 20;
+  var iw = Math.max(10, W - PL - PR), ih = Math.max(10, Ht - PT - PB);
+
+  var vals = [], i;
+  for (i = 0; i < pts.length; i++) vals.push(pts[i].pe);
+  vals.sort(function(a, b){ return a - b; });
+  var q = function(f){
+    var k = Math.round(f * (vals.length - 1));
+    return vals[Math.max(0, Math.min(vals.length - 1, k))];
+  };
+  var lo = q(0.01), hi = q(0.99);
+  if (!(hi > lo)){ lo = vals[0]; hi = vals[vals.length - 1]; }
+  if (!(hi > lo)) hi = lo + 1;
+  var pad = (hi - lo) * 0.08;
+  lo = Math.max(0, lo - pad);
+  hi = hi + pad;
+
+  var n = pts.length;
+  var X = function(k){ return PL + iw * (k / (n - 1)); };
+  var Y = function(v){ return PT + ih * (1 - (Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)); };
+
+  g.font = '10px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
+  g.textBaseline = 'middle';
+  g.textAlign = 'right';
+  for (var t = 0; t <= 3; t++){
+    var gv = lo + (hi - lo) * t / 3, gy = Y(gv);
+    g.strokeStyle = HC.grid; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(PL, gy); g.lineTo(PL + iw, gy); g.stroke();
+    g.fillStyle = HC.axis;
+    /* 最底下那条刻度正好落在 ih 底边，文字中心在那里会有一半被画布裁掉，
+       看着像「y 轴没有最低值」。钳到画布内。 */
+    g.fillText(gv.toFixed(1), PL - 6, Math.max(PT + 7, Math.min(PT + ih - 7, gy)));
+  }
+
+  /* 面积：从曲线垂到基线。用淡蓝渐隐，不抢折线。 */
+  g.beginPath();
+  g.moveTo(X(0), Y(pts[0].pe));
+  for (i = 1; i < n; i++) g.lineTo(X(i), Y(pts[i].pe));
+  g.lineTo(X(n - 1), PT + ih);
+  g.lineTo(X(0), PT + ih);
+  g.closePath();
+  var grd = g.createLinearGradient(0, PT, 0, PT + ih);
+  grd.addColorStop(0, 'rgba(76,141,255,.22)');
+  grd.addColorStop(1, 'rgba(76,141,255,.02)');
+  g.fillStyle = grd;
+  g.fill();
+
+  g.strokeStyle = HC.ma60; g.lineWidth = 1.5; g.lineJoin = 'round';
+  g.beginPath();
+  for (i = 0; i < n; i++){
+    if (i === 0) g.moveTo(X(i), Y(pts[i].pe)); else g.lineTo(X(i), Y(pts[i].pe));
+  }
+  g.stroke();
+
+  /* 当前 PE 横虚线：分位看的是「现在站在哪」，所以这条线必须有，
+     否则读图的人得自己在右端找最后一个点。 */
+  var ly = Y(pts[n - 1].pe);
+  g.strokeStyle = HC.cross; g.lineWidth = 1; g.setLineDash([4, 4]);
+  g.beginPath(); g.moveTo(PL, ly); g.lineTo(PL + iw, ly); g.stroke();
+  g.setLineDash([]);
+
+  /* 当前值标签贴右端，靠顶部时翻到线下方——左上角是最高刻度线，放那里会跟
+     「19.1」叠一起（第一版就叠了）。标签带一块底色：窄屏上曲线会正好从这里
+     穿过，不垫底就是一团糊字。 */
+  var last = pts[n - 1].pe;
+  var lbl = 'PE ' + last.toFixed(2);
+  var tw = g.measureText(lbl).width;
+  var bx = PL + iw - tw - 10;
+  var by = (ly - PT < 20) ? ly + 3 : ly - 20;
+  g.fillStyle = HC.panel;
+  g.fillRect(bx, by, tw + 8, 18);
+  g.fillStyle = HC.axis;
+  g.textAlign = 'left';
+  g.textBaseline = 'middle';
+  g.fillText(lbl, bx + 4, by + 9);
+
+  g.fillStyle = HC.axis;
+  g.fillText(vmon(pts[0].d), PL, PT + ih + 5);
+  g.textAlign = 'center';
+  g.fillText(vmon(pts[Math.floor((n - 1) / 2)].d), PL + iw / 2, PT + ih + 5);
+  g.textAlign = 'right';
+  g.fillText(vmon(pts[n - 1].d), PL + iw, PT + ih + 5);
+}
+
+/* 分时 / K线 / 成分 / 估值 切换。force=true 表示「模式没变也要重新加载」——
    新点开一只标的时必须走这条路，否则会因为模式相同而什么都不做，图停在上一只。 */
 var holdTimer = null;
 function setHMode(m, force){
-  m = (m === 'k' || m === 'hold') ? m : 'min';
+  m = (m === 'k' || m === 'hold' || m === 'val') ? m : 'min';
   if (!force && H.mode === m) return;
   H.mode = m;
   try { localStorage.setItem('etf_hmode', m); } catch (e) {}
   Array.prototype.forEach.call(document.querySelectorAll('#hMode b'), function(b){
     b.classList.toggle('on', b.getAttribute('data-m') === m);
   });
-  var isK = m === 'k', isMin = m === 'min', isHold = m === 'hold';
+  var isK = m === 'k', isMin = m === 'min', isHold = m === 'hold', isVal = m === 'val';
   // 副图/叠加/周期条只对 K 线有意义，分时和成分都没有它们
   document.getElementById('hSbar').style.display = isK ? '' : 'none';
   document.getElementById('hTabs').style.display = isK ? '' : 'none';
-  // 画布与它下面那几块（图例/指标卡/备注）在成分档整体让位给表格
-  document.getElementById('histCv').style.display = isHold ? 'none' : '';
-  document.getElementById('hLeg').style.display = isHold ? 'none' : '';
-  document.getElementById('hInd').style.display = isHold ? 'none' : '';
-  document.getElementById('hNote').style.display = isHold ? 'none' : '';
+  // 画布与它下面那几块（图例/指标卡/备注）在成分档和估值档整体让位
+  var noCv = isHold || isVal;
+  document.getElementById('histCv').style.display = noCv ? 'none' : '';
+  document.getElementById('hLeg').style.display = noCv ? 'none' : '';
+  document.getElementById('hInd').style.display = noCv ? 'none' : '';
+  document.getElementById('hNote').style.display = noCv ? 'none' : '';
   document.getElementById('hHold').classList.toggle('on', isHold);
+  document.getElementById('hVal').classList.toggle('on', isVal);
   clearInterval(minTimer); minTimer = null;
   clearInterval(holdTimer); holdTimer = null;
   H.hover = -1;
   if (!H.code) return;
+  if (isVal){
+    // 估值一天只变一次，不做轮询：切走再切回来走的是本地缓存
+    loadVal(H.code);
+    return;
+  }
   if (isHold){
     loadHold(H.code, false);
     // 30 秒一轮：上游行情按 30 秒分桶缓存，更密的轮询只会反复命中同一个桶
@@ -8368,6 +8647,10 @@ window.addEventListener('resize', function(){
   clearTimeout(hResizeTimer);
   hResizeTimer = setTimeout(function(){
     // 分时用 H.m 而不是 H.d，两个都要认，否则改窗口大小后图会被拉变形
+    if (H.mode === 'val'){
+      if (VAL.pts) drawVal(VAL.pts);
+      return;
+    }
     var ready = (H.mode === 'min') ? !!H.m : !!H.d;
     if (ready){ H.hover = -1; hDraw(); hLegend(-1); }
   }, 140);
@@ -11395,6 +11678,9 @@ function toggleTheme(){
   try { hcTheme(); } catch (e) {}
   try { if (H && H.ok && H.d) hDraw(); } catch (e) {}
   try { if (H && H.m && H.min) hDrawMin(); } catch (e) {}
+  // 估值曲线也是 canvas，配色写死在绘制那一刻，不重画就会在深色底上
+  // 继续用浅色的网格和坐标字
+  try { if (VAL && VAL.pts && H.mode === 'val') drawVal(VAL.pts); } catch (e) {}
 }
 (function(){
   var b = document.getElementById('btnTheme');

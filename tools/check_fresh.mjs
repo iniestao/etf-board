@@ -158,6 +158,13 @@ const ITEMS = [
     const x = o.d;
     return x && /^\d{8}$/.test(x) ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6)}` : x || null;
   } },
+  // 指数估值分位。落后一天完全不影响正确性——PE 一天只变一次，分位是慢变量，
+  // 差一天的变化通常不到 1 个百分点。但它曾经「从来没生成过」也没人发现，
+  // 所以还是要进表：soft，只提醒，不让整条发布链红掉。
+  { key: 'idxpe', name: '指数估值',        file: 'idx_pe.json',     level: 'soft', pick: (o) => {
+    const x = o.d;
+    return x && /^\d{8}$/.test(x) ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6)}` : x || null;
+  } },
 ];
 
 export async function collect({ dir = null, ref = null, nowUtc = new Date() } = {}) {

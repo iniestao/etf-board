@@ -559,6 +559,37 @@ async function runContracts(base, pass) {
   const jtb = r.json();
   (jtb && jtb.ok === false) ? ok('/api/top3 非法 codes 被拒') : bad('/api/top3 非法 codes 没拒');
 
+  /* 指数估值：弹窗「估值」tab 的数据。能自证的关系只有两条——
+     分位在 0~100 之间；曲线末点等于汇总表里的当前 PE。
+     第二条最容易被忽略：增量合并时如果新点没并进去，表里的分位是新的、
+     曲线是旧的，图上最后一个点对不上数字，看着像估值算错了。 */
+  r = await rawRequest(base, '/api/idxpe', { cookie });
+  const jv = r.json();
+  if (jv && jv.items) {
+    const withPe = jv.items.filter((x) => x.pe != null);
+    ok('/api/idxpe ' + jv.items.length + ' 个指数，' + withPe.length + ' 个有 PE，截至 ' + jv.d);
+    const badPct = withPe.find((x) => [x.p3, x.p5, x.p10]
+      .some((p) => p != null && (!isFinite(p) || p < 0 || p > 100)));
+    (badPct) ? bad('/api/idxpe 分位越界：' + badPct.c) : ok('/api/idxpe 分位都在 0~100');
+    const noName = withPe.filter((x) => !x.n).length;
+    (noName) ? bad('/api/idxpe ' + noName + ' 个指数没有名称') : ok('/api/idxpe 名称齐全');
+    const k0 = withPe[0];
+    if (k0) {
+      const cr = await rawRequest(base, '/api/idxpe?code=' + encodeURIComponent(k0.c), { cookie });
+      const lines = String(cr.text || '').trim().split('\n').filter(Boolean);
+      if (!lines.length) bad('/api/idxpe 曲线为空：' + k0.c);
+      else {
+        const last = Number(lines[lines.length - 1].split('\t')[1]);
+        (Math.abs(last - k0.pe) < 0.01)
+          ? ok('/api/idxpe 曲线 ' + k0.c + ' ' + lines.length + ' 天，末点 '
+            + last.toFixed(2) + ' 与汇总一致')
+          : bad('/api/idxpe 曲线末点 ' + last + ' ≠ 汇总 ' + k0.pe);
+      }
+    }
+  } else {
+    bad('/api/idxpe 失败：' + r.text.slice(0, 160));
+  }
+
   /* PCF 每日预热：这是「盘中不现场拉清单」的前提，所以至少得证明两件事——
      一轮跑得动（能取列表、能写分片），以及连跑两轮游标会往前推。 */
   let w1 = null, w2 = null;
